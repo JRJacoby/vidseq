@@ -1,6 +1,7 @@
 *.code-workspace
 __pycache__
 *.egg-info
+design_docs/notes
 
 # Dependencies
 node_modules/
