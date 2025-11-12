@@ -1,5 +1,21 @@
 <script setup lang="ts">
-// HomeView - Start screen with project selection
+import { ref, onMounted } from 'vue'
+import { getProjects, type Project } from '@/services/api'
+
+const recentProjects = ref<Project[]>([])
+const isLoading = ref(false)
+
+onMounted(async () => {
+  isLoading.value = true
+  try {
+    recentProjects.value = await getProjects()
+  } catch (error) {
+    console.error('Error loading projects:', error)
+  } finally {
+    isLoading.value = false
+  }
+})
+
 </script>
 
 <template>
@@ -15,7 +31,29 @@
       <main class="main-screen">
         <h3 class="screen-title">Recent Projects</h3>
         <div class="screen-content">
-          <!-- Main content -->
+          <!-- Loading state -->
+          <div v-if="isLoading" class="loading-state">
+            Loading projects...
+          </div>
+
+          <!-- Empty state -->
+          <div v-else-if="recentProjects.length === 0" class="empty-state">
+            No projects yet. Create a new project to get started.
+          </div>
+
+          <!-- Projects list -->
+          <div v-else class="projects-list">
+            <div v-for="project in recentProjects"
+            :key="project.id"
+            class="project-card"
+            >
+              {{ project.name }}
+              {{ project.path }}
+              {{ project.created_at }}
+              {{ project.updated_at }}
+            </div>
+          </div>
+
         </div>
       </main>
     </div>
@@ -61,6 +99,8 @@
 }
 
 .screen-content {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
