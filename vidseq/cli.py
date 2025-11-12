@@ -1,6 +1,4 @@
 """Command-line interface for VidSeq."""
-
-import argparse
 import uvicorn
 from vidseq.server import app
 from vidseq.database import init_registry_db
