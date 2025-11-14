@@ -32,3 +32,17 @@ export async function createProject(name: string, path: string): Promise<Project
     
     return response.json()
 }
+
+export interface Video {
+    id: number
+    name: string
+    path: string
+}
+
+export async function getVideos(projectId: number): Promise<Video[]> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch videos: ${response.statusText}`)
+    }
+    return response.json()
+}
