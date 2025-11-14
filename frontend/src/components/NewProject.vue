@@ -1,12 +1,37 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { createProject } from '@/services/api'
+
+const router = useRouter()
 
 const projectName = ref('')
 const directoryPath = ref('')
 const errorMessage = ref('')
 
-const handleCreateProject = () => {
-  // TODO: Implement project creation logic
+const handleCreateProject = async () => {
+  errorMessage.value = ''
+  
+  if (!projectName.value.trim()) {
+    errorMessage.value = 'Project name is required'
+    return
+  }
+  
+  if (!directoryPath.value.trim()) {
+    errorMessage.value = 'Directory path is required'
+    return
+  }
+  
+  try {
+    const project = await createProject(projectName.value, directoryPath.value)
+    router.push(`/project/${project.id}`)
+  } catch (error) {
+    if (error instanceof Error) {
+      errorMessage.value = error.message
+    } else {
+      errorMessage.value = 'Failed to create project'
+    }
+  }
 }
 </script>
 

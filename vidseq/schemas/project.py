@@ -1,6 +1,10 @@
 from pydantic import BaseModel
 from datetime import datetime
 
+class ProjectCreate(BaseModel):
+    name: str
+    path: str
+
 class ProjectResponse(BaseModel):
     id: int
     name: str
