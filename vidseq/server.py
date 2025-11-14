@@ -1,12 +1,26 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from vidseq import __version__
 from vidseq.api.routes import projects
+from vidseq.database import init_registry_db, registry_engine, project_engines
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await init_registry_db()
+    yield
+    # Shutdown
+    if registry_engine:
+        await registry_engine.dispose()
+    for engine in project_engines.values():
+        await engine.dispose()
 
 app = FastAPI(
     title="VidSeq",
     description="VidSeq is a tool for analyzing animal behavior from raw video data.",
-    version=__version__
+    version=__version__,
+    lifespan=lifespan
 )
 
 app.add_middleware(

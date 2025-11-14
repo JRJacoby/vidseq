@@ -46,7 +46,6 @@ const handleCreateProject = async () => {
           v-model="projectName"
           type="text"
           placeholder="Enter project name"
-          required
         />
       </div>
 
@@ -59,7 +58,6 @@ const handleCreateProject = async () => {
           v-model="directoryPath"
           type="text"
           placeholder="Enter path to directory"
-          required
         />
       </div>
 

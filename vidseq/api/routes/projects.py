@@ -41,7 +41,7 @@ async def create_project(
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to create directory: {str(e)}")
     
-    init_project_db(project_dir)
+    await init_project_db(project_dir)
     
     project = Project(
         name=project_data.name,
