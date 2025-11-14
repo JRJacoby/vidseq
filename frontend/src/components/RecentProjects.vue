@@ -32,26 +32,3 @@ defineProps<{
     </div>
   </div>
 </template>
-
-<style scoped>
-.loading-state,
-.empty-state {
-  text-align: center;
-  color: #666;
-  padding: 2rem;
-}
-
-.projects-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.project-card {
-  padding: 1rem;
-  background-color: #f8f8f8;
-  border: 1px solid #e0e0e0;
-  border-radius: 0.25rem;
-}
-</style>
-

@@ -52,15 +52,10 @@ onMounted(async () => {
 
 .title-bar {
   flex-shrink: 0;
-  background-color: #2c3e50;
-  color: white;
-  padding: 1rem 2rem;
 }
 
 .title-bar-title {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
 }
 
 .page-content {
@@ -72,40 +67,8 @@ onMounted(async () => {
 .sidebar {
   flex-shrink: 0;
   width: 200px;
-  background-color: #f5f5f5;
-  padding: 1.5rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-}
-
-.sidebar-button-primary,
-.sidebar-button-secondary {
-  padding: 0.75rem 1rem;
-  border: none;
-  border-radius: 0.25rem;
-  font-size: 0.9375rem;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.sidebar-button-primary {
-  background-color: #3498db;
-  color: white;
-}
-
-.sidebar-button-primary:hover {
-  background-color: #2980b9;
-}
-
-.sidebar-button-secondary {
-  background-color: white;
-  color: #333;
-  border: 1px solid #ddd;
-}
-
-.sidebar-button-secondary:hover {
-  background-color: #f8f8f8;
 }
 
 .main-screen {
@@ -115,22 +78,16 @@ onMounted(async () => {
   min-height: 0;
 }
 
-.main-screen :deep(.screen-title) {
+.main-screen {
   flex-shrink: 0;
-  margin: 0;
-  padding: 1.5rem 2rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  border-bottom: 1px solid #e0e0e0;
 }
 
-.main-screen :deep(.screen-content) {
+.main-screen {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 2rem;
 }
 </style>
 
