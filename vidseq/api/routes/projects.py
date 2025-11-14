@@ -8,6 +8,18 @@ from vidseq.schemas.project import ProjectCreate, ProjectResponse
 
 router = APIRouter()
 
+async def get_project_folder(
+    project_id: int,
+    db: AsyncSession = Depends(get_registry_db)
+) -> Path:
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    return Path(project.path)
+
 @router.get("/projects", response_model=list[ProjectResponse])
 async def get_projects(
     db: AsyncSession = Depends(get_registry_db)

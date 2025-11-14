@@ -46,3 +46,32 @@ export async function getVideos(projectId: number): Promise<Video[]> {
     }
     return response.json()
 }
+
+export async function addVideos(projectId: number, paths: string[]): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ paths }),
+    })
+    
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to add videos')
+    }
+}
+
+export interface DirectoryEntry {
+    name: string
+    path: string
+    isDirectory: boolean
+}
+
+export async function getDirectoryListing(path: string): Promise<DirectoryEntry[]> {
+    const response = await fetch(`${API_BASE}/filesystem/list?path=${encodeURIComponent(path)}`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch directory listing: ${response.statusText}`)
+    }
+    return response.json()
+}
