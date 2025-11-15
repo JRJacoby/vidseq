@@ -1,5 +1,5 @@
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import String, DateTime
 from datetime import datetime, timezone
 
 def now():
@@ -11,8 +11,8 @@ class Base(DeclarativeBase):
 class Project(Base):
     __tablename__ = "projects"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String, nullable=False)
-    path = Column(String, nullable=False, unique=True)
-    created_at = Column(DateTime, nullable=False, default=now)
-    updated_at = Column(DateTime, nullable=False, default=now)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    path: Mapped[str] = mapped_column(String, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)

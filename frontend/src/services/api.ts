@@ -16,6 +16,14 @@ export async function getProjects(): Promise<Project[]> {
     return response.json()
 }
 
+export async function getProject(projectId: number): Promise<Project> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch project: ${response.statusText}`)
+    }
+    return response.json()
+}
+
 export async function createProject(name: string, path: string): Promise<Project> {
     const response = await fetch(`${API_BASE}/projects`, {
         method: 'POST',

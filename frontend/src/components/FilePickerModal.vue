@@ -36,6 +36,17 @@ const handlePathClick = (path: string) => {
   loadDirectory(path)
 }
 
+const handleGoUp = () => {
+  const parts = currentPath.value.split('/').filter(p => p)
+  if (parts.length === 0) return
+  const parentPath = '/' + parts.slice(0, -1).join('/')
+  loadDirectory(parentPath)
+}
+
+const canGoUp = () => {
+  return currentPath.value !== '/'
+}
+
 const handleEntrySelect = (path: string) => {
   const index = selectedPaths.value.indexOf(path)
   if (index === -1) {
@@ -64,6 +75,14 @@ const handleCancel = () => {
       
       <div class="modal-body">
         <div class="path-navigation">
+          <button 
+            class="up-button" 
+            @click="handleGoUp"
+            :disabled="!canGoUp()"
+            title="Go to parent directory"
+          >
+            ↑
+          </button>
           <span class="path-label">Current path:</span>
           <span class="path-value">{{ currentPath }}</span>
         </div>
@@ -185,6 +204,27 @@ const handleCancel = () => {
   gap: 0.5rem;
   margin-bottom: 1rem;
   flex-shrink: 0;
+  align-items: center;
+}
+
+.up-button {
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  transition: background-color 0.2s;
+}
+
+.up-button:hover:not(:disabled) {
+  background-color: #e0e0e0;
+}
+
+.up-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .path-label {

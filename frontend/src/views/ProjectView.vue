@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getVideos, addVideos, type Video } from '@/services/api'
+import { getProject, getVideos, addVideos, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 
 const route = useRoute()
 const projectId = route.params.id
 
+const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
 const isLoading = ref(false)
 const showFilePicker = ref(false)
+
+const loadProject = async () => {
+  try {
+    project.value = await getProject(Number(projectId))
+  } catch (error) {
+    console.error('Error loading project:', error)
+  }
+}
 
 const loadVideos = async () => {
   isLoading.value = true
@@ -23,6 +32,7 @@ const loadVideos = async () => {
 }
 
 onMounted(() => {
+  loadProject()
   loadVideos()
 })
 
@@ -81,6 +91,7 @@ const handleFilePickerCancel = () => {
     </div>
     <FilePickerModal
       v-if="showFilePicker"
+      :initial-path="project?.path"
       @files-selected="handleFilesSelected"
       @cancel="handleFilePickerCancel"
     />

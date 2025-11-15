@@ -1,10 +1,12 @@
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 from pathlib import Path
 from os import PathLike
 from platformdirs import user_data_dir
-from vidseq.models.registry import Base as RegistryBase
+from fastapi import Depends, HTTPException
+from vidseq.models.registry import Base as RegistryBase, Project
 from vidseq.models.project import Base as ProjectBase
 
 APP_DATA_DIR = Path(user_data_dir("vidseq"))
@@ -39,6 +41,18 @@ async def get_registry_db():
 
     async with RegistrySessionLocal() as session:
         yield session
+
+async def get_project_folder(
+    project_id: int,
+    db: AsyncSession = Depends(get_registry_db)
+) -> Path:
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    return Path(project.path)
 
 def get_project_db_path(project_folder: Path) -> Path:
     return project_folder / "vidseq.db"
@@ -77,3 +91,21 @@ def get_project_db(project_folder: PathLike):
             yield session
 
     return get_session
+
+async def get_project_session(
+    project_folder: Path = Depends(get_project_folder)
+):
+    project_key = str(project_folder)
+    
+    if project_key not in project_sessions:
+        db_path = get_project_db_path(project_folder)
+        if not db_path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Project database not found at {db_path}. Project may not be properly initialized."
+            )
+        await init_project_db(project_folder)
+    
+    session_factory = project_sessions[project_key]
+    async with session_factory() as session:
+        yield session
