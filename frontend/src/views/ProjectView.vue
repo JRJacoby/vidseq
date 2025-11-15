@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getProject, getVideos, addVideos, type Video, type Project } from '@/services/api'
+import { getProject, getVideos, addVideos, runSegmentation, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
+import SegmentationPromptModal from '@/components/SegmentationPromptModal.vue'
 
 const route = useRoute()
 const projectId = route.params.id
@@ -11,6 +12,8 @@ const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
 const isLoading = ref(false)
 const showFilePicker = ref(false)
+const selectedVideoIds = ref<number[]>([])
+const showSegmentationModal = ref(false)
 
 const loadProject = async () => {
   try {
@@ -54,6 +57,42 @@ const handleFilesSelected = async (selectedPaths: string[]) => {
 const handleFilePickerCancel = () => {
   showFilePicker.value = false
 }
+
+const handleVideoSelect = (videoId: number) => {
+  const index = selectedVideoIds.value.indexOf(videoId)
+  if (index === -1) {
+    selectedVideoIds.value.push(videoId)
+  } else {
+    selectedVideoIds.value.splice(index, 1)
+  }
+}
+
+const handleSelectAll = () => {
+  if (selectedVideoIds.value.length === videos.value.length) {
+    selectedVideoIds.value = []
+  } else {
+    selectedVideoIds.value = videos.value.map(v => v.id)
+  }
+}
+
+const handleRunSegmentation = () => {
+  showSegmentationModal.value = true
+}
+
+const handleSegmentationConfirm = async (prompt: string) => {
+  showSegmentationModal.value = false
+  
+  try {
+    await runSegmentation(Number(projectId), selectedVideoIds.value, prompt)
+    console.log('Segmentation started successfully')
+  } catch (error) {
+    console.error('Error starting segmentation:', error)
+  }
+}
+
+const handleSegmentationCancel = () => {
+  showSegmentationModal.value = false
+}
 </script>
 
 <template>
@@ -75,16 +114,36 @@ const handleFilePickerCancel = () => {
             <div v-else-if="videos.length === 0" class="empty-state">
               Add videos to get started.
             </div>
-            <div v-else class="videos-list">
-              <div v-for="video in videos" :key="video.id" class="video-item">
-                <p>ID: {{ video.id }}</p>
-                <p>Name: {{ video.name }}</p>
-                <p>Path: {{ video.path }}</p>
+            <div v-else class="videos-section">
+              <div class="videos-header">
+                <button class="select-all-button" @click="handleSelectAll">
+                  {{ selectedVideoIds.length === videos.length ? 'Deselect All' : 'Select All' }}
+                </button>
+              </div>
+              <div class="videos-list">
+                <div 
+                  v-for="video in videos" 
+                  :key="video.id" 
+                  class="video-item"
+                  :class="{ 'video-selected': selectedVideoIds.includes(video.id) }"
+                  @click="handleVideoSelect(video.id)"
+                >
+                  <p>ID: {{ video.id }}</p>
+                  <p>Name: {{ video.name }}</p>
+                  <p>Path: {{ video.path }}</p>
+                </div>
               </div>
             </div>
           </div>
           <aside class="sidebar">
             <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
+            <button 
+              class="sidebar-button" 
+              @click="handleRunSegmentation"
+              :disabled="selectedVideoIds.length === 0"
+            >
+              Run Automatic Preliminary Segmentation
+            </button>
           </aside>
         </div>
       </main>
@@ -94,6 +153,11 @@ const handleFilePickerCancel = () => {
       :initial-path="project?.path"
       @files-selected="handleFilesSelected"
       @cancel="handleFilePickerCancel"
+    />
+    <SegmentationPromptModal
+      v-if="showSegmentationModal"
+      @confirm="handleSegmentationConfirm"
+      @cancel="handleSegmentationCancel"
     />
   </div>
 </template>
@@ -157,5 +221,58 @@ const handleFilePickerCancel = () => {
   width: 200px;
   display: flex;
   flex-direction: column;
+  gap: 0.5rem;
+}
+
+.videos-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.videos-header {
+  padding: 0.5rem;
+  flex-shrink: 0;
+}
+
+.select-all-button {
+  padding: 0.5rem 1rem;
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.select-all-button:hover {
+  background-color: #e0e0e0;
+}
+
+.videos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow: auto;
+}
+
+.video-item {
+  padding: 1rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.video-item:hover {
+  background-color: #f5f5f5;
+}
+
+.video-selected {
+  background-color: #e3f2fd;
+  border-color: #4a90e2;
+}
+
+.sidebar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
