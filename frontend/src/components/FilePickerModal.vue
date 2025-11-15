@@ -12,6 +12,7 @@ const emit = defineEmits<{
 }>()
 
 const currentPath = ref(props.initialPath || '/')
+const pathInput = ref(props.initialPath || '/')
 const entries = ref<DirectoryEntry[]>([])
 const selectedPaths = ref<string[]>([])
 const isLoading = ref(false)
@@ -21,10 +22,17 @@ const loadDirectory = async (path: string) => {
   try {
     entries.value = await getDirectoryListing(path)
     currentPath.value = path
+    pathInput.value = path
   } catch (error) {
     console.error('Error loading directory:', error)
   } finally {
     isLoading.value = false
+  }
+}
+
+const handlePathInputEnter = () => {
+  if (pathInput.value !== currentPath.value) {
+    loadDirectory(pathInput.value)
   }
 }
 
@@ -56,6 +64,12 @@ const handleEntrySelect = (path: string) => {
   }
 }
 
+const handleEntryDoubleClick = (entry: DirectoryEntry) => {
+  if (entry.isDirectory) {
+    loadDirectory(entry.path)
+  }
+}
+
 const handleConfirm = () => {
   emit('files-selected', selectedPaths.value)
 }
@@ -83,8 +97,14 @@ const handleCancel = () => {
           >
             ↑
           </button>
-          <span class="path-label">Current path:</span>
-          <span class="path-value">{{ currentPath }}</span>
+          <span class="path-label">Path:</span>
+          <input 
+            v-model="pathInput"
+            @keyup.enter="handlePathInputEnter"
+            class="path-input"
+            type="text"
+            placeholder="Enter path..."
+          />
         </div>
         
         <div class="directory-listing">
@@ -101,21 +121,10 @@ const handleCancel = () => {
               class="entry-item"
               :class="{ 'entry-selected': selectedPaths.includes(entry.path) }"
               @click="handleEntrySelect(entry.path)"
+              @dblclick="handleEntryDoubleClick(entry)"
             >
-              <input
-                type="checkbox"
-                :checked="selectedPaths.includes(entry.path)"
-                @click.stop="handleEntrySelect(entry.path)"
-              />
               <span class="entry-icon">{{ entry.isDirectory ? '📁' : '📄' }}</span>
               <span class="entry-name">{{ entry.name }}</span>
-              <button
-                v-if="entry.isDirectory"
-                class="entry-enter"
-                @click.stop="handlePathClick(entry.path)"
-              >
-                Enter
-              </button>
             </div>
           </div>
         </div>
@@ -229,6 +238,22 @@ const handleCancel = () => {
 
 .path-label {
   font-weight: bold;
+  flex-shrink: 0;
+}
+
+.path-input {
+  flex: 1;
+  font-family: monospace;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.path-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.1);
 }
 
 .path-value {
