@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getProject, getVideos, addVideos, runSegmentation, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import SegmentationPromptModal from '@/components/SegmentationPromptModal.vue'
+import AppNavbar from '@/components/AppNavbar.vue'
+import { useProjectStore } from '@/stores/project'
 
 const route = useRoute()
-const projectId = route.params.id
+const projectStore = useProjectStore()
 
 const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
@@ -15,18 +17,30 @@ const showFilePicker = ref(false)
 const selectedVideoIds = ref<number[]>([])
 const showSegmentationModal = ref(false)
 
+watch(
+  () => route.params.id,
+  (newId) => {
+    if (newId && Number(newId) !== projectStore.currentProjectId) {
+      projectStore.setCurrentProject(Number(newId))
+    }
+  },
+  { immediate: true }
+)
+
 const loadProject = async () => {
+  if (!projectStore.currentProjectId) return
   try {
-    project.value = await getProject(Number(projectId))
+    project.value = await getProject(projectStore.currentProjectId)
   } catch (error) {
     console.error('Error loading project:', error)
   }
 }
 
 const loadVideos = async () => {
+  if (!projectStore.currentProjectId) return
   isLoading.value = true
   try {
-    videos.value = await getVideos(Number(projectId))
+    videos.value = await getVideos(projectStore.currentProjectId)
   } catch (error) {
     console.error('Error loading videos:', error)
   } finally {
@@ -44,10 +58,11 @@ const handleAddVideos = () => {
 }
 
 const handleFilesSelected = async (selectedPaths: string[]) => {
+  if (!projectStore.currentProjectId) return
   showFilePicker.value = false
   
   try {
-    await addVideos(Number(projectId), selectedPaths)
+    await addVideos(projectStore.currentProjectId, selectedPaths)
     await loadVideos()
   } catch (error) {
     console.error('Error adding videos:', error)
@@ -80,10 +95,11 @@ const handleRunSegmentation = () => {
 }
 
 const handleSegmentationConfirm = async (prompt: string) => {
+  if (!projectStore.currentProjectId) return
   showSegmentationModal.value = false
   
   try {
-    await runSegmentation(Number(projectId), selectedVideoIds.value, prompt)
+    await runSegmentation(projectStore.currentProjectId, selectedVideoIds.value, prompt)
     console.log('Segmentation started successfully')
   } catch (error) {
     console.error('Error starting segmentation:', error)
@@ -101,9 +117,7 @@ const handleSegmentationCancel = () => {
       <h1 class="title-bar-title">VidSeq - Animal Behavior Modeling from Raw Video</h1>
     </header>
     <div class="page-content">
-      <nav class="navbar">
-        <button class="navbar-button">Video Pipeline</button>
-      </nav>
+      <AppNavbar />
       <main class="main-screen">
         <h3 class="screen-title">Video Pipeline</h3>
         <div class="main-content-area">
@@ -182,13 +196,6 @@ const handleSegmentationCancel = () => {
   display: flex;
   flex: 1;
   min-height: 0;
-}
-
-.navbar {
-  flex-shrink: 0;
-  width: 200px;
-  display: flex;
-  flex-direction: column;
 }
 
 .main-screen {

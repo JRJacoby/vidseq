@@ -98,3 +98,22 @@ export async function runSegmentation(projectId: number, videoIds: number[], pro
         throw new Error(error.detail || 'Failed to start segmentation')
     }
 }
+
+export interface Job {
+    id: number
+    type: string
+    status: string
+    project_id: number
+    created_at: string
+    updated_at: string
+    progress?: number
+    error?: string
+}
+
+export async function getJobs(): Promise<Job[]> {
+    const response = await fetch(`${API_BASE}/jobs`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch jobs: ${response.statusText}`)
+    }
+    return response.json()
+}

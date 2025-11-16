@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import { type Project } from '@/services/api'
+import { useProjectStore } from '@/stores/project'
+import { useRouter } from 'vue-router'
 
 defineProps<{
   projects: Project[]
   isLoading: boolean
 }>()
+
+const projectStore = useProjectStore()
+const router = useRouter()
+
+const openProject = (project: Project) => {
+  projectStore.setCurrentProject(project.id)
+  router.push(`/project/${project.id}`)
+}
 </script>
 
 <template>
@@ -23,6 +33,7 @@ defineProps<{
         v-for="project in projects"
         :key="project.id"
         class="project-card"
+        @click="openProject(project)"
       >
         {{ project.name }}
         {{ project.path }}
