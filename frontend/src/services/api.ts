@@ -45,6 +45,7 @@ export interface Video {
     id: number
     name: string
     path: string
+    has_segmentation: boolean
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {

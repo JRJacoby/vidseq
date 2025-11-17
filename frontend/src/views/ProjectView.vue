@@ -145,6 +145,7 @@ const handleSegmentationCancel = () => {
                   <p>ID: {{ video.id }}</p>
                   <p>Name: {{ video.name }}</p>
                   <p>Path: {{ video.path }}</p>
+                  <p>Has Segmentation: {{ video.has_segmentation }}</p>
                 </div>
               </div>
             </div>
