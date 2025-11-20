@@ -73,3 +73,4 @@ async def run_segmentation(
         await registry_db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start segmentation: {str(e)}")
 
+
