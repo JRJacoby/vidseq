@@ -105,10 +105,10 @@ export interface Job {
     type: string
     status: string
     project_id: number
+    details: object
+    log_path: string
     created_at: string
     updated_at: string
-    progress?: number
-    error?: string
 }
 
 export async function getJobs(): Promise<Job[]> {

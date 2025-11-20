@@ -6,7 +6,7 @@ from pathlib import Path
 from os import PathLike
 from platformdirs import user_data_dir
 from fastapi import Depends, HTTPException
-from vidseq.models.registry import Base as RegistryBase, Project
+from vidseq.models.registry import Base as RegistryBase, Project, Job
 from vidseq.models.project import Base as ProjectBase
 
 APP_DATA_DIR = Path(user_data_dir("vidseq"))
