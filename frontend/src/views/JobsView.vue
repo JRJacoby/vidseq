@@ -60,8 +60,10 @@ const getStatusClass = (status: string) => {
                 <p><strong>Type:</strong> {{ job.type }}</p>
                 <p><strong>Project ID:</strong> {{ job.project_id }}</p>
                 <p><strong>Created:</strong> {{ new Date(job.created_at).toLocaleString() }}</p>
-                <p v-if="job.progress !== undefined"><strong>Progress:</strong> {{ job.progress }}%</p>
-                <p v-if="job.error" class="job-error"><strong>Error:</strong> {{ job.error }}</p>
+                <div class="job-details-json">
+                  <strong>Details:</strong>
+                  <pre>{{ JSON.stringify(job.details, null, 2) }}</pre>
+                </div>
               </div>
             </div>
           </div>
@@ -186,12 +188,17 @@ const getStatusClass = (status: string) => {
   font-size: 0.9rem;
 }
 
-.job-error {
-  color: #d32f2f;
-  background-color: #ffebee;
+.job-details-json {
+  margin-top: 0.5rem;
+}
+
+.job-details-json pre {
+  background-color: #f5f5f5;
   padding: 0.5rem;
   border-radius: 4px;
-  margin-top: 0.5rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0 0;
 }
 </style>
 
