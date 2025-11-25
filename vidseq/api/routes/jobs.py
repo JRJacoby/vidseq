@@ -24,7 +24,7 @@ async def get_jobs(
 @router.get("/jobs/stream")
 async def stream_jobs():
     async def event_generator():
-        last_states = {}
+        last_states = None  # Use None to ensure first emission
         
         while True:
             async with database.RegistrySessionLocal() as session:
