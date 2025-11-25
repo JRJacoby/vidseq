@@ -1,24 +1,34 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getJobs, type Job } from '@/services/api'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { type Job, API_BASE } from '@/services/api'
 import AppNavbar from '@/components/AppNavbar.vue'
 
 const jobs = ref<Job[]>([])
-const isLoading = ref(false)
+const isLoading = ref(true)
+let eventSource: EventSource | null = null
 
-const loadJobs = async () => {
-  isLoading.value = true
-  try {
-    jobs.value = await getJobs()
-  } catch (error) {
-    console.error('Error loading jobs:', error)
-  } finally {
+const connectToJobsStream = () => {
+  eventSource = new EventSource(`${API_BASE}/jobs/stream`)
+  
+  eventSource.onmessage = (event) => {
+    jobs.value = JSON.parse(event.data)
+    isLoading.value = false
+  }
+  
+  eventSource.onerror = (error) => {
+    console.error('SSE error:', error)
     isLoading.value = false
   }
 }
 
 onMounted(() => {
-  loadJobs()
+  connectToJobsStream()
+})
+
+onUnmounted(() => {
+  if (eventSource) {
+    eventSource.close()
+  }
 })
 
 const getStatusClass = (status: string) => {
@@ -60,8 +70,6 @@ const getStatusClass = (status: string) => {
                 <p><strong>Type:</strong> {{ job.type }}</p>
                 <p><strong>Project ID:</strong> {{ job.project_id }}</p>
                 <p><strong>Created:</strong> {{ new Date(job.created_at).toLocaleString() }}</p>
-                <p v-if="job.progress !== undefined"><strong>Progress:</strong> {{ job.progress }}%</p>
-                <p v-if="job.error" class="job-error"><strong>Error:</strong> {{ job.error }}</p>
               </div>
             </div>
           </div>

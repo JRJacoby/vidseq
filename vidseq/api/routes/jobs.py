@@ -1,4 +1,5 @@
 import asyncio
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +8,7 @@ from pathlib import Path
 from vidseq.database import get_registry_db
 from vidseq.models.registry import Job
 from vidseq.schemas.job import JobResponse
+from vidseq import database
 
 router = APIRouter()
 
@@ -18,6 +20,44 @@ async def get_jobs(
         select(Job).order_by(Job.created_at.desc())
     )
     return result.scalars().all()
+
+@router.get("/jobs/stream")
+async def stream_jobs():
+    async def event_generator():
+        last_states = {}
+        
+        while True:
+            async with database.RegistrySessionLocal() as session:
+                result = await session.execute(
+                    select(Job).order_by(Job.created_at.desc())
+                )
+                jobs = result.scalars().all()
+                
+                current_states = {job.id: job.status for job in jobs}
+                
+                if current_states != last_states:
+                    jobs_data = [
+                        {
+                            "id": job.id,
+                            "type": job.type,
+                            "status": job.status,
+                            "project_id": job.project_id,
+                            "details": job.details,
+                            "log_path": job.log_path,
+                            "created_at": job.created_at.isoformat(),
+                            "updated_at": job.updated_at.isoformat(),
+                        }
+                        for job in jobs
+                    ]
+                    yield f"data: {json.dumps(jobs_data)}\n\n"
+                    last_states = current_states
+            
+            await asyncio.sleep(1)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream"
+    )
 
 @router.get("/jobs/{job_id}/logs/stream")
 async def stream_logs(

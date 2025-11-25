@@ -23,7 +23,7 @@ async def run_segmentation(
     created_jobs = []
     
     try:
-        async for project_session in get_project_session(project_folder)():
+        async for project_session in get_project_session(project_folder):
             for video_id in request.video_ids:
                 result = await project_session.execute(
                     select(Video).where(Video.id == video_id)

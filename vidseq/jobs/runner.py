@@ -2,10 +2,10 @@ import asyncio
 from pathlib import Path
 from sqlalchemy import select
 from vidseq.models.registry import Job
-from vidseq.database import RegistrySessionLocal
+from vidseq import database
 
 async def run_segmentation_job(job_id: int, project_id: int):
-    async with RegistrySessionLocal() as session:
+    async with database.RegistrySessionLocal() as session:
         result = await session.execute(select(Job).where(Job.id == job_id))
         job = result.scalar_one()
         

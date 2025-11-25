@@ -1,4 +1,4 @@
-const API_BASE = '/api'
+export const API_BASE = '/api'
 
 export interface Project {
     id: number
@@ -39,6 +39,17 @@ export async function createProject(name: string, path: string): Promise<Project
     }
     
     return response.json()
+}
+
+export async function deleteProject(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}`, {
+        method: 'DELETE',
+    })
+    
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to delete project')
+    }
 }
 
 export interface Video {

@@ -1,23 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getProjects, type Project } from '@/services/api'
+import { ref } from 'vue'
 import RecentProjects from '@/components/RecentProjects.vue'
 import NewProject from '@/components/NewProject.vue'
 
-const recentProjects = ref<Project[]>([])
-const isLoading = ref(false)
 const currentView = ref<'recent-projects' | 'new-project'>('recent-projects')
-
-onMounted(async () => {
-  isLoading.value = true
-  try {
-    recentProjects.value = await getProjects()
-  } catch (error) {
-    console.error('Error loading projects:', error)
-  } finally {
-    isLoading.value = false
-  }
-})
 </script>
 
 <template>
@@ -31,11 +17,7 @@ onMounted(async () => {
         <button class="sidebar-button-secondary">Open Project</button>
       </aside>
       <main class="main-screen">
-        <RecentProjects 
-          v-if="currentView === 'recent-projects'"
-          :projects="recentProjects"
-          :is-loading="isLoading"
-        />
+        <RecentProjects v-if="currentView === 'recent-projects'" />
         <NewProject v-else-if="currentView === 'new-project'" />
       </main>
     </div>

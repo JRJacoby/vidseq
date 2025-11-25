@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pathlib import Path
-from vidseq.database import get_registry_db, init_project_db
+import shutil
+from vidseq.database import get_registry_db, init_project_db, project_engines, project_sessions
 from vidseq.models.registry import Project
 from vidseq.schemas.project import ProjectCreate, ProjectResponse
 
@@ -65,3 +66,32 @@ async def create_project(
     await db.refresh(project)
     
     return project
+
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(
+    project_id: int,
+    db: AsyncSession = Depends(get_registry_db)
+):
+    result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    
+    project_path = project.path
+    project_key = str(project_path)
+    
+    if project_key in project_engines:
+        engine = project_engines.pop(project_key)
+        await engine.dispose()
+    
+    if project_key in project_sessions:
+        project_sessions.pop(project_key)
+    
+    await db.delete(project)
+    await db.commit()
+    
+    project_dir = Path(project_path)
+    if project_dir.exists():
+        shutil.rmtree(project_dir)
