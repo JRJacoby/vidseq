@@ -15,6 +15,9 @@ const emit = defineEmits<{
 
 const isDragging = ref(false)
 const isHovering = ref(false)
+const isPanning = ref(false)
+const panStartX = ref(0)
+const panStartViewStart = ref(0)
 const timelineRef = ref<HTMLElement | null>(null)
 const dragTime = ref<number | null>(null)
 
@@ -94,11 +97,31 @@ const onMouseDown = (event: MouseEvent) => {
 const onMouseMove = (event: MouseEvent) => {
   if (isDragging.value) {
     seekFromEvent(event)
+  } else if (isPanning.value && timelineRef.value) {
+    const rect = timelineRef.value.getBoundingClientRect()
+    const deltaX = event.clientX - panStartX.value
+    const deltaTime = (deltaX / rect.width) * visibleDuration.value
+    
+    let newStart = panStartViewStart.value - deltaTime
+    let newEnd = newStart + visibleDuration.value
+    
+    if (newStart < 0) {
+      newStart = 0
+      newEnd = visibleDuration.value
+    }
+    if (newEnd > props.duration) {
+      newEnd = props.duration
+      newStart = props.duration - visibleDuration.value
+    }
+    
+    viewStart.value = newStart
+    viewEnd.value = newEnd
   }
 }
 
 const onMouseUp = () => {
   isDragging.value = false
+  isPanning.value = false
   dragTime.value = null
 }
 
@@ -124,6 +147,12 @@ const onMouseEnter = () => {
 
 const onMouseLeave = () => {
   isHovering.value = false
+}
+
+const onTicksMouseDown = (event: MouseEvent) => {
+  isPanning.value = true
+  panStartX.value = event.clientX
+  panStartViewStart.value = viewStart.value
 }
 
 const onKeyDown = (event: KeyboardEvent) => {
@@ -194,7 +223,7 @@ const onWheel = (event: WheelEvent) => {
         ></div>
       </div>
       
-      <div class="timeline-ticks">
+      <div class="timeline-ticks" @mousedown="onTicksMouseDown" @wheel="onWheel">
         <span 
           v-for="tick in ticks" 
           :key="tick.time" 
@@ -288,6 +317,11 @@ const onWheel = (event: WheelEvent) => {
   font-size: 11px;
   color: #888;
   user-select: none;
+  cursor: grab;
+}
+
+.timeline-ticks:active {
+  cursor: grabbing;
 }
 
 .tick-label {
