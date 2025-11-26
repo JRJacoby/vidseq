@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
 import mimetypes
+import cv2
 from vidseq.database import get_project_session
 from vidseq.models.project import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
@@ -18,6 +19,16 @@ async def get_videos(
         select(Video).order_by(Video.id)
     )
     return result.scalars().all()
+
+def get_video_fps(path: Path) -> float:
+    cap = cv2.VideoCapture(str(path))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            raise HTTPException(status_code=400, detail=f"Could not read FPS from video: {path}")
+        return fps
+    finally:
+        cap.release()
 
 @router.post("/projects/{project_id}/videos", response_model=list[VideoResponse], status_code=201)
 async def add_videos(
@@ -35,9 +46,12 @@ async def add_videos(
         if not path.is_file():
             raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
         
+        fps = get_video_fps(path)
+        
         video = Video(
             name=path.name,
-            path=str(path)
+            path=str(path),
+            fps=fps
         )
         session.add(video)
         added_videos.append(video)

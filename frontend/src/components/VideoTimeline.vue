@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps<{
   currentTime: number
   duration: number
   isPlaying: boolean
+  fps: number
 }>()
 
 const emit = defineEmits<{
@@ -13,44 +14,63 @@ const emit = defineEmits<{
 }>()
 
 const isDragging = ref(false)
+const isHovering = ref(false)
 const timelineRef = ref<HTMLElement | null>(null)
 const dragTime = ref<number | null>(null)
 
+const frameDuration = computed(() => 1 / props.fps)
+
+const viewStart = ref(0)
+const viewEnd = ref(0)
+const MIN_VISIBLE_DURATION = 1
+
+watch(() => props.duration, (d) => {
+  viewStart.value = 0
+  viewEnd.value = d
+}, { immediate: true })
+
+const visibleDuration = computed(() => viewEnd.value - viewStart.value)
+
 const displayProgress = computed(() => {
   const time = dragTime.value !== null ? dragTime.value : props.currentTime
-  return props.duration > 0 ? (time / props.duration) * 100 : 0
+  if (visibleDuration.value <= 0) return 0
+  return ((time - viewStart.value) / visibleDuration.value) * 100
 })
 
 const formatTime = (seconds: number) => {
-  const m = Math.floor(seconds / 60)
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
   const s = Math.floor(seconds % 60)
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  }
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+const NICE_INTERVALS = [
+  1, 2, 5, 10, 15, 30,
+  60, 120, 300, 600, 900, 1800,
+  3600, 7200, 14400, 21600,
+  43200, 86400
+]
+
+const getNiceInterval = (duration: number, targetTicks: number = 8) => {
+  const rawInterval = duration / targetTicks
+  return NICE_INTERVALS.find(i => i >= rawInterval) ?? NICE_INTERVALS.at(-1)!
+}
+
 const ticks = computed(() => {
-  if (props.duration === 0) return []
+  if (visibleDuration.value === 0) return []
   
-  let interval: number
-  if (props.duration > 600) interval = 120
-  else if (props.duration > 300) interval = 60
-  else if (props.duration > 120) interval = 30
-  else if (props.duration > 60) interval = 15
-  else if (props.duration > 30) interval = 10
-  else interval = 5
+  const interval = getNiceInterval(visibleDuration.value)
+  const firstTick = Math.ceil(viewStart.value / interval) * interval
   
   const result = []
-  for (let t = 0; t <= props.duration; t += interval) {
+  for (let t = firstTick; t <= viewEnd.value; t += interval) {
     result.push({
       time: t,
-      percent: (t / props.duration) * 100,
+      percent: ((t - viewStart.value) / visibleDuration.value) * 100,
       label: formatTime(t)
-    })
-  }
-  if (result[result.length - 1]?.time !== Math.floor(props.duration)) {
-    result.push({
-      time: props.duration,
-      percent: 100,
-      label: formatTime(props.duration)
     })
   }
   return result
@@ -61,7 +81,7 @@ const seekFromEvent = (event: MouseEvent) => {
   const rect = timelineRef.value.getBoundingClientRect()
   const clickX = event.clientX - rect.left
   const percent = Math.max(0, Math.min(1, clickX / rect.width))
-  const time = percent * props.duration
+  const time = viewStart.value + percent * visibleDuration.value
   dragTime.value = time
   emit('seek', time)
 }
@@ -85,15 +105,69 @@ const onMouseUp = () => {
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('keydown', onKeyDown)
 })
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('keydown', onKeyDown)
 })
 
 const togglePlay = () => {
   emit('toggle-play')
+}
+
+const onMouseEnter = () => {
+  isHovering.value = true
+}
+
+const onMouseLeave = () => {
+  isHovering.value = false
+}
+
+const onKeyDown = (event: KeyboardEvent) => {
+  if (!isHovering.value) return
+  
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    const newTime = Math.max(0, props.currentTime - frameDuration.value)
+    emit('seek', newTime)
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    const newTime = Math.min(props.duration, props.currentTime + frameDuration.value)
+    emit('seek', newTime)
+  }
+}
+
+const onWheel = (event: WheelEvent) => {
+  event.preventDefault()
+  if (!timelineRef.value) return
+  
+  const rect = timelineRef.value.getBoundingClientRect()
+  const mouseX = event.clientX - rect.left
+  const mousePercent = mouseX / rect.width
+  
+  const timeAtMouse = viewStart.value + mousePercent * visibleDuration.value
+  
+  const zoomFactor = event.deltaY > 0 ? 1.25 : 0.8
+  let newDuration = visibleDuration.value * zoomFactor
+  newDuration = Math.max(MIN_VISIBLE_DURATION, Math.min(props.duration, newDuration))
+  
+  let newStart = timeAtMouse - mousePercent * newDuration
+  let newEnd = timeAtMouse + (1 - mousePercent) * newDuration
+  
+  if (newStart < 0) {
+    newStart = 0
+    newEnd = newDuration
+  }
+  if (newEnd > props.duration) {
+    newEnd = props.duration
+    newStart = props.duration - newDuration
+  }
+  
+  viewStart.value = newStart
+  viewEnd.value = newEnd
 }
 </script>
 
@@ -105,9 +179,19 @@ const togglePlay = () => {
     </button>
     
     <div class="timeline-wrapper">
-      <div ref="timelineRef" class="timeline-track" @mousedown="onMouseDown">
-        <div class="timeline-progress" :style="{ width: displayProgress + '%' }"></div>
-        <div class="timeline-playhead" :style="{ left: displayProgress + '%' }"></div>
+      <div 
+        ref="timelineRef" 
+        class="timeline-track" 
+        @mousedown="onMouseDown" 
+        @wheel="onWheel"
+        @mouseenter="onMouseEnter"
+        @mouseleave="onMouseLeave"
+      >
+        <div 
+          v-if="displayProgress >= 0 && displayProgress <= 100" 
+          class="timeline-playhead" 
+          :style="{ left: displayProgress + '%' }"
+        ></div>
       </div>
       
       <div class="timeline-ticks">
@@ -179,28 +263,18 @@ const togglePlay = () => {
 
 .timeline-track {
   position: relative;
-  height: 24px;
+  height: 48px;
   background-color: #333;
   border-radius: 4px;
   cursor: pointer;
   overflow: visible;
 }
 
-.timeline-progress {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background-color: #c0392b;
-  border-radius: 4px 0 0 4px;
-  pointer-events: none;
-}
-
 .timeline-playhead {
   position: absolute;
   top: -3px;
   width: 4px;
-  height: 30px;
+  height: 54px;
   background-color: #e74c3c;
   border-radius: 2px;
   transform: translateX(-50%);

@@ -113,6 +113,7 @@ onMounted(() => {
             :current-time="currentTime"
             :duration="duration"
             :is-playing="isPlaying"
+            :fps="video!.fps"
             @seek="handleSeek"
             @toggle-play="handleTogglePlay"
           />
@@ -185,7 +186,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  max-width: 100%;
+  width: 100%;
   max-height: 100%;
   min-height: 0;
   gap: 8px;
@@ -193,7 +194,7 @@ onMounted(() => {
 
 .video-player {
   max-width: 100%;
-  max-height: calc(100% - 80px);
+  max-height: calc(100% - 104px);
   width: auto;
   height: auto;
   flex-shrink: 1;

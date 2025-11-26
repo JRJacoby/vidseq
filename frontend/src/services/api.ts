@@ -56,6 +56,7 @@ export interface Video {
     id: number
     name: string
     path: string
+    fps: number
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {
