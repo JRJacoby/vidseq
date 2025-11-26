@@ -56,7 +56,6 @@ export interface Video {
     id: number
     name: string
     path: string
-    has_segmentation: boolean
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {
@@ -94,21 +93,6 @@ export async function getDirectoryListing(path: string): Promise<DirectoryEntry[
         throw new Error(`Failed to fetch directory listing: ${response.statusText}`)
     }
     return response.json()
-}
-
-export async function runSegmentation(projectId: number, videoIds: number[], prompt: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/segmentation`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ video_ids: videoIds, prompt }),
-    })
-    
-    if (!response.ok) {
-        const error = await response.json().catch(() => ({}))
-        throw new Error(error.detail || 'Failed to start segmentation')
-    }
 }
 
 export interface Job {

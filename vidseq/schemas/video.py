@@ -7,7 +7,6 @@ class VideoResponse(BaseModel):
     id: int
     name: str
     path: str
-    has_segmentation: bool
 
     class Config:
         from_attributes = True

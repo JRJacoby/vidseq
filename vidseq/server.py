@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from vidseq import __version__
-from vidseq.api.routes import projects, videos, filesystem, jobs, segmentation
+from vidseq.api.routes import projects, videos, filesystem, jobs
 from vidseq.database import init_registry_db, registry_engine, project_engines
 
 @asynccontextmanager
@@ -35,4 +35,3 @@ app.include_router(projects.router, prefix='/api', tags=['projects'])
 app.include_router(videos.router, prefix='/api', tags=['videos'])
 app.include_router(filesystem.router, prefix='/api', tags=['filesystem'])
 app.include_router(jobs.router, prefix='/api', tags=['jobs'])
-app.include_router(segmentation.router, prefix='/api', tags=['segmentation'])
