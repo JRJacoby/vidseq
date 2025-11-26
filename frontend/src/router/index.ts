@@ -3,6 +3,7 @@ import HomeView from '../views/HomeView.vue'
 import ProjectView from '../views/ProjectView.vue'
 import VideoPipeline from '../components/VideoPipeline.vue'
 import JobsList from '../components/JobsList.vue'
+import VideoDetail from '../components/VideoDetail.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -25,6 +26,11 @@ const router = createRouter({
           path: 'jobs',
           name: 'jobs',
           component: JobsList
+        },
+        {
+          path: 'video/:videoId',
+          name: 'video',
+          component: VideoDetail
         }
       ]
     }

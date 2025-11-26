@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { getProject, getVideos, addVideos, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 
+const router = useRouter()
 const projectStore = useProjectStore()
 
 const project = ref<Project | null>(null)
@@ -56,6 +58,12 @@ const handleFilesSelected = async (selectedPaths: string[]) => {
 const handleFilePickerCancel = () => {
   showFilePicker.value = false
 }
+
+const handleVideoDoubleClick = (videoId: number) => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/video/${videoId}`)
+  }
+}
 </script>
 
 <template>
@@ -75,6 +83,7 @@ const handleFilePickerCancel = () => {
               v-for="video in videos" 
               :key="video.id" 
               class="video-item"
+              @dblclick="handleVideoDoubleClick(video.id)"
             >
               <p>ID: {{ video.id }}</p>
               <p>Name: {{ video.name }}</p>
@@ -174,10 +183,16 @@ const handleFilePickerCancel = () => {
   padding: 1rem;
   border: 1px solid #e0e0e0;
   border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
 }
 
 .video-item:hover {
   background-color: #f5f5f5;
+}
+
+.video-item:active {
+  background-color: #e8e8e8;
 }
 
 .video-item p {

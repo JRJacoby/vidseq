@@ -81,6 +81,18 @@ export async function addVideos(projectId: number, paths: string[]): Promise<voi
     }
 }
 
+export async function getVideo(projectId: number, videoId: number): Promise<Video> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos/${videoId}`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch video: ${response.statusText}`)
+    }
+    return response.json()
+}
+
+export function getVideoStreamUrl(projectId: number, videoId: number): string {
+    return `${API_BASE}/projects/${projectId}/videos/${videoId}/stream`
+}
+
 export interface DirectoryEntry {
     name: string
     path: string
