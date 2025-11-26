@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
+import VideoTimeline from './VideoTimeline.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -9,6 +10,11 @@ const router = useRouter()
 const video = ref<Video | null>(null)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+
+const videoRef = ref<HTMLVideoElement | null>(null)
+const currentTime = ref(0)
+const duration = ref(0)
+const isPlaying = ref(false)
 
 const projectId = computed(() => Number(route.params.id))
 const videoId = computed(() => Number(route.params.videoId))
@@ -35,6 +41,42 @@ const handleBack = () => {
   router.push(`/project/${projectId.value}`)
 }
 
+const onTimeUpdate = () => {
+  if (videoRef.value) {
+    currentTime.value = videoRef.value.currentTime
+  }
+}
+
+const onLoadedMetadata = () => {
+  if (videoRef.value) {
+    duration.value = videoRef.value.duration
+  }
+}
+
+const onPlay = () => {
+  isPlaying.value = true
+}
+
+const onPause = () => {
+  isPlaying.value = false
+}
+
+const handleSeek = (time: number) => {
+  if (videoRef.value) {
+    videoRef.value.currentTime = time
+  }
+}
+
+const handleTogglePlay = () => {
+  if (videoRef.value) {
+    if (isPlaying.value) {
+      videoRef.value.pause()
+    } else {
+      videoRef.value.play()
+    }
+  }
+}
+
 onMounted(() => {
   loadVideo()
 })
@@ -55,14 +97,26 @@ onMounted(() => {
         <div v-else-if="error" class="error-state">
           {{ error }}
         </div>
-        <video 
-          v-else
-          class="video-player"
-          controls
-          :src="videoStreamUrl"
-        >
-          Your browser does not support the video tag.
-        </video>
+        <div v-else class="video-with-timeline">
+          <video 
+            ref="videoRef"
+            class="video-player"
+            :src="videoStreamUrl"
+            @timeupdate="onTimeUpdate"
+            @loadedmetadata="onLoadedMetadata"
+            @play="onPlay"
+            @pause="onPause"
+          >
+            Your browser does not support the video tag.
+          </video>
+          <VideoTimeline
+            :current-time="currentTime"
+            :duration="duration"
+            :is-playing="isPlaying"
+            @seek="handleSeek"
+            @toggle-play="handleTogglePlay"
+          />
+        </div>
       </div>
     </div>
     
@@ -127,11 +181,23 @@ onMounted(() => {
   padding: 1rem;
 }
 
-.video-player {
+.video-with-timeline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   max-width: 100%;
   max-height: 100%;
+  min-height: 0;
+  gap: 8px;
+}
+
+.video-player {
+  max-width: 100%;
+  max-height: calc(100% - 80px);
   width: auto;
   height: auto;
+  flex-shrink: 1;
+  min-height: 0;
 }
 
 .loading-state,
@@ -165,4 +231,3 @@ onMounted(() => {
   padding: 1rem;
 }
 </style>
-
