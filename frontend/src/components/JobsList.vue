@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { type Job, API_BASE } from '@/services/api'
-import AppNavbar from '@/components/AppNavbar.vue'
 
 const jobs = ref<Job[]>([])
 const isLoading = ref(true)
@@ -43,65 +42,36 @@ const getStatusClass = (status: string) => {
 </script>
 
 <template>
-  <div class="page-container">
-    <header class="title-bar">
-      <h1 class="title-bar-title">VidSeq - Animal Behavior Modeling from Raw Video</h1>
-    </header>
-    <div class="page-content">
-      <AppNavbar />
-      <main class="main-screen">
-        <h3 class="screen-title">Jobs</h3>
-        <div class="main-content">
-          <div v-if="isLoading" class="loading-state">
-            Loading jobs...
+  <div class="jobs-container">
+    <h3 class="screen-title">Jobs</h3>
+    <div class="jobs-content">
+      <div v-if="isLoading" class="loading-state">
+        Loading jobs...
+      </div>
+      <div v-else-if="jobs.length === 0" class="empty-state">
+        No jobs found.
+      </div>
+      <div v-else class="jobs-list">
+        <div v-for="job in jobs" :key="job.id" class="job-item">
+          <div class="job-header">
+            <span class="job-id">Job #{{ job.id }}</span>
+            <span class="job-status" :class="getStatusClass(job.status)">
+              {{ job.status }}
+            </span>
           </div>
-          <div v-else-if="jobs.length === 0" class="empty-state">
-            No jobs found.
-          </div>
-          <div v-else class="jobs-list">
-            <div v-for="job in jobs" :key="job.id" class="job-item">
-              <div class="job-header">
-                <span class="job-id">Job #{{ job.id }}</span>
-                <span class="job-status" :class="getStatusClass(job.status)">
-                  {{ job.status }}
-                </span>
-              </div>
-              <div class="job-details">
-                <p><strong>Type:</strong> {{ job.type }}</p>
-                <p><strong>Project ID:</strong> {{ job.project_id }}</p>
-                <p><strong>Created:</strong> {{ new Date(job.created_at).toLocaleString() }}</p>
-              </div>
-            </div>
+          <div class="job-details">
+            <p><strong>Type:</strong> {{ job.type }}</p>
+            <p><strong>Project ID:</strong> {{ job.project_id }}</p>
+            <p><strong>Created:</strong> {{ new Date(job.created_at).toLocaleString() }}</p>
           </div>
         </div>
-      </main>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.page-container {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  width: 100vw;
-}
-
-.title-bar {
-  flex-shrink: 0;
-}
-
-.title-bar-title {
-  margin: 0;
-}
-
-.page-content {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.main-screen {
+.jobs-container {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -115,7 +85,7 @@ const getStatusClass = (status: string) => {
   border-bottom: 1px solid #e0e0e0;
 }
 
-.main-content {
+.jobs-content {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -192,14 +162,6 @@ const getStatusClass = (status: string) => {
 .job-details p {
   margin: 0;
   font-size: 0.9rem;
-}
-
-.job-error {
-  color: #d32f2f;
-  background-color: #ffebee;
-  padding: 0.5rem;
-  border-radius: 4px;
-  margin-top: 0.5rem;
 }
 </style>
 

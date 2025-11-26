@@ -49,13 +49,22 @@ class LazyVideoFrameLoader:
     def __len__(self) -> int:
         return self._num_frames
     
-    def __getitem__(self, frame_idx: int) -> torch.Tensor:
+    def __getitem__(self, frame_idx: int | torch.Tensor) -> torch.Tensor:
         """
-        Load and preprocess a single frame.
+        Load and preprocess frame(s).
         
+        Args:
+            frame_idx: Single int or tensor of indices
+            
         Returns:
-            Tensor of shape (3, IMAGE_SIZE, IMAGE_SIZE), normalized and on device
+            Single frame: (3, IMAGE_SIZE, IMAGE_SIZE)
+            Multiple frames: (N, 3, IMAGE_SIZE, IMAGE_SIZE)
         """
+        if isinstance(frame_idx, torch.Tensor):
+            if frame_idx.numel() == 1:
+                return self._load_and_preprocess_frame(frame_idx.item())
+            return torch.stack([self._load_and_preprocess_frame(i) for i in frame_idx.tolist()])
+        
         if frame_idx < 0 or frame_idx >= self._num_frames:
             raise IndexError(f"Frame index {frame_idx} out of range [0, {self._num_frames})")
         return self._load_and_preprocess_frame(frame_idx)

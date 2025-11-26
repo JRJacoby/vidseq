@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import ProjectView from '../views/ProjectView.vue'
-import JobsView from '../views/JobsView.vue'
+import VideoPipeline from '../components/VideoPipeline.vue'
+import JobsList from '../components/JobsList.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -13,13 +14,19 @@ const router = createRouter({
     },
     {
       path: '/project/:id',
-      name: 'project',
-      component: ProjectView
-    },
-    {
-      path: '/jobs',
-      name: 'jobs',
-      component: JobsView
+      component: ProjectView,
+      children: [
+        {
+          path: '',
+          name: 'pipeline',
+          component: VideoPipeline
+        },
+        {
+          path: 'jobs',
+          name: 'jobs',
+          component: JobsList
+        }
+      ]
     }
   ],
 })

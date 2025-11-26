@@ -3,6 +3,8 @@ __pycache__
 *.egg-info
 design_docs/notes
 test_projects/
+test_videos/
+scripts/
 
 # Dependencies
 node_modules/

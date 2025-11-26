@@ -13,7 +13,9 @@ const navigateToVideoPipeline = () => {
 }
 
 const navigateToJobs = () => {
-  router.push('/jobs')
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/jobs`)
+  }
 }
 
 const isActiveRoute = (routeName: string) => {
@@ -26,7 +28,7 @@ const isActiveRoute = (routeName: string) => {
     <div class="navbar-top">
       <button 
         class="navbar-button" 
-        :class="{ 'navbar-button-active': isActiveRoute('project') }"
+        :class="{ 'navbar-button-active': isActiveRoute('pipeline') }"
         @click="navigateToVideoPipeline"
         :disabled="!projectStore.currentProjectId"
       >
@@ -38,6 +40,7 @@ const isActiveRoute = (routeName: string) => {
         class="navbar-button"
         :class="{ 'navbar-button-active': isActiveRoute('jobs') }"
         @click="navigateToJobs"
+        :disabled="!projectStore.currentProjectId"
       >
         Jobs
       </button>
@@ -94,4 +97,3 @@ const isActiveRoute = (routeName: string) => {
   font-weight: 600;
 }
 </style>
-
