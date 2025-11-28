@@ -4,7 +4,7 @@ __pycache__
 design_docs/notes
 test_projects/
 test_videos/
-scripts/
+dev_scripts/
 
 # Dependencies
 node_modules/
