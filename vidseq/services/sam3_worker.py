@@ -257,27 +257,6 @@ def worker_loop(command_queue, result_queue):
                     "error": str(e),
                 })
         
-        elif cmd_type == "get_video_dimensions":
-            video_id = cmd["video_id"]
-            request_id = cmd.get("request_id")
-            
-            if video_id in sessions:
-                _, loader = sessions[video_id]
-                result_queue.put({
-                    "type": "get_video_dimensions_result",
-                    "request_id": request_id,
-                    "status": "ok",
-                    "height": loader._video_height,
-                    "width": loader._video_width,
-                })
-            else:
-                result_queue.put({
-                    "type": "get_video_dimensions_result",
-                    "request_id": request_id,
-                    "status": "error",
-                    "error": "No session",
-                })
-        
         elif cmd_type == "shutdown":
             print("[SAM3 Worker] Shutting down...")
             # Close all sessions

@@ -74,7 +74,7 @@ def _drain_result_queue():
                 _error_message = result.get("error")
         
         elif result_type in ("init_session_result", "add_bbox_prompt_result", 
-                            "close_session_result", "get_video_dimensions_result"):
+                            "close_session_result"):
             request_id = result.get("request_id")
             if request_id and request_id in _pending_requests:
                 _pending_requests[request_id] = result
@@ -243,14 +243,6 @@ def add_bbox_prompt(
     mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
     
     return mask
-
-
-def get_video_dimensions(video_id: int) -> Optional[tuple]:
-    """Get (height, width) for a video session."""
-    session = get_session(video_id)
-    if session is None:
-        return None
-    return (session.height, session.width)
 
 
 def shutdown_worker():
