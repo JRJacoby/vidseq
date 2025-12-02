@@ -8,6 +8,7 @@ from platformdirs import user_data_dir
 from fastapi import Depends, HTTPException
 from vidseq.models.registry import Base as RegistryBase, Project, Job
 from vidseq.models.project import Base as ProjectBase
+from vidseq.models.prompt import Prompt  # noqa: F401 - needed for table creation
 
 APP_DATA_DIR = Path(user_data_dir("vidseq"))
 REGISTRY_DB_PATH = APP_DATA_DIR / "registry.db"

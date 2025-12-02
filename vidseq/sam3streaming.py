@@ -84,7 +84,7 @@ class LazyVideoFrameLoader:
         
         img_tensor = (img_tensor - self._img_mean) / self._img_std
         
-        return img_tensor.to(self.device, dtype=torch.float16)
+        return img_tensor.to(self.device, dtype=torch.float32)
     
     def get_raw_frame(self, frame_idx: int) -> NDArray[np.uint8]:
         """Get raw RGB frame without preprocessing (for visualization)."""

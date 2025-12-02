@@ -126,3 +126,149 @@ export async function getJobs(): Promise<Job[]> {
     }
     return response.json()
 }
+
+export interface Prompt {
+    id: number
+    video_id: number
+    frame_idx: number
+    type: string
+    details: Record<string, number>
+    created_at: string
+}
+
+export async function addPrompt(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    type: string,
+    details: Record<string, number>
+): Promise<Prompt> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame_idx: frameIdx, type, details }),
+        }
+    )
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to add prompt')
+    }
+    return response.json()
+}
+
+export async function getPrompts(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<Prompt[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts?frame_idx=${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(`Failed to fetch prompts: ${response.statusText}`)
+    }
+    return response.json()
+}
+
+export async function deletePrompt(
+    projectId: number,
+    videoId: number,
+    promptId: number
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts/${promptId}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to delete prompt')
+    }
+    return response.blob()
+}
+
+export async function getMask(
+    projectId: number,
+    videoId: number,
+    frameNumber: number
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/mask/${frameNumber}`
+    )
+    if (!response.ok) {
+        throw new Error(`Failed to fetch mask: ${response.statusText}`)
+    }
+    return response.blob()
+}
+
+export interface SAM3Status {
+    status: 'not_loaded' | 'loading_model' | 'ready' | 'error'
+    error: string | null
+}
+
+export async function getSAM3Status(): Promise<SAM3Status> {
+    const response = await fetch(`${API_BASE}/sam3/status`)
+    if (!response.ok) {
+        throw new Error(`Failed to fetch SAM3 status: ${response.statusText}`)
+    }
+    return response.json()
+}
+
+export async function preloadSAM3(): Promise<void> {
+    const response = await fetch(`${API_BASE}/sam3/preload`, { method: 'POST' })
+    if (!response.ok) {
+        throw new Error(`Failed to start SAM3 preload: ${response.statusText}`)
+    }
+}
+
+export interface VideoSessionInfo {
+    video_id: number
+    num_frames: number
+    height: number
+    width: number
+}
+
+export async function initVideoSession(
+    projectId: number,
+    videoId: number
+): Promise<VideoSessionInfo> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/session`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to init video session')
+    }
+    return response.json()
+}
+
+export async function closeVideoSession(
+    projectId: number,
+    videoId: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/session`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to close video session')
+    }
+}
+
+export async function resetFrame(
+    projectId: number,
+    videoId: number,
+    frameNumber: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame/${frameNumber}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(error.detail || 'Failed to reset frame')
+    }
+}
