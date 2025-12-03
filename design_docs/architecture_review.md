@@ -47,27 +47,21 @@ Updated consumers:
 
 ---
 
-### Issue 3: `database.py` Mixes Concerns and Uses Global State
+### ~~Issue 3: `database.py` Mixes Concerns and Uses Global State~~ ✅ FIXED
 
-```python
-registry_engine = None
-RegistrySessionLocal = None
+**Status:** Resolved on 2025-12-02
 
-project_engines = {}
-project_sessions = {}
-```
+Split `database.py` into two modules with clear responsibilities:
 
-The database module:
-- Uses global mutable state for engines/sessions
-- Has FastAPI dependency injection (`Depends`) logic mixed with database setup
-- Has duplicated project lookup logic (also in `projects.py`)
-
-This creates tight coupling between database configuration, HTTP layer, and ORM concerns.
-
-**Fix:** Separate into:
-- Database configuration/lifecycle module
-- Dependency injection module  
-- Repository pattern for data access
+- `vidseq/services/database_manager.py` — Singleton class that owns database lifecycle:
+  - `DatabaseManager.init_registry()` / `init_project()` / `shutdown()`
+  - No HTTP/FastAPI knowledge
+  - Testable in isolation
+  
+- `vidseq/api/dependencies.py` — FastAPI dependency injection:
+  - `get_registry_session()`, `get_project_session()`, `get_project_folder()`
+  - HTTP-aware error handling (`HTTPException`)
+  - Uses `DatabaseManager` under the hood
 
 ---
 
@@ -334,7 +328,7 @@ One uses `timezone.utc`, the other uses deprecated `datetime.utcnow`.
 | Severity | Count | Remaining | Key Themes |
 |----------|-------|-----------|------------|
 | 5 | 1 | 0 ✅ | Global mutable state |
-| 4 | 4 | 3 | DRY violations, naming inconsistency, mixed concerns |
+| 4 | 4 | 2 | DRY violations, naming inconsistency, mixed concerns |
 | 3 | 5 | 5 | Misplaced files, dead code, duplicated types |
 | 2 | 5 | 5 | Confusing terminology, poor organization |
 | 1 | 3 | 3 | Minor inconsistencies |
@@ -351,7 +345,7 @@ One uses `timezone.utc`, the other uses deprecated `datetime.utcnow`.
 ### Medium Priority
 4. Move `sam3streaming.py` to `services/`
 5. Create shared video lookup dependency
-6. Clean up `database.py` concerns
+6. ~~Clean up `database.py` concerns~~ ✅ Done
 7. Add exports to `__init__.py` files
 
 ### Low Priority

@@ -1,33 +1,39 @@
 import asyncio
 import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pathlib import Path
-from vidseq.database import get_registry_db
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vidseq.api.dependencies import get_registry_session
 from vidseq.models.registry import Job
 from vidseq.schemas.job import JobResponse
-from vidseq import database
+from vidseq.services.database_manager import DatabaseManager
 
 router = APIRouter()
 
+
 @router.get("/jobs", response_model=list[JobResponse])
 async def get_jobs(
-    db: AsyncSession = Depends(get_registry_db)
+    db: AsyncSession = Depends(get_registry_session),
 ):
     result = await db.execute(
         select(Job).order_by(Job.created_at.desc())
     )
     return result.scalars().all()
 
+
 @router.get("/jobs/stream")
 async def stream_jobs():
     async def event_generator():
-        last_states = None  # Use None to ensure first emission
+        last_states = None
+        db_manager = DatabaseManager.get_instance()
         
         while True:
-            async with database.RegistrySessionLocal() as session:
+            factory = db_manager.get_registry_session_factory()
+            async with factory() as session:
                 result = await session.execute(
                     select(Job).order_by(Job.created_at.desc())
                 )
@@ -56,13 +62,14 @@ async def stream_jobs():
     
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )
+
 
 @router.get("/jobs/{job_id}/logs/stream")
 async def stream_logs(
     job_id: int,
-    db: AsyncSession = Depends(get_registry_db)
+    db: AsyncSession = Depends(get_registry_session),
 ):
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
@@ -86,7 +93,7 @@ async def stream_logs(
             yield "data: Log file not found\n\n"
             return
         
-        with open(log_path, 'r') as f:
+        with open(log_path, "r") as f:
             existing = f.read()
             if existing:
                 for line in existing.splitlines():
@@ -106,7 +113,5 @@ async def stream_logs(
     
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )
-
-

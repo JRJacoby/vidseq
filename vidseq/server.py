@@ -1,26 +1,26 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from vidseq import __version__
-from vidseq.api.routes import projects, videos, filesystem, jobs, segmentation
-from vidseq.database import init_registry_db, registry_engine, project_engines
+from vidseq.api.routes import filesystem, jobs, projects, segmentation, videos
+from vidseq.services.database_manager import DatabaseManager
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await init_registry_db()
+    db = DatabaseManager.get_instance()
+    await db.init_registry()
     yield
-    # Shutdown
-    if registry_engine:
-        await registry_engine.dispose()
-    for engine in project_engines.values():
-        await engine.dispose()
+    await db.shutdown()
+
 
 app = FastAPI(
     title="VidSeq",
     description="VidSeq is a tool for analyzing animal behavior from raw video data.",
     version=__version__,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -31,8 +31,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(projects.router, prefix='/api', tags=['projects'])
-app.include_router(videos.router, prefix='/api', tags=['videos'])
-app.include_router(filesystem.router, prefix='/api', tags=['filesystem'])
-app.include_router(jobs.router, prefix='/api', tags=['jobs'])
-app.include_router(segmentation.router, prefix='/api', tags=['segmentation'])
+app.include_router(projects.router, prefix="/api", tags=["projects"])
+app.include_router(videos.router, prefix="/api", tags=["videos"])
+app.include_router(filesystem.router, prefix="/api", tags=["filesystem"])
+app.include_router(jobs.router, prefix="/api", tags=["jobs"])
+app.include_router(segmentation.router, prefix="/api", tags=["segmentation"])

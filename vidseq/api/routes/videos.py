@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
 import mimetypes
 
-from vidseq.database import get_project_session
+from vidseq.api.dependencies import get_project_session
 from vidseq.models.project import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
 from vidseq.services.video_metadata import get_video_metadata, VideoMetadataError

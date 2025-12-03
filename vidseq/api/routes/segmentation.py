@@ -9,7 +9,7 @@ from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vidseq.database import get_project_folder, get_project_session
+from vidseq.api.dependencies import get_project_folder, get_project_session
 from vidseq.models.project import Video
 from vidseq.models.prompt import Prompt
 from vidseq.schemas.segmentation import PromptCreate, PromptResponse
