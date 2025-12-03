@@ -7,6 +7,9 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
+from vidseq.services.video_metadata import VideoMetadata
+
+
 class LazyVideoFrameLoader:
     """
     Lazy frame loader that provides frames on-demand from a video file.
@@ -38,16 +41,39 @@ class LazyVideoFrameLoader:
         if not self._cap.isOpened():
             raise ValueError(f"Could not open video: {self.video_path}")
         
-        self._num_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self._video_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self._video_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self._fps = self._cap.get(cv2.CAP_PROP_FPS)
+        self._metadata = VideoMetadata(
+            num_frames=int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+            height=int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            width=int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            fps=self._cap.get(cv2.CAP_PROP_FPS),
+        )
         
         self._img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float32)[:, None, None]
         self._img_std = torch.tensor(self.IMG_STD, dtype=torch.float32)[:, None, None]
     
+    @property
+    def metadata(self) -> VideoMetadata:
+        """Get video metadata."""
+        return self._metadata
+    
+    @property
+    def _num_frames(self) -> int:
+        return self._metadata.num_frames
+    
+    @property
+    def _video_height(self) -> int:
+        return self._metadata.height
+    
+    @property
+    def _video_width(self) -> int:
+        return self._metadata.width
+    
+    @property
+    def _fps(self) -> float:
+        return self._metadata.fps
+    
     def __len__(self) -> int:
-        return self._num_frames
+        return self._metadata.num_frames
     
     def __getitem__(self, frame_idx: int | torch.Tensor) -> torch.Tensor:
         """
@@ -65,8 +91,8 @@ class LazyVideoFrameLoader:
                 return self._load_and_preprocess_frame(frame_idx.item())
             return torch.stack([self._load_and_preprocess_frame(i) for i in frame_idx.tolist()])
         
-        if frame_idx < 0 or frame_idx >= self._num_frames:
-            raise IndexError(f"Frame index {frame_idx} out of range [0, {self._num_frames})")
+        if frame_idx < 0 or frame_idx >= self._metadata.num_frames:
+            raise IndexError(f"Frame index {frame_idx} out of range [0, {self._metadata.num_frames})")
         return self._load_and_preprocess_frame(frame_idx)
     
     def _load_and_preprocess_frame(self, frame_idx: int) -> torch.Tensor:
@@ -88,8 +114,8 @@ class LazyVideoFrameLoader:
     
     def get_raw_frame(self, frame_idx: int) -> NDArray[np.uint8]:
         """Get raw RGB frame without preprocessing (for visualization)."""
-        if frame_idx < 0 or frame_idx >= self._num_frames:
-            raise IndexError(f"Frame index {frame_idx} out of range [0, {self._num_frames})")
+        if frame_idx < 0 or frame_idx >= self._metadata.num_frames:
+            raise IndexError(f"Frame index {frame_idx} out of range [0, {self._metadata.num_frames})")
         
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = self._cap.read()

@@ -3,7 +3,6 @@
 import io
 from pathlib import Path
 
-import cv2
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
@@ -14,7 +13,7 @@ from vidseq.database import get_project_folder, get_project_session
 from vidseq.models.project import Video
 from vidseq.models.prompt import Prompt
 from vidseq.schemas.segmentation import PromptCreate, PromptResponse
-from vidseq.services import mask_storage, prompt_storage, sam3_service
+from vidseq.services import mask_storage, prompt_storage, sam3_service, video_metadata
 
 router = APIRouter()
 
@@ -43,18 +42,6 @@ async def _get_video(session: AsyncSession, video_id: int) -> Video:
     return video
 
 
-def _get_video_metadata(video_path: Path) -> tuple[int, int, int]:
-    """Get video metadata: num_frames, height, width."""
-    cap = cv2.VideoCapture(str(video_path))
-    try:
-        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        return num_frames, height, width
-    finally:
-        cap.release()
-
-
 def _mask_to_png(mask) -> bytes:
     """Convert a numpy mask to PNG bytes."""
     img = Image.fromarray(mask)
@@ -71,16 +58,16 @@ async def _run_segmentation_and_save(
 ) -> bytes:
     """Run SAM3 segmentation with prompts and save the mask."""
     video_path = Path(video.path)
-    num_frames, height, width = _get_video_metadata(video_path)
+    meta = video_metadata.get_video_metadata(video_path)
     
     if not prompts:
         mask = mask_storage.load_mask(
             project_path=project_path,
             video_id=video.id,
             frame_idx=frame_idx,
-            num_frames=num_frames,
-            height=height,
-            width=width,
+            num_frames=meta.num_frames,
+            height=meta.height,
+            width=meta.width,
         )
         return _mask_to_png(mask)
     
@@ -90,9 +77,9 @@ async def _run_segmentation_and_save(
             project_path=project_path,
             video_id=video.id,
             frame_idx=frame_idx,
-            num_frames=num_frames,
-            height=height,
-            width=width,
+            num_frames=meta.num_frames,
+            height=meta.height,
+            width=meta.width,
         )
         return _mask_to_png(mask)
     
@@ -108,9 +95,9 @@ async def _run_segmentation_and_save(
         video_id=video.id,
         frame_idx=frame_idx,
         mask=mask,
-        num_frames=num_frames,
-        height=height,
-        width=width,
+        num_frames=meta.num_frames,
+        height=meta.height,
+        width=meta.width,
     )
     
     return _mask_to_png(mask)
@@ -307,15 +294,15 @@ async def get_mask(
     """
     video = await _get_video(session, video_id)
     video_path = Path(video.path)
-    num_frames, height, width = _get_video_metadata(video_path)
+    meta = video_metadata.get_video_metadata(video_path)
     
     mask = mask_storage.load_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=frame_number,
-        num_frames=num_frames,
-        height=height,
-        width=width,
+        num_frames=meta.num_frames,
+        height=meta.height,
+        width=meta.width,
     )
     
     mask_png = _mask_to_png(mask)

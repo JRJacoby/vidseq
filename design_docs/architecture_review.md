@@ -18,50 +18,32 @@ This document identifies architectural issues in the VidSeq codebase, organized 
 
 ## Severity 5 (Actively Bad/Harmful)
 
-### Issue 1: Module-Level Global State in `sam3_service.py`
+### ~~Issue 1: Module-Level Global State in `sam3_service.py`~~ ✅ FIXED
 
-**Location:** `vidseq/services/sam3_service.py:37-48`
+**Status:** Resolved on 2025-12-02
 
-```python
-# Process management
-_worker_process: Optional[Process] = None
-_command_queue: Optional[Queue] = None
-_result_queue: Optional[Queue] = None
-
-# State
-_status = SAM3Status.NOT_LOADED
-_error_message: Optional[str] = None
-_sessions: Dict[int, VideoSessionInfo] = {}
-
-# Pending requests waiting for results
-_pending_requests: Dict[str, Any] = {}
-```
-
-Using module-level mutable global state creates:
-- Untestable code (can't mock/reset state between tests)
-- Hidden dependencies
-- Potential race conditions in async context
-- No ability to have multiple instances
-
-**Fix:** Convert to a singleton class with explicit lifecycle management.
+Converted to a thread-safe singleton class `SAM3Service` with:
+- Encapsulated instance state
+- `reset_instance()` method for testing
+- Backwards-compatible module-level convenience functions
 
 ---
 
 ## Severity 4 (Tangled Logic / Implicit Coupling)
 
-### Issue 2: Video Metadata Extraction Duplicated in 3 Places
+### ~~Issue 2: Video Metadata Extraction Duplicated in 3 Places~~ ✅ FIXED
 
-The same video metadata (frame count, width, height, fps) is extracted using cv2 in three unrelated locations:
+**Status:** Resolved on 2025-12-02
 
-| Location | Function |
-|----------|----------|
-| `vidseq/api/routes/segmentation.py:46-55` | `_get_video_metadata()` |
-| `vidseq/api/routes/videos.py:23-31` | `get_video_fps()` |
-| `vidseq/sam3streaming.py:37-44` | `LazyVideoFrameLoader.__init__()` |
+Created `vidseq/services/video_metadata.py` with:
+- `VideoMetadata` dataclass (frozen, immutable)
+- `get_video_metadata()` function with proper error handling
+- `VideoMetadataError` exception class
 
-This violates DRY and means if video loading logic changes (e.g., error handling, codec support), you must update three places.
-
-**Fix:** Create a single `VideoMetadata` service/utility that all components use.
+Updated consumers:
+- `segmentation.py` - uses `video_metadata.get_video_metadata()`
+- `videos.py` - uses `get_video_metadata()` with error handling
+- `sam3streaming.py` - uses `VideoMetadata` dataclass, exposes via `.metadata` property
 
 ---
 
@@ -349,21 +331,21 @@ One uses `timezone.utc`, the other uses deprecated `datetime.utcnow`.
 
 ## Summary
 
-| Severity | Count | Key Themes |
-|----------|-------|------------|
-| 5 | 1 | Global mutable state |
-| 4 | 4 | DRY violations, naming inconsistency, mixed concerns |
-| 3 | 5 | Misplaced files, dead code, duplicated types |
-| 2 | 5 | Confusing terminology, poor organization |
-| 1 | 3 | Minor inconsistencies |
+| Severity | Count | Remaining | Key Themes |
+|----------|-------|-----------|------------|
+| 5 | 1 | 0 ✅ | Global mutable state |
+| 4 | 4 | 3 | DRY violations, naming inconsistency, mixed concerns |
+| 3 | 5 | 5 | Misplaced files, dead code, duplicated types |
+| 2 | 5 | 5 | Confusing terminology, poor organization |
+| 1 | 3 | 3 | Minor inconsistencies |
 
 ---
 
 ## Recommended Priority Order
 
 ### High Priority (Do First)
-1. **Replace global state in `sam3_service.py` with a proper class** - This affects testability and correctness
-2. **Consolidate video metadata extraction into one place** - High duplication risk
+1. ~~**Replace global state in `sam3_service.py` with a proper class**~~ ✅ Done
+2. ~~**Consolidate video metadata extraction into one place**~~ ✅ Done
 3. **Standardize on `frame_idx` naming everywhere** - API clarity
 
 ### Medium Priority
