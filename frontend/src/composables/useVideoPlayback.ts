@@ -54,6 +54,7 @@ export function useVideoPlayback(): UseVideoPlaybackReturn {
   }
 
   const seek = (time: number) => {
+    currentTime.value = time
     if (videoRef.value) {
       videoRef.value.currentTime = time
     }
