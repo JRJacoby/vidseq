@@ -1,4 +1,4 @@
-"""HDF5-based mask storage service."""
+"""Mask service - HDF5-based segmentation mask storage."""
 
 from pathlib import Path
 from typing import Optional
@@ -107,3 +107,4 @@ def clear_mask(
         if dataset_name in h5:
             ds = h5[dataset_name]
             ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
+

@@ -154,7 +154,7 @@ def worker_loop(command_queue, result_queue):
                     })
                     continue
                 
-                from vidseq.sam3streaming import LazyVideoFrameLoader
+                from vidseq.services.sam3streaming import LazyVideoFrameLoader
                 loader = LazyVideoFrameLoader(video_path, device="cuda")
                 session_id = _start_session_with_lazy_loader(predictor, loader)
                 sessions[video_id] = (session_id, loader)

@@ -6,14 +6,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.models.project import Video
+from vidseq.models.video import Video
 from vidseq.models.prompt import Prompt
 from vidseq.schemas.segmentation import PromptCreate, PromptResponse
-from vidseq.services import mask_storage, prompt_storage, sam3_service, video_metadata
+from vidseq.services import mask_service, prompt_service, sam3_service, video_service
 
 router = APIRouter()
 
@@ -29,17 +28,6 @@ async def preload_sam3():
     """Start loading SAM3 model in background."""
     sam3_service.start_loading_in_background()
     return {"message": "Loading started"}
-
-
-async def _get_video(session: AsyncSession, video_id: int) -> Video:
-    """Get video by ID or raise 404."""
-    result = await session.execute(
-        select(Video).where(Video.id == video_id)
-    )
-    video = result.scalar_one_or_none()
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
-    return video
 
 
 def _mask_to_png(mask) -> bytes:
@@ -58,10 +46,10 @@ async def _run_segmentation_and_save(
 ) -> bytes:
     """Run SAM3 segmentation with prompts and save the mask."""
     video_path = Path(video.path)
-    meta = video_metadata.get_video_metadata(video_path)
+    meta = video_service.get_video_metadata(video_path)
     
     if not prompts:
-        mask = mask_storage.load_mask(
+        mask = mask_service.load_mask(
             project_path=project_path,
             video_id=video.id,
             frame_idx=frame_idx,
@@ -73,7 +61,7 @@ async def _run_segmentation_and_save(
     
     bbox_prompt = next((p for p in prompts if p.type == "bbox"), None)
     if bbox_prompt is None:
-        mask = mask_storage.load_mask(
+        mask = mask_service.load_mask(
             project_path=project_path,
             video_id=video.id,
             frame_idx=frame_idx,
@@ -90,7 +78,7 @@ async def _run_segmentation_and_save(
         bbox=bbox_prompt.details,
     )
     
-    mask_storage.save_mask(
+    mask_service.save_mask(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
@@ -115,7 +103,7 @@ async def init_video_session(
     Call this when entering the video detail view.
     Returns 503 if SAM3 model isn't loaded yet.
     """
-    video = await _get_video(session, video_id)
+    video = await video_service.get_video_by_id(session, video_id)
     video_path = Path(video.path)
     
     try:
@@ -158,11 +146,11 @@ async def add_prompt(
     Add a prompt and run segmentation.
     
     Bbox coords should be normalized [0,1].
-    Returns the created prompt. The updated mask can be fetched via GET /mask/{frame_number}.
+    Returns the created prompt. The updated mask can be fetched via GET /mask/{frame_idx}.
     """
-    video = await _get_video(session, video_id)
+    video = await video_service.get_video_by_id(session, video_id)
     
-    prompt = await prompt_storage.save_prompt(
+    prompt = await prompt_service.save_prompt(
         session=session,
         video_id=video_id,
         frame_idx=prompt_data.frame_idx,
@@ -170,7 +158,7 @@ async def add_prompt(
         details=prompt_data.details,
     )
     
-    all_prompts = await prompt_storage.get_prompts(
+    all_prompts = await prompt_service.get_prompts(
         session=session,
         video_id=video_id,
         frame_idx=prompt_data.frame_idx,
@@ -196,9 +184,9 @@ async def get_prompts(
     session: AsyncSession = Depends(get_project_session),
 ):
     """Get all prompts for a specific frame."""
-    await _get_video(session, video_id)
+    await video_service.get_video_by_id(session, video_id)
     
-    prompts = await prompt_storage.get_prompts(
+    prompts = await prompt_service.get_prompts(
         session=session,
         video_id=video_id,
         frame_idx=frame_idx,
@@ -221,19 +209,19 @@ async def delete_prompt(
     
     Returns the updated mask as PNG.
     """
-    video = await _get_video(session, video_id)
+    video = await video_service.get_video_by_id(session, video_id)
     
-    prompt = await prompt_storage.get_prompt_by_id(session, prompt_id)
+    prompt = await prompt_service.get_prompt_by_id(session, prompt_id)
     if not prompt:
         raise HTTPException(status_code=404, detail=f"Prompt {prompt_id} not found")
     
     frame_idx = prompt.frame_idx
     
-    deleted = await prompt_storage.delete_prompt(session, prompt_id)
+    deleted = await prompt_service.delete_prompt(session, prompt_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Prompt {prompt_id} not found")
     
-    remaining_prompts = await prompt_storage.get_prompts(
+    remaining_prompts = await prompt_service.get_prompts(
         session=session,
         video_id=video_id,
         frame_idx=frame_idx,
@@ -250,40 +238,40 @@ async def delete_prompt(
 
 
 @router.delete(
-    "/projects/{project_id}/videos/{video_id}/frame/{frame_number}",
+    "/projects/{project_id}/videos/{video_id}/frame/{frame_idx}",
 )
 async def reset_frame(
     video_id: int,
-    frame_number: int,
+    frame_idx: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
     """
     Reset a frame: delete all prompts and clear the mask.
     """
-    await _get_video(session, video_id)
+    await video_service.get_video_by_id(session, video_id)
     
-    await prompt_storage.delete_prompts_for_frame(
+    await prompt_service.delete_prompts_for_frame(
         session=session,
         video_id=video_id,
-        frame_idx=frame_number,
+        frame_idx=frame_idx,
     )
     
-    mask_storage.clear_mask(
+    mask_service.clear_mask(
         project_path=project_path,
         video_id=video_id,
-        frame_idx=frame_number,
+        frame_idx=frame_idx,
     )
     
     return {"message": "Frame reset"}
 
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/mask/{frame_number}",
+    "/projects/{project_id}/videos/{video_id}/mask/{frame_idx}",
 )
 async def get_mask(
     video_id: int,
-    frame_number: int,
+    frame_idx: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
@@ -292,14 +280,14 @@ async def get_mask(
     
     Returns PNG binary. If no mask exists, returns a transparent (all zeros) mask.
     """
-    video = await _get_video(session, video_id)
+    video = await video_service.get_video_by_id(session, video_id)
     video_path = Path(video.path)
-    meta = video_metadata.get_video_metadata(video_path)
+    meta = video_service.get_video_metadata(video_path)
     
-    mask = mask_storage.load_mask(
+    mask = mask_service.load_mask(
         project_path=project_path,
         video_id=video_id,
-        frame_idx=frame_number,
+        frame_idx=frame_idx,
         num_frames=meta.num_frames,
         height=meta.height,
         width=meta.width,

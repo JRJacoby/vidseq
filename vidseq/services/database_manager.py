@@ -8,8 +8,9 @@ from platformdirs import user_data_dir
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from vidseq.models.project import Base as ProjectBase
-from vidseq.models.prompt import Prompt  # noqa: F401 - needed for table creation
+from vidseq.models.project_db import Base as ProjectBase
+from vidseq.models.video import Video  # noqa: F401 - registers with ProjectBase.metadata
+from vidseq.models.prompt import Prompt  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.registry import Base as RegistryBase
 
 

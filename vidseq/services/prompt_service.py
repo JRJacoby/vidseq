@@ -1,8 +1,6 @@
-"""
-Prompt storage service for managing segmentation prompts in the database.
-"""
+"""Prompt service - database operations for segmentation prompts."""
 
-from typing import Any, List
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +44,7 @@ async def get_prompts(
     session: AsyncSession,
     video_id: int,
     frame_idx: int,
-) -> List[Prompt]:
+) -> list[Prompt]:
     """
     Get all prompts for a specific frame.
     

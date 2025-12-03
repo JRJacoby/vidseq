@@ -1,9 +1,14 @@
-"""Video metadata extraction service."""
+"""Video service - metadata extraction and database operations."""
 
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vidseq.models.video import Video
 
 
 @dataclass(frozen=True)
@@ -62,4 +67,27 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
         )
     finally:
         cap.release()
+
+
+async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:
+    """
+    Get a video by ID or raise 404.
+    
+    Args:
+        session: Database session
+        video_id: ID of the video
+        
+    Returns:
+        Video model instance
+        
+    Raises:
+        HTTPException: 404 if video not found
+    """
+    result = await session.execute(
+        select(Video).where(Video.id == video_id)
+    )
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
+    return video
 

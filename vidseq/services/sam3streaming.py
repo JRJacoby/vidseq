@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from vidseq.services.video_metadata import VideoMetadata
+from vidseq.services.video_service import VideoMetadata
 
 
 class LazyVideoFrameLoader:

@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-
-export interface Prompt {
-  id: number
-  video_id: number
-  frame_idx: number
-  type: string
-  details: Record<string, number>
-}
+import type { Prompt } from '@/services/api'
 
 const props = defineProps<{
   videoWidth: number

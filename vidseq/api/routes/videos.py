@@ -1,16 +1,22 @@
+import mimetypes
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from pathlib import Path
-import mimetypes
 
 from vidseq.api.dependencies import get_project_session
-from vidseq.models.project import Video
+from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
-from vidseq.services.video_metadata import get_video_metadata, VideoMetadataError
+from vidseq.services.video_service import (
+    VideoMetadataError,
+    get_video_by_id,
+    get_video_metadata,
+)
 
 router = APIRouter()
+
 
 @router.get("/projects/{project_id}/videos", response_model=list[VideoResponse])
 async def get_videos(
@@ -64,12 +70,7 @@ async def get_video(
     video_id: int,
     session: AsyncSession = Depends(get_project_session),
 ) -> VideoResponse:
-    result = await session.execute(
-        select(Video).where(Video.id == video_id)
-    )
-    video = result.scalar_one_or_none()
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
+    video = await get_video_by_id(session, video_id)
     return video
 
 
@@ -79,12 +80,7 @@ async def stream_video(
     request: Request,
     session: AsyncSession = Depends(get_project_session),
 ):
-    result = await session.execute(
-        select(Video).where(Video.id == video_id)
-    )
-    video = result.scalar_one_or_none()
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
+    video = await get_video_by_id(session, video_id)
     
     video_path = Path(video.path)
     if not video_path.exists():
@@ -129,4 +125,3 @@ async def stream_video(
         media_type=content_type,
         headers={"Accept-Ranges": "bytes"},
     )
-

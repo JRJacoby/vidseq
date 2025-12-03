@@ -1,8 +1,9 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+"""Video model for per-project database."""
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, Float
 
-class Base(DeclarativeBase):
-    pass
+from vidseq.models.project_db import Base
+
 
 class Video(Base):
     __tablename__ = "videos"
