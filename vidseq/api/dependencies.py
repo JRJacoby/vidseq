@@ -18,17 +18,24 @@ async def get_registry_session():
         yield session
 
 
-async def get_project_folder(
+async def get_project(
     project_id: int,
     session: AsyncSession = Depends(get_registry_session),
-) -> Path:
-    """Look up project folder by ID, raise 404 if not found."""
+) -> Project:
+    """Get project by ID from path parameter, raise 404 if not found."""
     result = await session.execute(
         select(Project).where(Project.id == project_id)
     )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    return project
+
+
+async def get_project_folder(
+    project: Project = Depends(get_project),
+) -> Path:
+    """Get the project folder path."""
     return Path(project.path)
 
 

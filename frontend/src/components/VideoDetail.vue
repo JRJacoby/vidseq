@@ -1,63 +1,32 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { 
-  getVideo, 
-  getVideoStreamUrl, 
-  getMask, 
-  getPrompts, 
-  addPrompt,
-  resetFrame,
-  getSAM3Status,
-  preloadSAM3,
-  initVideoSession,
-  closeVideoSession,
-  type Video, 
-  type Prompt,
-  type SAM3Status 
-} from '@/services/api'
+import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
+import { useSAM3Session } from '@/composables/useSAM3Session'
+import { useVideoPlayback } from '@/composables/useVideoPlayback'
+import { useSegmentation } from '@/composables/useSegmentation'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
 
+const projectId = computed(() => Number(route.params.id))
+const videoId = computed(() => Number(route.params.videoId))
+
 const video = ref<Video | null>(null)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
-
-const videoRef = ref<HTMLVideoElement | null>(null)
-const currentTime = ref(0)
-const duration = ref(0)
-const isPlaying = ref(false)
-
-const activeTool = ref<'none' | 'bbox'>('none')
-const currentMask = ref<ImageBitmap | null>(null)
-const currentPrompts = ref<Prompt[]>([])
-const videoWidth = ref(0)
-const videoHeight = ref(0)
-const isSegmenting = ref(false)
-
-const sam3Status = ref<SAM3Status>({ status: 'not_loaded', error: null })
-let statusPollInterval: number | null = null
-
-const projectId = computed(() => Number(route.params.id))
-const videoId = computed(() => Number(route.params.videoId))
 
 const videoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
   return getVideoStreamUrl(projectId.value, videoId.value)
 })
 
-const currentFrameIdx = computed(() => {
-  if (!video.value) return 0
-  return Math.floor(currentTime.value * video.value.fps)
-})
-
 const loadVideo = async () => {
   isLoading.value = true
   error.value = null
-  
+
   try {
     video.value = await getVideo(projectId.value, videoId.value)
   } catch (e) {
@@ -67,176 +36,50 @@ const loadVideo = async () => {
   }
 }
 
-const loadFrameData = async (frameIdx: number) => {
-  if (!projectId.value || !videoId.value) return
-  
-  try {
-    const [maskBlob, prompts] = await Promise.all([
-      getMask(projectId.value, videoId.value, frameIdx),
-      getPrompts(projectId.value, videoId.value, frameIdx),
-    ])
-    
-    currentMask.value = await createImageBitmap(maskBlob)
-    currentPrompts.value = prompts
-  } catch (e) {
-    console.error('Failed to load frame data:', e)
-  }
-}
-
 const handleBack = () => {
   router.push(`/project/${projectId.value}`)
 }
 
-const onTimeUpdate = () => {
-  if (videoRef.value) {
-    currentTime.value = videoRef.value.currentTime
-  }
-}
+const { sam3Status, isReady: sam3IsReady, statusText: sam3StatusText } = useSAM3Session(projectId, videoId)
 
-const onLoadedMetadata = () => {
-  if (videoRef.value) {
-    duration.value = videoRef.value.duration
-    videoWidth.value = videoRef.value.videoWidth
-    videoHeight.value = videoRef.value.videoHeight
-    loadFrameData(0)
-  }
-}
+const {
+  videoRef,
+  currentTime,
+  duration,
+  isPlaying,
+  videoWidth,
+  videoHeight,
+  onTimeUpdate,
+  onLoadedMetadata,
+  onPlay,
+  onPause,
+  seek: handleSeek,
+  togglePlay: handleTogglePlay,
+  setMetadataCallback,
+} = useVideoPlayback()
 
-const onPlay = () => {
-  isPlaying.value = true
-}
-
-const onPause = () => {
-  isPlaying.value = false
-}
-
-const handleSeek = (time: number) => {
-  if (videoRef.value) {
-    videoRef.value.currentTime = time
-  }
-}
-
-const handleTogglePlay = () => {
-  if (videoRef.value) {
-    if (isPlaying.value) {
-      videoRef.value.pause()
-    } else {
-      videoRef.value.play()
-    }
-  }
-}
-
-const toggleBboxTool = () => {
-  activeTool.value = activeTool.value === 'bbox' ? 'none' : 'bbox'
-}
-
-const handleBboxComplete = async (bbox: { x1: number; y1: number; x2: number; y2: number }) => {
-  if (!projectId.value || !videoId.value) return
-  
-  isSegmenting.value = true
-  activeTool.value = 'none'
-  
-  try {
-    await addPrompt(
-      projectId.value,
-      videoId.value,
-      currentFrameIdx.value,
-      'bbox',
-      bbox
-    )
-    
-    await loadFrameData(currentFrameIdx.value)
-  } catch (e) {
-    console.error('Failed to segment:', e)
-  } finally {
-    isSegmenting.value = false
-  }
-}
-
-const handleResetFrame = async () => {
-  if (!projectId.value || !videoId.value) return
-  
-  try {
-    await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
-    await loadFrameData(currentFrameIdx.value)
-  } catch (e) {
-    console.error('Failed to reset frame:', e)
-  }
-}
-
-let debounceTimeout: number | null = null
-watch(currentFrameIdx, (newFrameIdx) => {
-  if (debounceTimeout) {
-    clearTimeout(debounceTimeout)
-  }
-  debounceTimeout = window.setTimeout(() => {
-    loadFrameData(newFrameIdx)
-  }, 100)
+const currentFrameIdx = computed(() => {
+  if (!video.value) return 0
+  return Math.floor(currentTime.value * video.value.fps)
 })
 
-const sam3StatusText = computed(() => {
-  switch (sam3Status.value.status) {
-    case 'not_loaded': return 'SAM3: Not loaded'
-    case 'loading_model': return 'SAM3: Loading model...'
-    case 'ready': return 'SAM3: Ready'
-    case 'error': return `SAM3: Error - ${sam3Status.value.error}`
-    default: return 'SAM3: Unknown'
-  }
+const {
+  activeTool,
+  currentMask,
+  currentPrompts,
+  isSegmenting,
+  loadFrameData,
+  toggleTool: toggleBboxTool,
+  handleBboxComplete,
+  handleResetFrame,
+} = useSegmentation(projectId, videoId, currentFrameIdx)
+
+setMetadataCallback(() => {
+  loadFrameData(0)
 })
 
-const sam3IsReady = computed(() => sam3Status.value.status === 'ready')
-const sessionInitialized = ref(false)
-
-const pollSAM3Status = async () => {
-  try {
-    sam3Status.value = await getSAM3Status()
-    
-    if (sam3Status.value.status === 'ready' || sam3Status.value.status === 'error') {
-      if (statusPollInterval) {
-        clearInterval(statusPollInterval)
-        statusPollInterval = null
-      }
-    }
-  } catch (e) {
-    console.error('Failed to poll SAM3 status:', e)
-  }
-}
-
-// Initialize video session when SAM3 becomes ready
-watch(sam3IsReady, async (isReady) => {
-  if (isReady && !sessionInitialized.value && projectId.value && videoId.value) {
-    try {
-      await initVideoSession(projectId.value, videoId.value)
-      sessionInitialized.value = true
-    } catch (e) {
-      console.error('Failed to init video session:', e)
-    }
-  }
-})
-
-onMounted(async () => {
+onMounted(() => {
   loadVideo()
-  
-  await pollSAM3Status()
-  if (sam3Status.value.status === 'not_loaded') {
-    preloadSAM3()
-  }
-  
-  statusPollInterval = window.setInterval(pollSAM3Status, 1000)
-})
-
-onUnmounted(async () => {
-  if (statusPollInterval) {
-    clearInterval(statusPollInterval)
-  }
-  
-  if (projectId.value && videoId.value) {
-    try {
-      await closeVideoSession(projectId.value, videoId.value)
-    } catch (e) {
-      console.error('Failed to close video session:', e)
-    }
-  }
 })
 </script>
 
@@ -247,7 +90,7 @@ onUnmounted(async () => {
         <button class="back-button" @click="handleBack">← Back to Videos</button>
         <h3 v-if="video" class="video-title">{{ video.name }}</h3>
       </div>
-      
+
       <div class="video-area">
         <div v-if="isLoading" class="loading-state">
           Loading video...
@@ -257,7 +100,7 @@ onUnmounted(async () => {
         </div>
         <div v-else class="video-with-timeline">
           <div class="video-container">
-            <video 
+            <video
               ref="videoRef"
               class="video-player"
               :src="videoStreamUrl"
@@ -289,7 +132,7 @@ onUnmounted(async () => {
         </div>
       </div>
     </div>
-    
+
     <aside class="action-bar">
       <div class="action-bar-content">
         <h4 class="action-bar-title">Tools</h4>

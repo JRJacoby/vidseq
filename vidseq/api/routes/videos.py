@@ -70,7 +70,10 @@ async def get_video(
     video_id: int,
     session: AsyncSession = Depends(get_project_session),
 ) -> VideoResponse:
-    video = await get_video_by_id(session, video_id)
+    try:
+        video = await get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return video
 
 
@@ -80,7 +83,10 @@ async def stream_video(
     request: Request,
     session: AsyncSession = Depends(get_project_session),
 ):
-    video = await get_video_by_id(session, video_id)
+    try:
+        video = await get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     video_path = Path(video.path)
     if not video_path.exists():

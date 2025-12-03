@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from vidseq.services.video_service import VideoMetadata
+from vidseq.services.video_service import VideoMetadata, get_video_metadata
 
 
 class LazyVideoFrameLoader:
@@ -37,16 +37,11 @@ class LazyVideoFrameLoader:
         self.video_path = Path(video_path)
         self.device = torch.device(device) if isinstance(device, str) else device
         
+        self._metadata = get_video_metadata(self.video_path)
+        
         self._cap = cv2.VideoCapture(str(self.video_path))
         if not self._cap.isOpened():
             raise ValueError(f"Could not open video: {self.video_path}")
-        
-        self._metadata = VideoMetadata(
-            num_frames=int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT)),
-            height=int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            width=int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            fps=self._cap.get(cv2.CAP_PROP_FPS),
-        )
         
         self._img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float32)[:, None, None]
         self._img_std = torch.tensor(self.IMG_STD, dtype=torch.float32)[:, None, None]

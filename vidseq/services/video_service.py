@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,7 +70,7 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
 
 async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:
     """
-    Get a video by ID or raise 404.
+    Get a video by ID.
     
     Args:
         session: Database session
@@ -81,13 +80,13 @@ async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:
         Video model instance
         
     Raises:
-        HTTPException: 404 if video not found
+        LookupError: If video not found
     """
     result = await session.execute(
         select(Video).where(Video.id == video_id)
     )
     video = result.scalar_one_or_none()
     if not video:
-        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
+        raise LookupError(f"Video {video_id} not found")
     return video
 

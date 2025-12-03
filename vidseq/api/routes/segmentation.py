@@ -1,18 +1,14 @@
 """Segmentation API routes."""
 
-import io
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.models.video import Video
-from vidseq.models.prompt import Prompt
 from vidseq.schemas.segmentation import PromptCreate, PromptResponse
-from vidseq.services import mask_service, prompt_service, sam3_service, video_service
+from vidseq.services import prompt_service, sam3_service, segmentation_service, video_service
 
 router = APIRouter()
 
@@ -30,67 +26,6 @@ async def preload_sam3():
     return {"message": "Loading started"}
 
 
-def _mask_to_png(mask) -> bytes:
-    """Convert a numpy mask to PNG bytes."""
-    img = Image.fromarray(mask)
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-async def _run_segmentation_and_save(
-    project_path: Path,
-    video: Video,
-    frame_idx: int,
-    prompts: list[Prompt],
-) -> bytes:
-    """Run SAM3 segmentation with prompts and save the mask."""
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
-    
-    if not prompts:
-        mask = mask_service.load_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        return _mask_to_png(mask)
-    
-    bbox_prompt = next((p for p in prompts if p.type == "bbox"), None)
-    if bbox_prompt is None:
-        mask = mask_service.load_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        return _mask_to_png(mask)
-    
-    mask = sam3_service.add_bbox_prompt(
-        video_id=video.id,
-        video_path=video_path,
-        frame_idx=frame_idx,
-        bbox=bbox_prompt.details,
-    )
-    
-    mask_service.save_mask(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-        mask=mask,
-        num_frames=meta.num_frames,
-        height=meta.height,
-        width=meta.width,
-    )
-    
-    return _mask_to_png(mask)
-
-
 @router.post("/projects/{project_id}/videos/{video_id}/session")
 async def init_video_session(
     video_id: int,
@@ -103,7 +38,10 @@ async def init_video_session(
     Call this when entering the video detail view.
     Returns 503 if SAM3 model isn't loaded yet.
     """
-    video = await video_service.get_video_by_id(session, video_id)
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     video_path = Path(video.path)
     
     try:
@@ -148,7 +86,10 @@ async def add_prompt(
     Bbox coords should be normalized [0,1].
     Returns the created prompt. The updated mask can be fetched via GET /mask/{frame_idx}.
     """
-    video = await video_service.get_video_by_id(session, video_id)
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     prompt = await prompt_service.save_prompt(
         session=session,
@@ -164,7 +105,7 @@ async def add_prompt(
         frame_idx=prompt_data.frame_idx,
     )
     
-    await _run_segmentation_and_save(
+    segmentation_service.run_segmentation_and_save(
         project_path=project_path,
         video=video,
         frame_idx=prompt_data.frame_idx,
@@ -184,7 +125,10 @@ async def get_prompts(
     session: AsyncSession = Depends(get_project_session),
 ):
     """Get all prompts for a specific frame."""
-    await video_service.get_video_by_id(session, video_id)
+    try:
+        await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     prompts = await prompt_service.get_prompts(
         session=session,
@@ -209,7 +153,10 @@ async def delete_prompt(
     
     Returns the updated mask as PNG.
     """
-    video = await video_service.get_video_by_id(session, video_id)
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     prompt = await prompt_service.get_prompt_by_id(session, prompt_id)
     if not prompt:
@@ -227,7 +174,7 @@ async def delete_prompt(
         frame_idx=frame_idx,
     )
     
-    mask_png = await _run_segmentation_and_save(
+    mask_png = segmentation_service.run_segmentation_and_save(
         project_path=project_path,
         video=video,
         frame_idx=frame_idx,
@@ -249,7 +196,10 @@ async def reset_frame(
     """
     Reset a frame: delete all prompts and clear the mask.
     """
-    await video_service.get_video_by_id(session, video_id)
+    try:
+        await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
     await prompt_service.delete_prompts_for_frame(
         session=session,
@@ -257,7 +207,7 @@ async def reset_frame(
         frame_idx=frame_idx,
     )
     
-    mask_service.clear_mask(
+    segmentation_service.clear_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=frame_idx,
@@ -280,18 +230,14 @@ async def get_mask(
     
     Returns PNG binary. If no mask exists, returns a transparent (all zeros) mask.
     """
-    video = await video_service.get_video_by_id(session, video_id)
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     
-    mask = mask_service.load_mask(
+    mask_png = segmentation_service.get_mask_png(
         project_path=project_path,
-        video_id=video_id,
+        video=video,
         frame_idx=frame_idx,
-        num_frames=meta.num_frames,
-        height=meta.height,
-        width=meta.width,
     )
-    
-    mask_png = _mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")

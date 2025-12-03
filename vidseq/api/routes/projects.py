@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vidseq.api.dependencies import get_registry_session
+from vidseq.api.dependencies import get_project, get_registry_session
 from vidseq.models.registry import Project
 from vidseq.schemas.project import ProjectCreate, ProjectResponse
 from vidseq.services.database_manager import DatabaseManager
@@ -24,16 +24,9 @@ async def get_projects(
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(
-    project_id: int,
-    db: AsyncSession = Depends(get_registry_session),
+async def get_project_route(
+    project: Project = Depends(get_project),
 ):
-    result = await db.execute(
-        select(Project).where(Project.id == project_id)
-    )
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     return project
 
 
@@ -77,16 +70,9 @@ async def create_project(
 
 @router.delete("/projects/{project_id}", status_code=204)
 async def delete_project(
-    project_id: int,
+    project: Project = Depends(get_project),
     db: AsyncSession = Depends(get_registry_session),
 ):
-    result = await db.execute(
-        select(Project).where(Project.id == project_id)
-    )
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    
     project_path = Path(project.path)
     
     db_manager = DatabaseManager.get_instance()
