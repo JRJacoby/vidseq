@@ -129,61 +129,24 @@ export async function getJobs(): Promise<Job[]> {
     return response.json()
 }
 
-export interface Prompt {
-    id: number
-    video_id: number
-    frame_idx: number
-    type: string
-    details: Record<string, number>
-    created_at: string
-}
-
-export async function addPrompt(
+export async function runSegmentation(
     projectId: number,
     videoId: number,
     frameIdx: number,
     type: string,
-    details: Record<string, number>
-): Promise<Prompt> {
+    details: Record<string, number>,
+    text: string
+): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segment`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ frame_idx: frameIdx, type, details }),
+            body: JSON.stringify({ frame_idx: frameIdx, type, details, text }),
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to add prompt'))
-    }
-    return response.json()
-}
-
-export async function getPrompts(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): Promise<Prompt[]> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts?frame_idx=${frameIdx}`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
-    }
-    return response.json()
-}
-
-export async function deletePrompt(
-    projectId: number,
-    videoId: number,
-    promptId: number
-): Promise<Blob> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts/${promptId}`,
-        { method: 'DELETE' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to delete prompt'))
+        throw new Error(await getErrorMessage(response, 'Failed to run segmentation'))
     }
     return response.blob()
 }
@@ -200,6 +163,20 @@ export async function getMask(
         throw new Error(await getErrorMessage(response, 'Failed to fetch mask'))
     }
     return response.blob()
+}
+
+export async function getConditioningFrames(
+    projectId: number,
+    videoId: number
+): Promise<number[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/conditioning-frames`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch conditioning frames'))
+    }
+    const data = await response.json()
+    return data.conditioning_frames
 }
 
 export interface SAM3Status {
@@ -227,6 +204,7 @@ export interface VideoSessionInfo {
     num_frames: number
     height: number
     width: number
+    conditioning_frames_restored: number
 }
 
 export async function initVideoSession(
@@ -268,6 +246,25 @@ export async function resetFrame(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to reset frame'))
     }
+}
+
+export async function resetVideo(
+    projectId: number,
+    videoId: number
+): Promise<void> {
+    console.log(`[api] resetVideo: DELETE /projects/${projectId}/videos/${videoId}/all-frames`)
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/all-frames`,
+        { method: 'DELETE' }
+    )
+    console.log(`[api] resetVideo response: ${response.status} ${response.statusText}`)
+    if (!response.ok) {
+        const errorMsg = await getErrorMessage(response, 'Failed to reset video')
+        console.error(`[api] resetVideo error: ${errorMsg}`)
+        throw new Error(errorMsg)
+    }
+    const data = await response.json()
+    console.log(`[api] resetVideo success:`, data)
 }
 
 export interface PropagateResponse {

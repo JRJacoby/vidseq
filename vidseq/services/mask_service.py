@@ -185,6 +185,28 @@ def clear_mask(
             h5_file.flush()
 
 
+def clear_all_masks(
+    project_path: Path,
+    video_id: int,
+) -> None:
+    """Delete all masks for a video by removing the dataset."""
+    print(f"[mask_service.clear_all_masks] Called for video_id={video_id}, project_path={project_path}")
+    h5_path = _get_h5_path(project_path)
+    print(f"[mask_service.clear_all_masks] h5_path={h5_path}, exists={h5_path.exists()}")
+    h5_file, lock = _h5_manager.get_file(h5_path)
+    dataset_name = f"segmentation_masks/{video_id}"
+    print(f"[mask_service.clear_all_masks] Looking for dataset: {dataset_name}")
+    
+    with lock:
+        if dataset_name in h5_file:
+            print(f"[mask_service.clear_all_masks] Deleting dataset...")
+            del h5_file[dataset_name]
+            h5_file.flush()
+            print(f"[mask_service.clear_all_masks] Dataset deleted")
+        else:
+            print(f"[mask_service.clear_all_masks] Dataset not found, nothing to clear")
+
+
 def close_project_h5(project_path: Path) -> None:
     """Close the HDF5 file for a project (call when leaving project)."""
     h5_path = _get_h5_path(project_path)

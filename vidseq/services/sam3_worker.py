@@ -200,9 +200,10 @@ def worker_loop(command_queue, result_queue):
             video_id = cmd["video_id"]
             frame_idx = cmd["frame_idx"]
             bbox = cmd["bbox"]
+            text = cmd["text"]
             request_id = cmd.get("request_id")
             
-            print(f"[SAM3 Worker] Adding bbox prompt for video {video_id}, frame {frame_idx}...")
+            print(f"[SAM3 Worker] Adding bbox prompt for video {video_id}, frame {frame_idx}, text='{text}'...")
             
             try:
                 if predictor is None:
@@ -220,6 +221,7 @@ def worker_loop(command_queue, result_queue):
                     "type": "add_prompt",
                     "session_id": session_id,
                     "frame_index": frame_idx,
+                    "text": text,
                     "bounding_boxes": boxes_xywh,
                     "bounding_box_labels": [1],
                 })
@@ -340,6 +342,73 @@ def worker_loop(command_queue, result_queue):
                 traceback.print_exc()
                 result_queue.put({
                     "type": "remove_object_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
+        elif cmd_type == "inject_mask":
+            video_id = cmd["video_id"]
+            frame_idx = cmd["frame_idx"]
+            mask_bytes = cmd["mask_bytes"]
+            mask_shape = cmd["mask_shape"]
+            obj_id = cmd["obj_id"]
+            request_id = cmd.get("request_id")
+            
+            print(f"[SAM3 Worker] Injecting mask for video {video_id}, frame {frame_idx}, obj_id={obj_id}...")
+            
+            try:
+                import torch
+                
+                if predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in sessions:
+                    raise RuntimeError(f"No session for video {video_id}")
+                
+                session_id, loader = sessions[video_id]
+                inference_state = predictor._ALL_INFERENCE_STATES[session_id]["state"]
+                
+                mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
+                mask_tensor = torch.from_numpy(mask > 127).float().cuda()
+                
+                tracker_states = inference_state.get("tracker_inference_states", [])
+                if not tracker_states:
+                    new_tracker_state = predictor.model.tracker.init_state(
+                        cached_features=inference_state.get("feature_cache", {}),
+                        video_height=inference_state["orig_height"],
+                        video_width=inference_state["orig_width"],
+                        num_frames=inference_state["num_frames"],
+                    )
+                    tracker_states.append(new_tracker_state)
+                    inference_state["tracker_inference_states"] = tracker_states
+                
+                tracker_state = tracker_states[0]
+                
+                predictor.model.tracker.add_new_mask(
+                    inference_state=tracker_state,
+                    frame_idx=frame_idx,
+                    obj_id=obj_id,
+                    mask=mask_tensor,
+                    add_mask_to_memory=True,
+                )
+                
+                predictor.model.tracker.propagate_in_video_preflight(
+                    tracker_state, run_mem_encoder=True
+                )
+                
+                print(f"[SAM3 Worker] Mask injected successfully for frame {frame_idx}")
+                result_queue.put({
+                    "type": "inject_mask_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                })
+            except Exception as e:
+                print(f"[SAM3 Worker] Failed to inject mask: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put({
+                    "type": "inject_mask_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),

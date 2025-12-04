@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from vidseq.models.project_db import Base as ProjectBase
 from vidseq.models.video import Video  # noqa: F401 - registers with ProjectBase.metadata
-from vidseq.models.prompt import Prompt  # noqa: F401 - registers with ProjectBase.metadata
+from vidseq.models.conditioning_frame import ConditioningFrame  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.registry import Base as RegistryBase
 
 

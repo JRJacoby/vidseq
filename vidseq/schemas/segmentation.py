@@ -1,15 +1,16 @@
 """Pydantic schemas for segmentation API."""
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator
 
 
-class PromptCreate(BaseModel):
+class SegmentRequest(BaseModel):
+    """Request to run segmentation with a prompt."""
     frame_idx: int
     type: Literal["bbox", "positive_point", "negative_point"]
     details: dict[str, Any]
+    text: str
     
     @field_validator("details")
     @classmethod
@@ -26,18 +27,6 @@ class PromptCreate(BaseModel):
         return v
 
 
-class PromptResponse(BaseModel):
-    id: int
-    video_id: int
-    frame_idx: int
-    type: str
-    details: dict[str, Any]
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
 class PropagateRequest(BaseModel):
     start_frame_idx: int
     max_frames: int = 100
@@ -45,4 +34,3 @@ class PropagateRequest(BaseModel):
 
 class PropagateResponse(BaseModel):
     frames_processed: int
-

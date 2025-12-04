@@ -1,5 +1,5 @@
 from vidseq.models.video import Video
-from vidseq.models.prompt import Prompt
+from vidseq.models.conditioning_frame import ConditioningFrame
 from vidseq.models.registry import Project, Job
 
-__all__ = ["Video", "Prompt", "Project", "Job"]
+__all__ = ["Video", "ConditioningFrame", "Project", "Job"]

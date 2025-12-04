@@ -1,11 +1,12 @@
 import { ref, computed, watch, onMounted, onUnmounted, type Ref, type ComputedRef } from 'vue'
 import {
-  getSAM3Status,
   preloadSAM3,
   initVideoSession,
   closeVideoSession,
   type SAM3Status,
 } from '@/services/api'
+
+const API_BASE = '/api'
 
 export interface UseSAM3SessionReturn {
   sam3Status: Ref<SAM3Status>
@@ -20,7 +21,7 @@ export function useSAM3Session(
 ): UseSAM3SessionReturn {
   const sam3Status = ref<SAM3Status>({ status: 'not_loaded', error: null })
   const sessionInitialized = ref(false)
-  let statusPollInterval: number | null = null
+  let eventSource: EventSource | null = null
 
   const isReady = computed(() => sam3Status.value.status === 'ready')
 
@@ -34,49 +35,64 @@ export function useSAM3Session(
     }
   })
 
-  const pollStatus = async () => {
-    try {
-      sam3Status.value = await getSAM3Status()
-
-      if (sam3Status.value.status === 'ready' || sam3Status.value.status === 'error') {
-        if (statusPollInterval) {
-          clearInterval(statusPollInterval)
-          statusPollInterval = null
-        }
+  const connectSSE = () => {
+    console.log('[useSAM3Session] Connecting to SSE...')
+    eventSource = new EventSource(`${API_BASE}/sam3/status/stream`)
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const status = JSON.parse(event.data) as SAM3Status
+        console.log(`[useSAM3Session] SSE message: ${JSON.stringify(status)}, was: ${JSON.stringify(sam3Status.value)}`)
+        sam3Status.value = status
+      } catch (e) {
+        console.error('[useSAM3Session] Failed to parse SAM3 status:', e)
       }
-    } catch (e) {
-      console.error('Failed to poll SAM3 status:', e)
+    }
+    
+    eventSource.onerror = () => {
+      console.error('[useSAM3Session] SSE connection error, reconnecting in 1s...')
+      eventSource?.close()
+      setTimeout(connectSSE, 1000)
     }
   }
 
-  const stopPolling = () => {
-    if (statusPollInterval) {
-      clearInterval(statusPollInterval)
-      statusPollInterval = null
-    }
-  }
-
-  watch(isReady, async (ready) => {
+  watch(isReady, async (ready, wasReady) => {
+    console.log(`[useSAM3Session] isReady changed: ${wasReady} -> ${ready}, sessionInitialized=${sessionInitialized.value}`)
     if (ready && !sessionInitialized.value && projectId.value && videoId.value) {
+      console.log(`[useSAM3Session] SAM3 ready, initializing video session...`)
       try {
         await initVideoSession(projectId.value, videoId.value)
         sessionInitialized.value = true
+        console.log(`[useSAM3Session] Video session initialized`)
       } catch (e) {
-        console.error('Failed to init video session:', e)
+        console.error('[useSAM3Session] Failed to init video session:', e)
       }
+    }
+    
+    // Worker died - reset session state
+    if (wasReady && !ready) {
+      console.log(`[useSAM3Session] SAM3 no longer ready, resetting sessionInitialized`)
+      sessionInitialized.value = false
     }
   })
 
-  onMounted(async () => {
-    await pollStatus()
-    if (sam3Status.value.status === 'not_loaded') {
+  // Auto-restart loading if status goes back to not_loaded (worker died)
+  watch(() => sam3Status.value.status, (status, oldStatus) => {
+    console.log(`[useSAM3Session] status watch: ${oldStatus} -> ${status}`)
+    if (status === 'not_loaded') {
+      console.log(`[useSAM3Session] Status is not_loaded, calling preloadSAM3()`)
       preloadSAM3()
     }
-    statusPollInterval = window.setInterval(pollStatus, 1000)
+  })
+
+  onMounted(() => {
+    connectSSE()
+    preloadSAM3()
   })
 
   onUnmounted(async () => {
-    stopPolling()
+    eventSource?.close()
+    eventSource = null
 
     if (projectId.value && videoId.value) {
       try {
@@ -94,4 +110,3 @@ export function useSAM3Session(
     sessionInitialized,
   }
 }
-

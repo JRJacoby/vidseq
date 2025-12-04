@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from vidseq.models.prompt import Prompt
 from vidseq.models.video import Video
 from vidseq.services import mask_service, sam3_service, video_service
 
@@ -17,105 +16,6 @@ def mask_to_png(mask: np.ndarray) -> bytes:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return buffer.getvalue()
-
-
-def run_segmentation_and_save(
-    project_path: Path,
-    video: Video,
-    frame_idx: int,
-    prompts: list[Prompt],
-) -> bytes:
-    """
-    Run SAM3 segmentation with prompts and save the mask.
-    
-    Args:
-        project_path: Path to the project folder
-        video: Video model instance
-        frame_idx: Frame index to segment
-        prompts: List of prompts for this frame
-        
-    Returns:
-        PNG bytes of the resulting mask
-    """
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
-    
-    if not prompts:
-        mask = mask_service.load_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        return mask_to_png(mask)
-    
-    bbox_prompt = next((p for p in prompts if p.type == "bbox"), None)
-    point_prompts = [p for p in prompts if p.type in ("positive_point", "negative_point")]
-    
-    if bbox_prompt is None and not point_prompts:
-        mask = mask_service.load_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        return mask_to_png(mask)
-    
-    session = sam3_service.get_session(video.id)
-    has_active_object = session is not None and session.active_obj_id is not None
-    
-    mask = None
-    
-    # Only run bbox if we don't already have an active object
-    if bbox_prompt is not None and not has_active_object:
-        mask = sam3_service.add_bbox_prompt(
-            video_id=video.id,
-            video_path=video_path,
-            frame_idx=frame_idx,
-            bbox=bbox_prompt.details,
-        )
-    
-    # Process point prompts (refine existing object)
-    if point_prompts:
-        points = []
-        labels = []
-        for p in point_prompts:
-            points.append([p.details["x"], p.details["y"]])
-            labels.append(1 if p.type == "positive_point" else 0)
-        
-        mask = sam3_service.add_point_prompt(
-            video_id=video.id,
-            video_path=video_path,
-            frame_idx=frame_idx,
-            points=points,
-            labels=labels,
-        )
-    
-    if mask is not None:
-        mask_service.save_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            mask=mask,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        return mask_to_png(mask)
-    
-    mask = mask_service.load_mask(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-        num_frames=meta.num_frames,
-        height=meta.height,
-        width=meta.width,
-    )
-    return mask_to_png(mask)
 
 
 def get_mask_png(
@@ -174,6 +74,90 @@ def clear_mask(
         pass
 
 
+def clear_video(
+    project_path: Path,
+    video_id: int,
+) -> None:
+    """
+    Clear all masks for a video and remove the object from SAM3.
+    
+    Args:
+        project_path: Path to the project folder
+        video_id: Video ID
+    """
+    print(f"[segmentation_service.clear_video] Called for video_id={video_id}, project_path={project_path}")
+    
+    print(f"[segmentation_service.clear_video] Calling mask_service.clear_all_masks...")
+    mask_service.clear_all_masks(
+        project_path=project_path,
+        video_id=video_id,
+    )
+    print(f"[segmentation_service.clear_video] mask_service.clear_all_masks completed")
+    
+    print(f"[segmentation_service.clear_video] Calling sam3_service.remove_object...")
+    try:
+        result = sam3_service.remove_object(video_id=video_id)
+        print(f"[segmentation_service.clear_video] sam3_service.remove_object returned: {result}")
+    except Exception as e:
+        print(f"[segmentation_service.clear_video] sam3_service.remove_object exception: {e}")
+    
+    print(f"[segmentation_service.clear_video] Done")
+
+
+def restore_conditioning_frames(
+    project_path: Path,
+    video: Video,
+    frame_indices: list[int],
+) -> int:
+    """
+    Restore SAM3's inference state by injecting masks from HDF5.
+    
+    This is called after session init to restore conditioning frames
+    so SAM3 has the memory features needed for tracking/propagation.
+    
+    Args:
+        project_path: Path to the project folder
+        video: Video model instance
+        frame_indices: List of frame indices with conditioning data
+        
+    Returns:
+        Number of frames successfully restored
+    """
+    if not frame_indices:
+        return 0
+    
+    video_path = Path(video.path)
+    meta = video_service.get_video_metadata(video_path)
+    
+    restored_count = 0
+    for frame_idx in sorted(frame_indices):
+        mask = mask_service.load_mask(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            num_frames=meta.num_frames,
+            height=meta.height,
+            width=meta.width,
+        )
+        
+        if mask.max() == 0:
+            continue
+        
+        try:
+            sam3_service.inject_mask(
+                video_id=video.id,
+                video_path=video_path,
+                frame_idx=frame_idx,
+                mask=mask,
+                obj_id=0,
+            )
+            restored_count += 1
+        except Exception as e:
+            print(f"Warning: Failed to inject mask for frame {frame_idx}: {e}")
+    
+    return restored_count
+
+
 def propagate_and_save(
     project_path: Path,
     video: Video,
@@ -213,4 +197,3 @@ def propagate_and_save(
         )
     
     return len(masks)
-

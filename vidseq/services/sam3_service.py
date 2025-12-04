@@ -107,7 +107,8 @@ class SAM3Service:
             
             elif result_type in ("init_session_result", "add_bbox_prompt_result",
                                 "add_point_prompt_result", "close_session_result",
-                                "remove_object_result", "propagate_forward_result"):
+                                "remove_object_result", "propagate_forward_result",
+                                "inject_mask_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -115,6 +116,17 @@ class SAM3Service:
     def get_status(self) -> dict:
         """Get the current SAM3 loading status."""
         self._drain_result_queue()
+        
+        # Check if worker died (e.g., uvicorn restart killed it)
+        if self._status == SAM3Status.READY and self._worker_process is not None:
+            if not self._worker_process.is_alive():
+                print(f"[sam3_service.get_status] Worker process died! Resetting status to NOT_LOADED")
+                self._status = SAM3Status.NOT_LOADED
+                self._worker_process = None
+                self._command_queue = None
+                self._result_queue = None
+                self._sessions.clear()
+        
         return {
             "status": self._status.value,
             "error": self._error_message,
@@ -229,6 +241,7 @@ class SAM3Service:
         video_path: Path,
         frame_idx: int,
         bbox: dict,
+        text: str,
     ) -> np.ndarray:
         """
         Add a bounding box prompt and get the segmentation mask.
@@ -238,6 +251,7 @@ class SAM3Service:
             video_path: Path to video file (used to init session if needed)
             frame_idx: Frame index to segment
             bbox: Dict with x1, y1, x2, y2 in normalized [0,1] coords
+            text: Text description of the object to segment (e.g., "dog", "person")
             
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
@@ -251,6 +265,7 @@ class SAM3Service:
             "video_id": video_id,
             "frame_idx": frame_idx,
             "bbox": bbox,
+            "text": text,
         }, timeout=120.0)
         
         if result.get("status") != "ok":
@@ -325,11 +340,15 @@ class SAM3Service:
         Returns:
             True if successful (or no object to remove)
         """
+        print(f"[sam3_service.remove_object] Called for video_id={video_id}")
         session = self.get_session(video_id)
+        print(f"[sam3_service.remove_object] session={session}, active_obj_id={session.active_obj_id if session else 'N/A'}")
         if session is None or session.active_obj_id is None:
+            print(f"[sam3_service.remove_object] No session or no active object, returning True")
             return True
         
         obj_id = session.active_obj_id
+        print(f"[sam3_service.remove_object] Sending remove_object command for obj_id={obj_id}")
         
         result = self._send_and_wait({
             "type": "remove_object",
@@ -337,10 +356,13 @@ class SAM3Service:
             "obj_id": obj_id,
         }, timeout=30.0)
         
+        print(f"[sam3_service.remove_object] Worker result: {result}")
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to remove object"))
         
         session.active_obj_id = None
+        print(f"[sam3_service.remove_object] active_obj_id cleared, returning True")
+        return True
         return True
     
     def propagate_forward(
@@ -389,6 +411,46 @@ class SAM3Service:
             masks.append((frame_idx, mask))
         
         return masks
+    
+    def inject_mask(
+        self,
+        video_id: int,
+        video_path: Path,
+        frame_idx: int,
+        mask: np.ndarray,
+        obj_id: int = 0,
+    ) -> None:
+        """
+        Inject a mask directly into SAM3's inference state.
+        
+        This is used to restore conditioning frames after a server restart.
+        The mask becomes part of SAM3's memory for tracking/propagation.
+        
+        Args:
+            video_id: ID of the video
+            video_path: Path to video file (used to init session if needed)
+            frame_idx: Frame index where mask belongs
+            mask: Binary mask (height, width), dtype=uint8, values 0 or 255
+            obj_id: Object ID to associate with this mask
+        """
+        session = self.get_session(video_id)
+        if session is None:
+            session = self.init_session(video_id, video_path)
+        
+        result = self._send_and_wait({
+            "type": "inject_mask",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "mask_bytes": mask.tobytes(),
+            "mask_shape": mask.shape,
+            "obj_id": obj_id,
+        }, timeout=60.0)
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to inject mask"))
+        
+        if session.active_obj_id is None:
+            session.active_obj_id = obj_id
     
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -443,6 +505,7 @@ def add_bbox_prompt(
     video_path: Path,
     frame_idx: int,
     bbox: dict,
+    text: str,
 ) -> np.ndarray:
     """
     Add a bounding box prompt and get the segmentation mask.
@@ -452,12 +515,13 @@ def add_bbox_prompt(
         video_path: Path to video file (used to init session if needed)
         frame_idx: Frame index to segment
         bbox: Dict with x1, y1, x2, y2 in normalized [0,1] coords
+        text: Text description of the object to segment (e.g., "dog", "person")
         
     Returns:
         Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
     return SAM3Service.get_instance().add_bbox_prompt(
-        video_id, video_path, frame_idx, bbox
+        video_id, video_path, frame_idx, bbox, text
     )
 
 
@@ -517,6 +581,23 @@ def propagate_forward(
     """
     return SAM3Service.get_instance().propagate_forward(
         video_id, start_frame_idx, max_frames
+    )
+
+
+def inject_mask(
+    video_id: int,
+    video_path: Path,
+    frame_idx: int,
+    mask: np.ndarray,
+    obj_id: int = 0,
+) -> None:
+    """
+    Inject a mask directly into SAM3's inference state.
+    
+    This is used to restore conditioning frames after a server restart.
+    """
+    return SAM3Service.get_instance().inject_mask(
+        video_id, video_path, frame_idx, mask, obj_id
     )
 
 

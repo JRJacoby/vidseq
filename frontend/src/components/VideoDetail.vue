@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
 import { useSAM3Session } from '@/composables/useSAM3Session'
@@ -60,11 +60,12 @@ const {
 
 const currentFrameIdx = computed(() => {
   if (!video.value) return 0
-  return Math.floor(currentTime.value * video.value.fps)
+  return Math.round(currentTime.value * video.value.fps)
 })
 
 const {
   activeTool,
+  textPrompt,
   currentMask,
   currentPrompts,
   isSegmenting,
@@ -77,14 +78,16 @@ const {
   handleBboxComplete,
   handlePointComplete,
   handleResetFrame,
+  handleResetVideo,
   handlePropagate,
+  clearPromptStorage,
 } = useSegmentation(projectId, videoId, currentFrameIdx)
 
 // Handle seek: move video AND start loading mask/prompts in parallel
 const handleSeek = (time: number) => {
   seek(time)
   if (video.value) {
-    const targetFrame = Math.floor(time * video.value.fps)
+    const targetFrame = Math.round(time * video.value.fps)
     seekToFrame(targetFrame)
   }
 }
@@ -95,6 +98,10 @@ setMetadataCallback(() => {
 
 onMounted(() => {
   loadVideo()
+})
+
+onUnmounted(() => {
+  clearPromptStorage()
 })
 </script>
 
@@ -151,13 +158,23 @@ onMounted(() => {
 
     <aside class="action-bar">
       <div class="action-bar-content">
+        <div class="text-prompt-section">
+          <label class="text-prompt-label">Object Description</label>
+          <input
+            v-model="textPrompt"
+            type="text"
+            class="text-prompt-input"
+            placeholder="e.g., dog, person, car..."
+            :disabled="isSegmenting"
+          />
+        </div>
         <h4 class="action-bar-title">Tools</h4>
         <div class="tool-buttons">
           <button
             class="tool-button"
             :class="{ active: activeTool === 'bbox' }"
             @click="toggleBboxTool"
-            :disabled="isSegmenting || !sam3IsReady"
+            :disabled="isSegmenting || !sam3IsReady || !textPrompt.trim()"
           >
             <span class="tool-icon">▢</span>
             <span class="tool-label">Bounding Box</span>
@@ -183,10 +200,18 @@ onMounted(() => {
           <button
             class="tool-button reset-button"
             @click="handleResetFrame"
-            :disabled="isSegmenting || isPropagating || currentPrompts.length === 0"
+            :disabled="isSegmenting || isPropagating"
           >
             <span class="tool-icon">↺</span>
             <span class="tool-label">Reset Frame</span>
+          </button>
+          <button
+            class="tool-button reset-video-button"
+            @click="handleResetVideo"
+            :disabled="isSegmenting || isPropagating"
+          >
+            <span class="tool-icon">⟲</span>
+            <span class="tool-label">Reset Video</span>
           </button>
           <button
             class="tool-button propagate-button"
@@ -330,6 +355,38 @@ onMounted(() => {
   padding: 1rem;
 }
 
+.text-prompt-section {
+  margin-bottom: 1.5rem;
+}
+
+.text-prompt-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.text-prompt-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+
+.text-prompt-input:focus {
+  outline: none;
+  border-color: #2196f3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
+}
+
+.text-prompt-input:disabled {
+  background-color: #f5f5f5;
+  color: #999;
+}
+
 .action-bar-title {
   margin: 0 0 1rem 0;
   font-size: 0.9rem;
@@ -377,6 +434,12 @@ onMounted(() => {
   background-color: #ffebee;
   border-color: #ef5350;
   color: #c62828;
+}
+
+.tool-button.reset-video-button:not(:disabled):hover {
+  background-color: #fff3e0;
+  border-color: #ff9800;
+  color: #e65100;
 }
 
 .tool-button.positive-point.active {

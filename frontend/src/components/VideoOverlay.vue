@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import type { Prompt } from '@/services/api'
+import type { StoredPrompt } from '@/composables/usePromptStorage'
 
 export type ToolType = 'none' | 'bbox' | 'positive_point' | 'negative_point'
 
@@ -9,7 +9,7 @@ const props = defineProps<{
   videoHeight: number
   activeTool: ToolType
   mask: ImageBitmap | null
-  prompts: Prompt[]
+  prompts: StoredPrompt[]
 }>()
 
 const emit = defineEmits<{
