@@ -36,51 +36,42 @@ export function useSAM3Session(
   })
 
   const connectSSE = () => {
-    console.log('[useSAM3Session] Connecting to SSE...')
     eventSource = new EventSource(`${API_BASE}/sam3/status/stream`)
     
     eventSource.onmessage = (event) => {
       try {
         const status = JSON.parse(event.data) as SAM3Status
-        console.log(`[useSAM3Session] SSE message: ${JSON.stringify(status)}, was: ${JSON.stringify(sam3Status.value)}`)
         sam3Status.value = status
       } catch (e) {
-        console.error('[useSAM3Session] Failed to parse SAM3 status:', e)
+        console.error('Failed to parse SAM3 status:', e)
       }
     }
     
     eventSource.onerror = () => {
-      console.error('[useSAM3Session] SSE connection error, reconnecting in 1s...')
       eventSource?.close()
       setTimeout(connectSSE, 1000)
     }
   }
 
   watch(isReady, async (ready, wasReady) => {
-    console.log(`[useSAM3Session] isReady changed: ${wasReady} -> ${ready}, sessionInitialized=${sessionInitialized.value}`)
     if (ready && !sessionInitialized.value && projectId.value && videoId.value) {
-      console.log(`[useSAM3Session] SAM3 ready, initializing video session...`)
       try {
         await initVideoSession(projectId.value, videoId.value)
         sessionInitialized.value = true
-        console.log(`[useSAM3Session] Video session initialized`)
       } catch (e) {
-        console.error('[useSAM3Session] Failed to init video session:', e)
+        console.error('Failed to init video session:', e)
       }
     }
     
     // Worker died - reset session state
     if (wasReady && !ready) {
-      console.log(`[useSAM3Session] SAM3 no longer ready, resetting sessionInitialized`)
       sessionInitialized.value = false
     }
   })
 
   // Auto-restart loading if status goes back to not_loaded (worker died)
-  watch(() => sam3Status.value.status, (status, oldStatus) => {
-    console.log(`[useSAM3Session] status watch: ${oldStatus} -> ${status}`)
+  watch(() => sam3Status.value.status, (status) => {
     if (status === 'not_loaded') {
-      console.log(`[useSAM3Session] Status is not_loaded, calling preloadSAM3()`)
       preloadSAM3()
     }
   })

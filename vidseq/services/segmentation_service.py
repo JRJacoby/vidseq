@@ -85,23 +85,15 @@ def clear_video(
         project_path: Path to the project folder
         video_id: Video ID
     """
-    print(f"[segmentation_service.clear_video] Called for video_id={video_id}, project_path={project_path}")
-    
-    print(f"[segmentation_service.clear_video] Calling mask_service.clear_all_masks...")
     mask_service.clear_all_masks(
         project_path=project_path,
         video_id=video_id,
     )
-    print(f"[segmentation_service.clear_video] mask_service.clear_all_masks completed")
     
-    print(f"[segmentation_service.clear_video] Calling sam3_service.remove_object...")
     try:
-        result = sam3_service.remove_object(video_id=video_id)
-        print(f"[segmentation_service.clear_video] sam3_service.remove_object returned: {result}")
-    except Exception as e:
-        print(f"[segmentation_service.clear_video] sam3_service.remove_object exception: {e}")
-    
-    print(f"[segmentation_service.clear_video] Done")
+        sam3_service.remove_object(video_id=video_id)
+    except Exception:
+        pass
 
 
 def restore_conditioning_frames(

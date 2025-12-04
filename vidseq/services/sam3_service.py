@@ -120,7 +120,6 @@ class SAM3Service:
         # Check if worker died (e.g., uvicorn restart killed it)
         if self._status == SAM3Status.READY and self._worker_process is not None:
             if not self._worker_process.is_alive():
-                print(f"[sam3_service.get_status] Worker process died! Resetting status to NOT_LOADED")
                 self._status = SAM3Status.NOT_LOADED
                 self._worker_process = None
                 self._command_queue = None
@@ -340,15 +339,11 @@ class SAM3Service:
         Returns:
             True if successful (or no object to remove)
         """
-        print(f"[sam3_service.remove_object] Called for video_id={video_id}")
         session = self.get_session(video_id)
-        print(f"[sam3_service.remove_object] session={session}, active_obj_id={session.active_obj_id if session else 'N/A'}")
         if session is None or session.active_obj_id is None:
-            print(f"[sam3_service.remove_object] No session or no active object, returning True")
             return True
         
         obj_id = session.active_obj_id
-        print(f"[sam3_service.remove_object] Sending remove_object command for obj_id={obj_id}")
         
         result = self._send_and_wait({
             "type": "remove_object",
@@ -356,12 +351,10 @@ class SAM3Service:
             "obj_id": obj_id,
         }, timeout=30.0)
         
-        print(f"[sam3_service.remove_object] Worker result: {result}")
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to remove object"))
         
         session.active_obj_id = None
-        print(f"[sam3_service.remove_object] active_obj_id cleared, returning True")
         return True
         return True
     

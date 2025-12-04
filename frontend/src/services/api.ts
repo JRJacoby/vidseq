@@ -252,19 +252,13 @@ export async function resetVideo(
     projectId: number,
     videoId: number
 ): Promise<void> {
-    console.log(`[api] resetVideo: DELETE /projects/${projectId}/videos/${videoId}/all-frames`)
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/all-frames`,
         { method: 'DELETE' }
     )
-    console.log(`[api] resetVideo response: ${response.status} ${response.statusText}`)
     if (!response.ok) {
-        const errorMsg = await getErrorMessage(response, 'Failed to reset video')
-        console.error(`[api] resetVideo error: ${errorMsg}`)
-        throw new Error(errorMsg)
+        throw new Error(await getErrorMessage(response, 'Failed to reset video'))
     }
-    const data = await response.json()
-    console.log(`[api] resetVideo success:`, data)
 }
 
 export interface PropagateResponse {

@@ -150,22 +150,14 @@ export function useSegmentation(
     }
 
     const handleResetVideo = async () => {
-        console.log('[useSegmentation] handleResetVideo called')
-        if (!projectId.value || !videoId.value) {
-            console.log('[useSegmentation] handleResetVideo: no projectId or videoId')
-            return
-        }
+        if (!projectId.value || !videoId.value) return
 
         try {
-            console.log(`[useSegmentation] Calling resetVideo API for project=${projectId.value}, video=${videoId.value}`)
             await resetVideo(projectId.value, videoId.value)
-            console.log('[useSegmentation] resetVideo API completed successfully')
             promptStorage.clearAll()
-            console.log('[useSegmentation] promptStorage cleared')
             currentMask.value = null
-            console.log('[useSegmentation] currentMask set to null')
         } catch (e) {
-            console.error('[useSegmentation] Failed to reset video:', e)
+            console.error('Failed to reset video:', e)
         }
     }
 

@@ -24,17 +24,13 @@ async def get_sam3_status():
 @router.get("/sam3/status/stream")
 async def stream_sam3_status():
     """SSE endpoint for real-time SAM3 status updates."""
-    print("[SSE] Client connected to /sam3/status/stream")
     async def event_generator():
         last_status_str = None
-        poll_count = 0
         while True:
             current_status = sam3_service.get_status()
             current_status_str = json.dumps(current_status)
-            poll_count += 1
             
             if current_status_str != last_status_str:
-                print(f"[SSE] Status changed: {last_status_str} -> {current_status_str} (poll #{poll_count})")
                 yield f"data: {current_status_str}\n\n"
                 last_status_str = current_status_str
             
@@ -243,29 +239,21 @@ async def reset_video(
     """
     Reset entire video: clear all masks and conditioning frames.
     """
-    print(f"[reset_video] Called for video_id={video_id}, project_path={project_path}")
     try:
-        video = await video_service.get_video_by_id(session, video_id)
-        print(f"[reset_video] Video found: {video.name}")
+        await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
-        print(f"[reset_video] Video not found: {e}")
         raise HTTPException(status_code=404, detail=str(e))
     
-    print(f"[reset_video] Calling segmentation_service.clear_video...")
     segmentation_service.clear_video(
         project_path=project_path,
         video_id=video_id,
     )
-    print(f"[reset_video] segmentation_service.clear_video completed")
     
-    print(f"[reset_video] Calling conditioning_service.clear_conditioning_frames...")
     deleted_count = await conditioning_service.clear_conditioning_frames(
         session=session,
         video_id=video_id,
     )
-    print(f"[reset_video] Cleared {deleted_count} conditioning frames")
     
-    print(f"[reset_video] Done, returning success")
     return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
 
 
