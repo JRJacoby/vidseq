@@ -33,6 +33,7 @@ class VideoSessionInfo:
     num_frames: int
     height: int
     width: int
+    active_obj_id: Optional[int] = None
 
 
 class SAM3Service:
@@ -105,7 +106,8 @@ class SAM3Service:
                     self._error_message = result.get("error")
             
             elif result_type in ("init_session_result", "add_bbox_prompt_result",
-                                "add_point_prompt_result", "close_session_result"):
+                                "add_point_prompt_result", "close_session_result",
+                                "remove_object_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -258,6 +260,10 @@ class SAM3Service:
         mask_shape = tuple(result["mask_shape"])
         mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
         
+        obj_id = result.get("obj_id")
+        if obj_id is not None and session is not None:
+            session.active_obj_id = obj_id
+        
         return mask
     
     def add_point_prompt(
@@ -280,10 +286,16 @@ class SAM3Service:
             
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+        
+        Raises:
+            RuntimeError: If no object exists (must add bbox first)
         """
         session = self.get_session(video_id)
         if session is None:
-            session = self.init_session(video_id, video_path)
+            raise RuntimeError("No session exists. Add a bounding box prompt first.")
+        
+        if session.active_obj_id is None:
+            raise RuntimeError("No active object. Add a bounding box prompt first.")
         
         result = self._send_and_wait({
             "type": "add_point_prompt",
@@ -291,6 +303,7 @@ class SAM3Service:
             "frame_idx": frame_idx,
             "points": points,
             "labels": labels,
+            "obj_id": session.active_obj_id,
         }, timeout=120.0)
         
         if result.get("status") != "ok":
@@ -301,6 +314,34 @@ class SAM3Service:
         mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
         
         return mask
+    
+    def remove_object(self, video_id: int) -> bool:
+        """
+        Remove the active tracked object from SAM3's inference state.
+        
+        Args:
+            video_id: ID of the video
+            
+        Returns:
+            True if successful (or no object to remove)
+        """
+        session = self.get_session(video_id)
+        if session is None or session.active_obj_id is None:
+            return True
+        
+        obj_id = session.active_obj_id
+        
+        result = self._send_and_wait({
+            "type": "remove_object",
+            "video_id": video_id,
+            "obj_id": obj_id,
+        }, timeout=30.0)
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to remove object"))
+        
+        session.active_obj_id = None
+        return True
     
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -396,6 +437,19 @@ def add_point_prompt(
     return SAM3Service.get_instance().add_point_prompt(
         video_id, video_path, frame_idx, points, labels
     )
+
+
+def remove_object(video_id: int) -> bool:
+    """
+    Remove the active tracked object from SAM3's inference state.
+    
+    Args:
+        video_id: ID of the video
+        
+    Returns:
+        True if successful (or no object to remove)
+    """
+    return SAM3Service.get_instance().remove_object(video_id)
 
 
 def shutdown_worker() -> None:

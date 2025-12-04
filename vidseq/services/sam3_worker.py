@@ -54,20 +54,26 @@ def _xyxy_to_xywh(x1: float, y1: float, x2: float, y2: float) -> list:
     return [x1, y1, x2 - x1, y2 - y1]
 
 
-def _extract_mask(response: dict, height: int, width: int) -> np.ndarray:
-    """Extract and process mask from predictor response."""
+def _extract_mask(response: dict, height: int, width: int, return_obj_id: bool = False):
+    """
+    Extract and process mask from predictor response.
+    
+    If return_obj_id=True, returns (mask, obj_id) tuple taking only highest-confidence object.
+    Otherwise returns combined mask of all objects (legacy behavior).
+    """
     import cv2
     
     outputs = response.get("outputs", {})
     out_obj_ids = outputs.get("out_obj_ids", [])
     out_masks = outputs.get("out_binary_masks", [])
+    out_probs = outputs.get("out_probs", [])
     
-    # Check using obj_ids length (out_masks might be a tensor/array)
     if len(out_obj_ids) == 0:
+        if return_obj_id:
+            return np.zeros((height, width), dtype=np.uint8), None
         return np.zeros((height, width), dtype=np.uint8)
     
-    combined_mask = None
-    for mask in out_masks:
+    def process_mask(mask):
         if hasattr(mask, 'cpu'):
             mask_np = mask.cpu().numpy()
         else:
@@ -82,9 +88,21 @@ def _extract_mask(response: dict, height: int, width: int) -> np.ndarray:
                 (width, height),
                 interpolation=cv2.INTER_NEAREST,
             )
+        return mask_np.astype(bool)
+    
+    if return_obj_id:
+        if len(out_probs) > 0:
+            best_idx = int(np.argmax(out_probs))
+        else:
+            best_idx = 0
         
-        mask_np = mask_np.astype(bool)
-        
+        best_obj_id = int(out_obj_ids[best_idx])
+        best_mask = process_mask(out_masks[best_idx])
+        return (best_mask * 255).astype(np.uint8), best_obj_id
+    
+    combined_mask = None
+    for mask in out_masks:
+        mask_np = process_mask(mask)
         if combined_mask is None:
             combined_mask = mask_np
         else:
@@ -208,9 +226,9 @@ def worker_loop(command_queue, result_queue):
                 
                 height = loader._video_height
                 width = loader._video_width
-                mask = _extract_mask(response, height, width)
+                mask, obj_id = _extract_mask(response, height, width, return_obj_id=True)
                 
-                print(f"[SAM3 Worker] Prompt processed, mask shape: {mask.shape}")
+                print(f"[SAM3 Worker] Prompt processed, obj_id={obj_id}, mask shape: {mask.shape}")
                 result_queue.put({
                     "type": "add_bbox_prompt_result",
                     "request_id": request_id,
@@ -218,6 +236,7 @@ def worker_loop(command_queue, result_queue):
                     "mask_bytes": mask.tobytes(),
                     "mask_shape": mask.shape,
                     "mask_dtype": str(mask.dtype),
+                    "obj_id": obj_id,
                 })
             except Exception as e:
                 print(f"[SAM3 Worker] Failed to add prompt: {e}")
@@ -235,9 +254,10 @@ def worker_loop(command_queue, result_queue):
             frame_idx = cmd["frame_idx"]
             points = cmd["points"]  # [[x, y], ...] normalized coords
             labels = cmd["labels"]  # [1, 0, ...] (1=positive, 0=negative)
+            obj_id = cmd["obj_id"]  # Must match the object from bbox prompt
             request_id = cmd.get("request_id")
             
-            print(f"[SAM3 Worker] Adding point prompt for video {video_id}, frame {frame_idx}...")
+            print(f"[SAM3 Worker] Adding point prompt for video {video_id}, frame {frame_idx}, obj_id={obj_id}...")
             
             try:
                 if predictor is None:
@@ -254,7 +274,7 @@ def worker_loop(command_queue, result_queue):
                     "frame_index": frame_idx,
                     "points": points,
                     "point_labels": labels,
-                    "obj_id": 1,  # Single object paradigm
+                    "obj_id": obj_id,
                 })
                 
                 height = loader._video_height
@@ -276,6 +296,50 @@ def worker_loop(command_queue, result_queue):
                 traceback.print_exc()
                 result_queue.put({
                     "type": "add_point_prompt_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
+        elif cmd_type == "remove_object":
+            video_id = cmd["video_id"]
+            obj_id = cmd["obj_id"]
+            request_id = cmd.get("request_id")
+            
+            print(f"[SAM3 Worker] Removing object {obj_id} from video {video_id}...")
+            
+            try:
+                if predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in sessions:
+                    result_queue.put({
+                        "type": "remove_object_result",
+                        "request_id": request_id,
+                        "status": "ok",
+                    })
+                    continue
+                
+                session_id, loader = sessions[video_id]
+                
+                predictor.handle_request({
+                    "type": "remove_object",
+                    "session_id": session_id,
+                    "obj_id": obj_id,
+                })
+                
+                print(f"[SAM3 Worker] Object {obj_id} removed")
+                result_queue.put({
+                    "type": "remove_object_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                })
+            except Exception as e:
+                print(f"[SAM3 Worker] Failed to remove object: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put({
+                    "type": "remove_object_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),

@@ -51,13 +51,9 @@ def run_segmentation_and_save(
         )
         return mask_to_png(mask)
     
-    # Check for bbox prompt (required for initial segmentation)
     bbox_prompt = next((p for p in prompts if p.type == "bbox"), None)
-    
-    # Collect point prompts
     point_prompts = [p for p in prompts if p.type in ("positive_point", "negative_point")]
     
-    # If no bbox and no points, just return current mask
     if bbox_prompt is None and not point_prompts:
         mask = mask_service.load_mask(
             project_path=project_path,
@@ -69,10 +65,13 @@ def run_segmentation_and_save(
         )
         return mask_to_png(mask)
     
+    session = sam3_service.get_session(video.id)
+    has_active_object = session is not None and session.active_obj_id is not None
+    
     mask = None
     
-    # Process bbox first if present
-    if bbox_prompt is not None:
+    # Only run bbox if we don't already have an active object
+    if bbox_prompt is not None and not has_active_object:
         mask = sam3_service.add_bbox_prompt(
             video_id=video.id,
             video_path=video_path,
@@ -80,7 +79,7 @@ def run_segmentation_and_save(
             bbox=bbox_prompt.details,
         )
     
-    # Process point prompts if present
+    # Process point prompts (refine existing object)
     if point_prompts:
         points = []
         labels = []
@@ -108,7 +107,6 @@ def run_segmentation_and_save(
         )
         return mask_to_png(mask)
     
-    # Fallback: return existing mask
     mask = mask_service.load_mask(
         project_path=project_path,
         video_id=video.id,
@@ -157,7 +155,7 @@ def clear_mask(
     frame_idx: int,
 ) -> None:
     """
-    Clear (zero out) a mask for a specific frame.
+    Clear (zero out) a mask for a specific frame and remove the object from SAM3.
     
     Args:
         project_path: Path to the project folder
@@ -169,4 +167,9 @@ def clear_mask(
         video_id=video_id,
         frame_idx=frame_idx,
     )
+    
+    try:
+        sam3_service.remove_object(video_id=video_id)
+    except Exception:
+        pass
 
