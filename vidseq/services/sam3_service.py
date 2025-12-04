@@ -104,8 +104,8 @@ class SAM3Service:
                     self._status = SAM3Status.ERROR
                     self._error_message = result.get("error")
             
-            elif result_type in ("init_session_result", "add_bbox_prompt_result", 
-                                "close_session_result"):
+            elif result_type in ("init_session_result", "add_bbox_prompt_result",
+                                "add_point_prompt_result", "close_session_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -260,6 +260,48 @@ class SAM3Service:
         
         return mask
     
+    def add_point_prompt(
+        self,
+        video_id: int,
+        video_path: Path,
+        frame_idx: int,
+        points: list[list[float]],
+        labels: list[int],
+    ) -> np.ndarray:
+        """
+        Add point prompts and get the updated segmentation mask.
+        
+        Args:
+            video_id: ID of the video
+            video_path: Path to video file (used to init session if needed)
+            frame_idx: Frame index to segment
+            points: List of [x, y] coordinates in normalized [0,1] coords
+            labels: List of labels (1=positive, 0=negative)
+            
+        Returns:
+            Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+        """
+        session = self.get_session(video_id)
+        if session is None:
+            session = self.init_session(video_id, video_path)
+        
+        result = self._send_and_wait({
+            "type": "add_point_prompt",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "points": points,
+            "labels": labels,
+        }, timeout=120.0)
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to add point prompt"))
+        
+        mask_bytes = result["mask_bytes"]
+        mask_shape = tuple(result["mask_shape"])
+        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
+        
+        return mask
+    
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
         if self._command_queue is not None:
@@ -328,6 +370,31 @@ def add_bbox_prompt(
     """
     return SAM3Service.get_instance().add_bbox_prompt(
         video_id, video_path, frame_idx, bbox
+    )
+
+
+def add_point_prompt(
+    video_id: int,
+    video_path: Path,
+    frame_idx: int,
+    points: list[list[float]],
+    labels: list[int],
+) -> np.ndarray:
+    """
+    Add point prompts and get the updated segmentation mask.
+    
+    Args:
+        video_id: ID of the video
+        video_path: Path to video file (used to init session if needed)
+        frame_idx: Frame index to segment
+        points: List of [x, y] coordinates in normalized [0,1] coords
+        labels: List of labels (1=positive, 0=negative)
+        
+    Returns:
+        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+    """
+    return SAM3Service.get_instance().add_point_prompt(
+        video_id, video_path, frame_idx, points, labels
     )
 
 

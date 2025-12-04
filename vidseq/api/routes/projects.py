@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vidseq.api.dependencies import get_project, get_registry_session
 from vidseq.models.registry import Project
 from vidseq.schemas.project import ProjectCreate, ProjectResponse
+from vidseq.services import mask_service
 from vidseq.services.database_manager import DatabaseManager
 
 router = APIRouter()
@@ -77,6 +78,9 @@ async def delete_project(
     
     db_manager = DatabaseManager.get_instance()
     await db_manager.dispose_project(project_path)
+    
+    # Close any open h5 file handles before deleting
+    mask_service.close_project_h5(project_path)
     
     await db.delete(project)
     await db.commit()

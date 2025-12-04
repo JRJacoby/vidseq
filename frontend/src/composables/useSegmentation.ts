@@ -7,14 +7,20 @@ import {
   type Prompt,
 } from '@/services/api'
 
+export type ToolType = 'none' | 'bbox' | 'positive_point' | 'negative_point'
+
 export interface UseSegmentationReturn {
-  activeTool: Ref<'none' | 'bbox'>
+  activeTool: Ref<ToolType>
   currentMask: Ref<ImageBitmap | null>
   currentPrompts: Ref<Prompt[]>
   isSegmenting: Ref<boolean>
   loadFrameData: (frameIdx: number) => Promise<void>
+  seekToFrame: (frameIdx: number) => void
   toggleTool: () => void
+  togglePositivePointTool: () => void
+  toggleNegativePointTool: () => void
   handleBboxComplete: (bbox: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
+  handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
   handleResetFrame: () => Promise<void>
 }
 
@@ -23,10 +29,11 @@ export function useSegmentation(
   videoId: Ref<number>,
   currentFrameIdx: Ref<number>
 ): UseSegmentationReturn {
-  const activeTool = ref<'none' | 'bbox'>('none')
+  const activeTool = ref<ToolType>('none')
   const currentMask = ref<ImageBitmap | null>(null)
   const currentPrompts = ref<Prompt[]>([])
   const isSegmenting = ref(false)
+  const intendedFrameIdx = ref(0)  // The frame we want to be on (for parallel loading)
 
   let debounceTimeout: number | null = null
 
@@ -39,6 +46,11 @@ export function useSegmentation(
         getPrompts(projectId.value, videoId.value, frameIdx),
       ])
 
+      // Discard stale response if we've moved to a different intended frame
+      if (frameIdx !== intendedFrameIdx.value) {
+        return
+      }
+
       currentMask.value = await createImageBitmap(maskBlob)
       currentPrompts.value = prompts
     } catch (e) {
@@ -48,6 +60,20 @@ export function useSegmentation(
 
   const toggleTool = () => {
     activeTool.value = activeTool.value === 'bbox' ? 'none' : 'bbox'
+  }
+
+  const togglePositivePointTool = () => {
+    activeTool.value = activeTool.value === 'positive_point' ? 'none' : 'positive_point'
+  }
+
+  const toggleNegativePointTool = () => {
+    activeTool.value = activeTool.value === 'negative_point' ? 'none' : 'negative_point'
+  }
+
+  // Called when user seeks - starts loading immediately without waiting for video
+  const seekToFrame = (frameIdx: number) => {
+    intendedFrameIdx.value = frameIdx
+    loadFrameData(frameIdx)
   }
 
   const handleBboxComplete = async (bbox: { x1: number; y1: number; x2: number; y2: number }) => {
@@ -73,6 +99,28 @@ export function useSegmentation(
     }
   }
 
+  const handlePointComplete = async (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => {
+    if (!projectId.value || !videoId.value) return
+
+    isSegmenting.value = true
+
+    try {
+      await addPrompt(
+        projectId.value,
+        videoId.value,
+        currentFrameIdx.value,
+        point.type,
+        { x: point.x, y: point.y }
+      )
+
+      await loadFrameData(currentFrameIdx.value)
+    } catch (e) {
+      console.error('Failed to add point:', e)
+    } finally {
+      isSegmenting.value = false
+    }
+  }
+
   const handleResetFrame = async () => {
     if (!projectId.value || !videoId.value) return
 
@@ -85,6 +133,13 @@ export function useSegmentation(
   }
 
   watch(currentFrameIdx, (newFrameIdx) => {
+    // Skip if we're already loading/loaded this frame (e.g., from seekToFrame)
+    if (newFrameIdx === intendedFrameIdx.value) {
+      return
+    }
+    
+    intendedFrameIdx.value = newFrameIdx
+    
     if (debounceTimeout) {
       clearTimeout(debounceTimeout)
     }
@@ -105,8 +160,12 @@ export function useSegmentation(
     currentPrompts,
     isSegmenting,
     loadFrameData,
+    seekToFrame,
     toggleTool,
+    togglePositivePointTool,
+    toggleNegativePointTool,
     handleBboxComplete,
+    handlePointComplete,
     handleResetFrame,
   }
 }

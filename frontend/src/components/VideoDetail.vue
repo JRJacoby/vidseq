@@ -53,7 +53,7 @@ const {
   onLoadedMetadata,
   onPlay,
   onPause,
-  seek: handleSeek,
+  seek,
   togglePlay: handleTogglePlay,
   setMetadataCallback,
 } = useVideoPlayback()
@@ -69,10 +69,23 @@ const {
   currentPrompts,
   isSegmenting,
   loadFrameData,
+  seekToFrame,
   toggleTool: toggleBboxTool,
+  togglePositivePointTool,
+  toggleNegativePointTool,
   handleBboxComplete,
+  handlePointComplete,
   handleResetFrame,
 } = useSegmentation(projectId, videoId, currentFrameIdx)
+
+// Handle seek: move video AND start loading mask/prompts in parallel
+const handleSeek = (time: number) => {
+  seek(time)
+  if (video.value) {
+    const targetFrame = Math.floor(time * video.value.fps)
+    seekToFrame(targetFrame)
+  }
+}
 
 setMetadataCallback(() => {
   loadFrameData(0)
@@ -119,6 +132,7 @@ onMounted(() => {
               :mask="currentMask"
               :prompts="currentPrompts"
               @bbox-complete="handleBboxComplete"
+              @point-complete="handlePointComplete"
             />
           </div>
           <VideoTimeline
@@ -145,6 +159,24 @@ onMounted(() => {
           >
             <span class="tool-icon">▢</span>
             <span class="tool-label">Bounding Box</span>
+          </button>
+          <button
+            class="tool-button positive-point"
+            :class="{ active: activeTool === 'positive_point' }"
+            @click="togglePositivePointTool"
+            :disabled="isSegmenting || !sam3IsReady"
+          >
+            <span class="tool-icon">⊕</span>
+            <span class="tool-label">Positive Point</span>
+          </button>
+          <button
+            class="tool-button negative-point"
+            :class="{ active: activeTool === 'negative_point' }"
+            @click="toggleNegativePointTool"
+            :disabled="isSegmenting || !sam3IsReady"
+          >
+            <span class="tool-icon">⊖</span>
+            <span class="tool-label">Negative Point</span>
           </button>
           <button
             class="tool-button reset-button"
@@ -332,6 +364,18 @@ onMounted(() => {
   background-color: #ffebee;
   border-color: #ef5350;
   color: #c62828;
+}
+
+.tool-button.positive-point.active {
+  background-color: #dcfce7;
+  border-color: #22c55e;
+  color: #15803d;
+}
+
+.tool-button.negative-point.active {
+  background-color: #fee2e2;
+  border-color: #ef4444;
+  color: #b91c1c;
 }
 
 .tool-icon {

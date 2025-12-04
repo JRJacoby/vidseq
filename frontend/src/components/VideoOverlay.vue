@@ -2,16 +2,19 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import type { Prompt } from '@/services/api'
 
+export type ToolType = 'none' | 'bbox' | 'positive_point' | 'negative_point'
+
 const props = defineProps<{
   videoWidth: number
   videoHeight: number
-  activeTool: 'none' | 'bbox'
+  activeTool: ToolType
   mask: ImageBitmap | null
   prompts: Prompt[]
 }>()
 
 const emit = defineEmits<{
   (e: 'bbox-complete', bbox: { x1: number; y1: number; x2: number; y2: number }): void
+  (e: 'point-complete', point: { x: number; y: number; type: 'positive_point' | 'negative_point' }): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -35,10 +38,17 @@ function getNormalizedCoords(event: MouseEvent): { x: number; y: number } | null
 }
 
 function onMouseDown(event: MouseEvent) {
-  if (props.activeTool !== 'bbox') return
-  
   const coords = getNormalizedCoords(event)
   if (!coords) return
+  
+  // Handle point tools - single click
+  if (props.activeTool === 'positive_point' || props.activeTool === 'negative_point') {
+    emit('point-complete', { x: coords.x, y: coords.y, type: props.activeTool })
+    return
+  }
+  
+  // Handle bbox tool - drag
+  if (props.activeTool !== 'bbox') return
   
   isDrawing.value = true
   startPoint.value = coords
@@ -127,6 +137,38 @@ function render() {
         (x2 - x1) * canvas.width, 
         (y2 - y1) * canvas.height
       )
+    } else if (prompt.type === 'positive_point' || prompt.type === 'negative_point') {
+      const { x, y } = prompt.details
+      const px = x * canvas.width
+      const py = y * canvas.height
+      const radius = 8
+      
+      // Draw point circle
+      ctx.beginPath()
+      ctx.arc(px, py, radius, 0, Math.PI * 2)
+      ctx.fillStyle = prompt.type === 'positive_point' ? '#22c55e' : '#ef4444'
+      ctx.fill()
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.setLineDash([])
+      ctx.stroke()
+      
+      // Draw + or - symbol inside
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      // Horizontal line (for both + and -)
+      ctx.moveTo(px - 4, py)
+      ctx.lineTo(px + 4, py)
+      if (prompt.type === 'positive_point') {
+        // Vertical line (for + only)
+        ctx.moveTo(px, py - 4)
+        ctx.lineTo(px, py + 4)
+      }
+      ctx.stroke()
+      
+      // Reset dash for next bbox
+      ctx.setLineDash([6, 4])
     }
   }
   

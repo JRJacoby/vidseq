@@ -51,8 +51,14 @@ def run_segmentation_and_save(
         )
         return mask_to_png(mask)
     
+    # Check for bbox prompt (required for initial segmentation)
     bbox_prompt = next((p for p in prompts if p.type == "bbox"), None)
-    if bbox_prompt is None:
+    
+    # Collect point prompts
+    point_prompts = [p for p in prompts if p.type in ("positive_point", "negative_point")]
+    
+    # If no bbox and no points, just return current mask
+    if bbox_prompt is None and not point_prompts:
         mask = mask_service.load_mask(
             project_path=project_path,
             video_id=video.id,
@@ -63,23 +69,54 @@ def run_segmentation_and_save(
         )
         return mask_to_png(mask)
     
-    mask = sam3_service.add_bbox_prompt(
-        video_id=video.id,
-        video_path=video_path,
-        frame_idx=frame_idx,
-        bbox=bbox_prompt.details,
-    )
+    mask = None
     
-    mask_service.save_mask(
+    # Process bbox first if present
+    if bbox_prompt is not None:
+        mask = sam3_service.add_bbox_prompt(
+            video_id=video.id,
+            video_path=video_path,
+            frame_idx=frame_idx,
+            bbox=bbox_prompt.details,
+        )
+    
+    # Process point prompts if present
+    if point_prompts:
+        points = []
+        labels = []
+        for p in point_prompts:
+            points.append([p.details["x"], p.details["y"]])
+            labels.append(1 if p.type == "positive_point" else 0)
+        
+        mask = sam3_service.add_point_prompt(
+            video_id=video.id,
+            video_path=video_path,
+            frame_idx=frame_idx,
+            points=points,
+            labels=labels,
+        )
+    
+    if mask is not None:
+        mask_service.save_mask(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            mask=mask,
+            num_frames=meta.num_frames,
+            height=meta.height,
+            width=meta.width,
+        )
+        return mask_to_png(mask)
+    
+    # Fallback: return existing mask
+    mask = mask_service.load_mask(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
-        mask=mask,
         num_frames=meta.num_frames,
         height=meta.height,
         width=meta.width,
     )
-    
     return mask_to_png(mask)
 
 

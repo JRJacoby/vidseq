@@ -230,6 +230,57 @@ def worker_loop(command_queue, result_queue):
                     "error": str(e),
                 })
         
+        elif cmd_type == "add_point_prompt":
+            video_id = cmd["video_id"]
+            frame_idx = cmd["frame_idx"]
+            points = cmd["points"]  # [[x, y], ...] normalized coords
+            labels = cmd["labels"]  # [1, 0, ...] (1=positive, 0=negative)
+            request_id = cmd.get("request_id")
+            
+            print(f"[SAM3 Worker] Adding point prompt for video {video_id}, frame {frame_idx}...")
+            
+            try:
+                if predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in sessions:
+                    raise RuntimeError(f"No session for video {video_id}")
+                
+                session_id, loader = sessions[video_id]
+                
+                response = predictor.handle_request({
+                    "type": "add_prompt",
+                    "session_id": session_id,
+                    "frame_index": frame_idx,
+                    "points": points,
+                    "point_labels": labels,
+                    "obj_id": 1,  # Single object paradigm
+                })
+                
+                height = loader._video_height
+                width = loader._video_width
+                mask = _extract_mask(response, height, width)
+                
+                print(f"[SAM3 Worker] Point prompt processed, mask shape: {mask.shape}")
+                result_queue.put({
+                    "type": "add_point_prompt_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                    "mask_bytes": mask.tobytes(),
+                    "mask_shape": mask.shape,
+                    "mask_dtype": str(mask.dtype),
+                })
+            except Exception as e:
+                print(f"[SAM3 Worker] Failed to add point prompt: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put({
+                    "type": "add_point_prompt_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
         elif cmd_type == "close_session":
             video_id = cmd["video_id"]
             request_id = cmd.get("request_id")

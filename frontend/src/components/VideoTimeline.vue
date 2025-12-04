@@ -19,9 +19,16 @@ const isPanning = ref(false)
 const panStartX = ref(0)
 const panStartViewStart = ref(0)
 const timelineRef = ref<HTMLElement | null>(null)
-const dragTime = ref<number | null>(null)
+const seekTarget = ref<number | null>(null)  // Timeline's own target for smooth display
 
 const frameDuration = computed(() => 1 / props.fps)
+
+// Clear seekTarget when video catches up
+watch(() => props.currentTime, (videoTime) => {
+  if (seekTarget.value !== null && Math.abs(videoTime - seekTarget.value) < 0.01) {
+    seekTarget.value = null
+  }
+})
 
 const viewStart = ref(0)
 const viewEnd = ref(0)
@@ -35,7 +42,8 @@ watch(() => props.duration, (d) => {
 const visibleDuration = computed(() => viewEnd.value - viewStart.value)
 
 const displayProgress = computed(() => {
-  const time = dragTime.value !== null ? dragTime.value : props.currentTime
+  // Use seekTarget for smooth display, fall back to video's actual time
+  const time = seekTarget.value !== null ? seekTarget.value : props.currentTime
   if (visibleDuration.value <= 0) return 0
   return ((time - viewStart.value) / visibleDuration.value) * 100
 })
@@ -85,7 +93,7 @@ const seekFromEvent = (event: MouseEvent) => {
   const clickX = event.clientX - rect.left
   const percent = Math.max(0, Math.min(1, clickX / rect.width))
   const time = viewStart.value + percent * visibleDuration.value
-  dragTime.value = time
+  seekTarget.value = time
   emit('seek', time)
 }
 
@@ -122,7 +130,7 @@ const onMouseMove = (event: MouseEvent) => {
 const onMouseUp = () => {
   isDragging.value = false
   isPanning.value = false
-  dragTime.value = null
+  // Don't clear seekTarget here - it clears automatically when video catches up
 }
 
 onMounted(() => {
@@ -158,13 +166,18 @@ const onTicksMouseDown = (event: MouseEvent) => {
 const onKeyDown = (event: KeyboardEvent) => {
   if (!isHovering.value) return
   
+  // Use seekTarget if we have one (for consecutive arrow presses), otherwise use video time
+  const baseTime = seekTarget.value !== null ? seekTarget.value : props.currentTime
+  
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
-    const newTime = Math.max(0, props.currentTime - frameDuration.value)
+    const newTime = Math.max(0, baseTime - frameDuration.value)
+    seekTarget.value = newTime
     emit('seek', newTime)
   } else if (event.key === 'ArrowRight') {
     event.preventDefault()
-    const newTime = Math.min(props.duration, props.currentTime + frameDuration.value)
+    const newTime = Math.min(props.duration, baseTime + frameDuration.value)
+    seekTarget.value = newTime
     emit('seek', newTime)
   }
 }
@@ -236,7 +249,7 @@ const onWheel = (event: WheelEvent) => {
     </div>
     
     <div class="time-display">
-      {{ formatTime(dragTime !== null ? dragTime : currentTime) }} / {{ formatTime(duration) }}
+      {{ formatTime(seekTarget !== null ? seekTarget : currentTime) }} / {{ formatTime(duration) }}
     </div>
   </div>
 </template>
