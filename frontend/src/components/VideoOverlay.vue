@@ -21,6 +21,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 const isDrawing = ref(false)
 const startPoint = ref<{ x: number; y: number } | null>(null)
 const currentPoint = ref<{ x: number; y: number } | null>(null)
+const pendingPoint = ref<{ x: number; y: number; type: 'positive_point' | 'negative_point' } | null>(null)
 
 function getNormalizedCoords(event: MouseEvent): { x: number; y: number } | null {
   const canvas = canvasRef.value
@@ -43,6 +44,8 @@ function onMouseDown(event: MouseEvent) {
   
   // Handle point tools - single click
   if (props.activeTool === 'positive_point' || props.activeTool === 'negative_point') {
+    pendingPoint.value = { x: coords.x, y: coords.y, type: props.activeTool }
+    render()
     emit('point-complete', { x: coords.x, y: coords.y, type: props.activeTool })
     return
   }
@@ -97,7 +100,7 @@ function render() {
   const canvas = canvasRef.value
   if (!canvas) return
   
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) return
   
   ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -184,9 +187,47 @@ function render() {
     
     ctx.strokeRect(x, y, w, h)
   }
+  
+  // Draw pending point (waiting for backend response)
+  if (pendingPoint.value) {
+    const px = pendingPoint.value.x * canvas.width
+    const py = pendingPoint.value.y * canvas.height
+    const radius = 8
+    
+    // Outer ring (pulsing indicator)
+    ctx.beginPath()
+    ctx.arc(px, py, radius + 4, 0, Math.PI * 2)
+    ctx.strokeStyle = pendingPoint.value.type === 'positive_point' ? '#22c55e' : '#ef4444'
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 4])
+    ctx.stroke()
+    
+    // Inner circle (semi-transparent)
+    ctx.beginPath()
+    ctx.arc(px, py, radius, 0, Math.PI * 2)
+    ctx.fillStyle = pendingPoint.value.type === 'positive_point' ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'
+    ctx.fill()
+    ctx.strokeStyle = '#fff'
+    ctx.lineWidth = 2
+    ctx.setLineDash([])
+    ctx.stroke()
+    
+    // + or - symbol
+    ctx.strokeStyle = '#fff'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(px - 4, py)
+    ctx.lineTo(px + 4, py)
+    if (pendingPoint.value.type === 'positive_point') {
+      ctx.moveTo(px, py - 4)
+      ctx.lineTo(px, py + 4)
+    }
+    ctx.stroke()
+  }
 }
 
 watch(() => [props.mask, props.prompts], () => {
+  pendingPoint.value = null
   render()
 }, { deep: true })
 
