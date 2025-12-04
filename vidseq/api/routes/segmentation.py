@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.schemas.segmentation import PromptCreate, PromptResponse
+from vidseq.schemas.segmentation import PromptCreate, PromptResponse, PropagateRequest, PropagateResponse
 from vidseq.services import prompt_service, sam3_service, segmentation_service, video_service
 
 router = APIRouter()
@@ -214,6 +214,40 @@ async def reset_frame(
     )
     
     return {"message": "Frame reset"}
+
+
+@router.post(
+    "/projects/{project_id}/videos/{video_id}/propagate",
+    response_model=PropagateResponse,
+)
+async def propagate_forward(
+    video_id: int,
+    request: PropagateRequest,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Propagate tracking forward from the given frame.
+    
+    Requires an active SAM3 session with an object (add a bbox prompt first).
+    Saves masks to HDF5 as it processes each frame.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    try:
+        frames_processed = segmentation_service.propagate_and_save(
+            project_path=project_path,
+            video=video,
+            start_frame_idx=request.start_frame_idx,
+            max_frames=request.max_frames,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    return PropagateResponse(frames_processed=frames_processed)
 
 
 @router.get(

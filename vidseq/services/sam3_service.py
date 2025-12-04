@@ -107,7 +107,7 @@ class SAM3Service:
             
             elif result_type in ("init_session_result", "add_bbox_prompt_result",
                                 "add_point_prompt_result", "close_session_result",
-                                "remove_object_result"):
+                                "remove_object_result", "propagate_forward_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -343,6 +343,53 @@ class SAM3Service:
         session.active_obj_id = None
         return True
     
+    def propagate_forward(
+        self,
+        video_id: int,
+        start_frame_idx: int,
+        max_frames: int,
+    ) -> list[tuple[int, np.ndarray]]:
+        """
+        Propagate tracking forward from a given frame.
+        
+        Args:
+            video_id: ID of the video
+            start_frame_idx: Frame index to start propagation from
+            max_frames: Maximum number of frames to propagate
+            
+        Returns:
+            List of (frame_idx, mask) tuples
+            
+        Raises:
+            RuntimeError: If no active session exists
+        """
+        session = self.get_session(video_id)
+        if session is None:
+            raise RuntimeError("No session exists. Add a bounding box prompt first.")
+        
+        if session.active_obj_id is None:
+            raise RuntimeError("No active object. Add a bounding box prompt first.")
+        
+        result = self._send_and_wait({
+            "type": "propagate_forward",
+            "video_id": video_id,
+            "start_frame_idx": start_frame_idx,
+            "max_frames": max_frames,
+        }, timeout=600.0)  # Longer timeout for propagation
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to propagate"))
+        
+        masks = []
+        for mask_data in result.get("masks", []):
+            frame_idx = mask_data["frame_idx"]
+            mask_bytes = mask_data["mask_bytes"]
+            mask_shape = tuple(mask_data["mask_shape"])
+            mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
+            masks.append((frame_idx, mask))
+        
+        return masks
+    
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
         if self._command_queue is not None:
@@ -450,6 +497,27 @@ def remove_object(video_id: int) -> bool:
         True if successful (or no object to remove)
     """
     return SAM3Service.get_instance().remove_object(video_id)
+
+
+def propagate_forward(
+    video_id: int,
+    start_frame_idx: int,
+    max_frames: int,
+) -> list[tuple[int, np.ndarray]]:
+    """
+    Propagate tracking forward from a given frame.
+    
+    Args:
+        video_id: ID of the video
+        start_frame_idx: Frame index to start propagation from
+        max_frames: Maximum number of frames to propagate
+        
+    Returns:
+        List of (frame_idx, mask) tuples
+    """
+    return SAM3Service.get_instance().propagate_forward(
+        video_id, start_frame_idx, max_frames
+    )
 
 
 def shutdown_worker() -> None:

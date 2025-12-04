@@ -345,6 +345,59 @@ def worker_loop(command_queue, result_queue):
                     "error": str(e),
                 })
         
+        elif cmd_type == "propagate_forward":
+            video_id = cmd["video_id"]
+            start_frame_idx = cmd["start_frame_idx"]
+            max_frames = cmd["max_frames"]
+            request_id = cmd.get("request_id")
+            
+            print(f"[SAM3 Worker] Propagating forward from frame {start_frame_idx} for up to {max_frames} frames...")
+            
+            try:
+                if predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in sessions:
+                    raise RuntimeError(f"No session for video {video_id}")
+                
+                session_id, loader = sessions[video_id]
+                height = loader._video_height
+                width = loader._video_width
+                
+                masks_data = []
+                for result in predictor.handle_stream_request({
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "forward",
+                    "start_frame_index": start_frame_idx,
+                    "max_frame_num_to_track": max_frames,
+                }):
+                    frame_idx = result["frame_index"]
+                    mask = _extract_mask(result, height, width, return_obj_id=False)
+                    masks_data.append({
+                        "frame_idx": frame_idx,
+                        "mask_bytes": mask.tobytes(),
+                        "mask_shape": mask.shape,
+                    })
+                
+                print(f"[SAM3 Worker] Propagation complete, processed {len(masks_data)} frames")
+                result_queue.put({
+                    "type": "propagate_forward_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                    "masks": masks_data,
+                })
+            except Exception as e:
+                print(f"[SAM3 Worker] Failed to propagate: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put({
+                    "type": "propagate_forward_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
         elif cmd_type == "close_session":
             video_id = cmd["video_id"]
             request_id = cmd.get("request_id")

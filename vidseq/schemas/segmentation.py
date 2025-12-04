@@ -37,3 +37,12 @@ class PromptResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class PropagateRequest(BaseModel):
+    start_frame_idx: int
+    max_frames: int = 100
+
+
+class PropagateResponse(BaseModel):
+    frames_processed: int
+

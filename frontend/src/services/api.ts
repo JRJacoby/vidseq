@@ -269,3 +269,27 @@ export async function resetFrame(
         throw new Error(await getErrorMessage(response, 'Failed to reset frame'))
     }
 }
+
+export interface PropagateResponse {
+    frames_processed: number
+}
+
+export async function propagateForward(
+    projectId: number,
+    videoId: number,
+    startFrameIdx: number,
+    maxFrames: number = 100
+): Promise<PropagateResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to propagate'))
+    }
+    return response.json()
+}

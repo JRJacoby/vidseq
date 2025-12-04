@@ -4,6 +4,7 @@ import {
   getPrompts,
   addPrompt,
   resetFrame,
+  propagateForward,
   type Prompt,
 } from '@/services/api'
 
@@ -14,6 +15,7 @@ export interface UseSegmentationReturn {
   currentMask: Ref<ImageBitmap | null>
   currentPrompts: Ref<Prompt[]>
   isSegmenting: Ref<boolean>
+  isPropagating: Ref<boolean>
   loadFrameData: (frameIdx: number) => Promise<void>
   seekToFrame: (frameIdx: number) => void
   toggleTool: () => void
@@ -22,6 +24,7 @@ export interface UseSegmentationReturn {
   handleBboxComplete: (bbox: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
   handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
   handleResetFrame: () => Promise<void>
+  handlePropagate: () => Promise<void>
 }
 
 export function useSegmentation(
@@ -33,6 +36,7 @@ export function useSegmentation(
   const currentMask = ref<ImageBitmap | null>(null)
   const currentPrompts = ref<Prompt[]>([])
   const isSegmenting = ref(false)
+  const isPropagating = ref(false)
   const intendedFrameIdx = ref(0)  // The frame we want to be on (for parallel loading)
 
   let debounceTimeout: number | null = null
@@ -132,6 +136,27 @@ export function useSegmentation(
     }
   }
 
+  const handlePropagate = async () => {
+    if (!projectId.value || !videoId.value) return
+
+    isPropagating.value = true
+
+    try {
+      const result = await propagateForward(
+        projectId.value,
+        videoId.value,
+        currentFrameIdx.value,
+        100
+      )
+      console.log(`Propagated ${result.frames_processed} frames`)
+      await loadFrameData(currentFrameIdx.value)
+    } catch (e) {
+      console.error('Failed to propagate:', e)
+    } finally {
+      isPropagating.value = false
+    }
+  }
+
   watch(currentFrameIdx, (newFrameIdx) => {
     // Skip if we're already loading/loaded this frame (e.g., from seekToFrame)
     if (newFrameIdx === intendedFrameIdx.value) {
@@ -159,6 +184,7 @@ export function useSegmentation(
     currentMask,
     currentPrompts,
     isSegmenting,
+    isPropagating,
     loadFrameData,
     seekToFrame,
     toggleTool,
@@ -167,6 +193,7 @@ export function useSegmentation(
     handleBboxComplete,
     handlePointComplete,
     handleResetFrame,
+    handlePropagate,
   }
 }
 

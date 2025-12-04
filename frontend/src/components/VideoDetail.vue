@@ -68,6 +68,7 @@ const {
   currentMask,
   currentPrompts,
   isSegmenting,
+  isPropagating,
   loadFrameData,
   seekToFrame,
   toggleTool: toggleBboxTool,
@@ -76,6 +77,7 @@ const {
   handleBboxComplete,
   handlePointComplete,
   handleResetFrame,
+  handlePropagate,
 } = useSegmentation(projectId, videoId, currentFrameIdx)
 
 // Handle seek: move video AND start loading mask/prompts in parallel
@@ -181,14 +183,25 @@ onMounted(() => {
           <button
             class="tool-button reset-button"
             @click="handleResetFrame"
-            :disabled="isSegmenting || currentPrompts.length === 0"
+            :disabled="isSegmenting || isPropagating || currentPrompts.length === 0"
           >
             <span class="tool-icon">↺</span>
             <span class="tool-label">Reset Frame</span>
           </button>
+          <button
+            class="tool-button propagate-button"
+            @click="handlePropagate"
+            :disabled="isSegmenting || isPropagating || !sam3IsReady"
+          >
+            <span class="tool-icon">▶▶</span>
+            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate' }}</span>
+          </button>
         </div>
         <div v-if="isSegmenting" class="segmenting-indicator">
           Segmenting...
+        </div>
+        <div v-if="isPropagating" class="propagating-indicator">
+          Propagating masks...
         </div>
         <div v-if="currentPrompts.length > 0" class="prompts-info">
           <h5>Frame {{ currentFrameIdx }}</h5>
@@ -386,7 +399,8 @@ onMounted(() => {
   flex: 1;
 }
 
-.segmenting-indicator {
+.segmenting-indicator,
+.propagating-indicator {
   margin-top: 1rem;
   padding: 0.5rem;
   background-color: #fff3cd;
@@ -394,6 +408,17 @@ onMounted(() => {
   font-size: 0.85rem;
   color: #856404;
   text-align: center;
+}
+
+.propagating-indicator {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.tool-button.propagate-button:not(:disabled):hover {
+  background-color: #e3f2fd;
+  border-color: #2196f3;
+  color: #1565c0;
 }
 
 .prompts-info {

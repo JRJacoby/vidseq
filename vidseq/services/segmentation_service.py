@@ -173,3 +173,44 @@ def clear_mask(
     except Exception:
         pass
 
+
+def propagate_and_save(
+    project_path: Path,
+    video: Video,
+    start_frame_idx: int,
+    max_frames: int,
+) -> int:
+    """
+    Propagate tracking forward and save all resulting masks.
+    
+    Args:
+        project_path: Path to the project folder
+        video: Video model instance
+        start_frame_idx: Frame index to start from
+        max_frames: Maximum number of frames to propagate
+        
+    Returns:
+        Number of frames processed
+    """
+    video_path = Path(video.path)
+    meta = video_service.get_video_metadata(video_path)
+    
+    masks = sam3_service.propagate_forward(
+        video_id=video.id,
+        start_frame_idx=start_frame_idx,
+        max_frames=max_frames,
+    )
+    
+    for frame_idx, mask in masks:
+        mask_service.save_mask(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            mask=mask,
+            num_frames=meta.num_frames,
+            height=meta.height,
+            width=meta.width,
+        )
+    
+    return len(masks)
+
