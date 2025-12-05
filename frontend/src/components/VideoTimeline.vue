@@ -92,7 +92,9 @@ const seekFromEvent = (event: MouseEvent) => {
   const rect = timelineRef.value.getBoundingClientRect()
   const clickX = event.clientX - rect.left
   const percent = Math.max(0, Math.min(1, clickX / rect.width))
-  const time = viewStart.value + percent * visibleDuration.value
+  const rawTime = viewStart.value + percent * visibleDuration.value
+  const targetFrame = Math.round(rawTime * props.fps)
+  const time = (targetFrame + 0.5) / props.fps
   seekTarget.value = time
   emit('seek', time)
 }
@@ -171,12 +173,17 @@ const onKeyDown = (event: KeyboardEvent) => {
   
   if (event.key === 'ArrowLeft') {
     event.preventDefault()
-    const newTime = Math.max(0, baseTime - frameDuration.value)
+    const currentFrame = Math.floor(baseTime * props.fps)
+    const targetFrame = Math.max(0, currentFrame - 1)
+    const newTime = (targetFrame + 0.5) / props.fps
     seekTarget.value = newTime
     emit('seek', newTime)
   } else if (event.key === 'ArrowRight') {
     event.preventDefault()
-    const newTime = Math.min(props.duration, baseTime + frameDuration.value)
+    const currentFrame = Math.floor(baseTime * props.fps)
+    const maxFrame = Math.floor(props.duration * props.fps)
+    const targetFrame = Math.min(maxFrame, currentFrame + 1)
+    const newTime = (targetFrame + 0.5) / props.fps
     seekTarget.value = newTime
     emit('seek', newTime)
   }

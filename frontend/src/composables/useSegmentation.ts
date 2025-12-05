@@ -132,13 +132,12 @@ export function useSegmentation(
         isPropagating.value = true
 
         try {
-            const result = await propagateForward(
+            await propagateForward(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
                 100
             )
-            console.log(`Propagated ${result.frames_processed} frames`)
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to propagate:', e)
@@ -151,7 +150,7 @@ export function useSegmentation(
         promptStorage.clearAll()
     }
 
-    watch(currentFrameIdx, (newFrameIdx) => {
+    watch(currentFrameIdx, (newFrameIdx, oldFrameIdx) => {
         if (newFrameIdx === intendedFrameIdx.value) {
             return
         }

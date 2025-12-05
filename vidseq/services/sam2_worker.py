@@ -54,6 +54,7 @@ def _init_state_with_lazy_loader(predictor, loader) -> dict:
     
     Replicates what predictor.init_state() does but with custom images source.
     """
+    import torch
     compute_device = predictor.device
     offload_state_to_cpu = False
     
@@ -78,7 +79,8 @@ def _init_state_with_lazy_loader(predictor, loader) -> dict:
     inference_state["temp_output_dict_per_obj"] = {}
     inference_state["frames_tracked_per_obj"] = {}
     
-    predictor._get_image_feature(inference_state, frame_idx=0, batch_size=1)
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        predictor._get_image_feature(inference_state, frame_idx=0, batch_size=1)
     
     return inference_state
 
@@ -96,8 +98,8 @@ def worker_loop(command_queue, result_queue):
     predictor = None
     sessions: dict[int, tuple[dict, Any]] = {}
     
-    config_name = "configs/sam2.1/sam2.1_hiera_s.yaml"
-    checkpoint_path = Path(__file__).parent.parent.parent / "sam2_models" / "sam2.1_hiera_small.pt"
+    config_name = "configs/sam2.1/sam2.1_hiera_t.yaml"
+    checkpoint_path = Path(__file__).parent.parent.parent / "sam2_models" / "sam2.1_hiera_tiny.pt"
     
     while True:
         try:
@@ -109,19 +111,26 @@ def worker_loop(command_queue, result_queue):
         cmd_type = cmd.get("type")
         
         if cmd_type == "load_model":
-            print("[SAM2 Worker] Loading SAM2 model with vos_optimized=True...")
+            print("[SAM2 Worker] Loading SAM2 model...")
             result_queue.put({"type": "status", "status": "loading_model"})
             
             try:
                 from sam2.build_sam import build_sam2_video_predictor
                 
+                torch.set_float32_matmul_precision('medium')
+                
                 predictor = build_sam2_video_predictor(
                     config_file=config_name,
                     ckpt_path=str(checkpoint_path),
                     device="cuda",
-                    vos_optimized=True,
+                    vos_optimized=False,
                 )
-                print("[SAM2 Worker] SAM2 model loaded successfully!")
+                predictor.to(dtype=torch.bfloat16)
+                
+                print("[SAM2 Worker] Compiling image encoder...")
+                predictor.image_encoder = torch.compile(predictor.image_encoder, mode="max-autotune", fullgraph=True)
+                
+                print("[SAM2 Worker] SAM2 model loaded and compiled!")
                 result_queue.put({"type": "status", "status": "ready"})
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to load model: {e}")
@@ -164,7 +173,6 @@ def worker_loop(command_queue, result_queue):
                 width = inference_state["video_width"]
                 num_frames = inference_state["num_frames"]
                 
-                print(f"[SAM2 Worker] Session initialized for video {video_id} ({num_frames} frames, {width}x{height})")
                 result_queue.put({
                     "type": "init_session_result",
                     "request_id": request_id,
@@ -193,8 +201,6 @@ def worker_loop(command_queue, result_queue):
             obj_id = cmd.get("obj_id", 1)
             request_id = cmd.get("request_id")
             
-            print(f"[SAM2 Worker] Adding point prompt for video {video_id}, frame {frame_idx}, obj_id={obj_id}, points={len(points)}...")
-            
             try:
                 if predictor is None:
                     raise RuntimeError("Model not loaded")
@@ -211,18 +217,17 @@ def worker_loop(command_queue, result_queue):
                 points_arr[:, 1] *= height
                 labels_arr = np.array(labels, dtype=np.int32)
                 
-                _, out_obj_ids, video_res_masks = predictor.add_new_points_or_box(
-                    inference_state=inference_state,
-                    frame_idx=frame_idx,
-                    obj_id=obj_id,
-                    points=points_arr,
-                    labels=labels_arr,
-                    clear_old_points=False,
-                )
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    _, out_obj_ids, video_res_masks = predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=frame_idx,
+                        obj_id=obj_id,
+                        points=points_arr,
+                        labels=labels_arr,
+                        clear_old_points=False,
+                    )
+                    mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
                 
-                mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
-                
-                print(f"[SAM2 Worker] Point prompt processed, mask shape: {mask.shape}")
                 result_queue.put({
                     "type": "add_point_prompt_result",
                     "request_id": request_id,
@@ -249,8 +254,6 @@ def worker_loop(command_queue, result_queue):
             max_frames = cmd["max_frames"]
             request_id = cmd.get("request_id")
             
-            print(f"[SAM2 Worker] Propagating forward from frame {start_frame_idx} for up to {max_frames} frames...")
-            
             try:
                 if predictor is None:
                     raise RuntimeError("Model not loaded")
@@ -263,30 +266,20 @@ def worker_loop(command_queue, result_queue):
                 width = inference_state["video_width"]
                 
                 masks_data = []
-                import time
-                prop_start = time.perf_counter()
-                iter_start = prop_start
-                with torch.no_grad():
+                with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
                     for frame_idx, out_obj_ids, video_res_masks in predictor.propagate_in_video(
                         inference_state=inference_state,
                         start_frame_idx=start_frame_idx,
                         max_frame_num_to_track=max_frames,
                         reverse=False,
                     ):
-                        model_done = time.perf_counter()
                         mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
                         masks_data.append({
                             "frame_idx": frame_idx,
                             "mask_bytes": mask.tobytes(),
                             "mask_shape": mask.shape,
                         })
-                        iter_end = time.perf_counter()
-                        print(f"[Timing] Frame {frame_idx}: iter_total={1000*(model_done-iter_start):.1f}ms post={1000*(iter_end-model_done):.1f}ms")
-                        iter_start = iter_end
-                prop_elapsed = time.perf_counter() - prop_start
-                print(f"[Timing] Total propagation: {prop_elapsed:.2f}s ({len(masks_data)/prop_elapsed:.1f} it/s)")
                 
-                print(f"[SAM2 Worker] Propagation complete, processed {len(masks_data)} frames")
                 result_queue.put({
                     "type": "propagate_forward_result",
                     "request_id": request_id,
@@ -323,7 +316,8 @@ def worker_loop(command_queue, result_queue):
                     continue
                 
                 inference_state, loader = sessions[video_id]
-                predictor.reset_state(inference_state)
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    predictor.reset_state(inference_state)
                 
                 print(f"[SAM2 Worker] State reset for video {video_id}")
                 result_queue.put({

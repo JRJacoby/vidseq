@@ -5,9 +5,21 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from numpy.typing import NDArray
 
 from vidseq.services.video_service import VideoMetadata, get_video_metadata
+
+
+def _preprocess_on_gpu(
+    frame_tensor: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    target_size: int,
+) -> torch.Tensor:
+    x = frame_tensor.permute(2, 0, 1).unsqueeze(0)
+    x = F.interpolate(x, size=(target_size, target_size), mode='bilinear', align_corners=False)
+    return x.squeeze(0) * scale + shift
 
 
 class LazyVideoFrameLoader:
@@ -47,12 +59,14 @@ class LazyVideoFrameLoader:
             raise ValueError(f"Could not open video: {self.video_path}")
         self._current_pos = 0
         
-        self._img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float32)[:, None, None]
-        self._img_std = torch.tensor(self.IMG_STD, dtype=torch.float32)[:, None, None]
+        img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float32)
+        img_std = torch.tensor(self.IMG_STD, dtype=torch.float32)
+        self._scale = (1.0 / (255.0 * img_std))[:, None, None]
+        self._shift = (-img_mean / img_std)[:, None, None]
         
         if not self.offload_to_cpu:
-            self._img_mean = self._img_mean.to(self.device)
-            self._img_std = self._img_std.to(self.device)
+            self._scale = self._scale.to(self.device)
+            self._shift = self._shift.to(self.device)
     
     @property
     def metadata(self) -> VideoMetadata:
@@ -102,47 +116,37 @@ class LazyVideoFrameLoader:
     
     def _load_and_preprocess_frame(self, frame_idx: int) -> torch.Tensor:
         """Load a frame from video and preprocess for SAM2."""
-        import time
-        t0 = time.perf_counter()
+        if self.offload_to_cpu:
+            return self._load_and_preprocess_cpu(frame_idx)
         
+        frame_rgb = self._read_frame(frame_idx)
+        frame_tensor = torch.from_numpy(frame_rgb).to(self.device, dtype=torch.float32)
+        return _preprocess_on_gpu(frame_tensor, self._scale, self._shift, self.IMAGE_SIZE)
+    
+    def _read_frame(self, frame_idx: int) -> np.ndarray:
+        """Read and decode a frame from the video."""
         if self._current_pos != frame_idx:
             self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = self._cap.read()
         self._current_pos = frame_idx + 1
         if not ret:
             raise RuntimeError(f"Failed to read frame {frame_idx} from {self.video_path}")
-        t_read = time.perf_counter()
-        
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    def _load_and_preprocess_cpu(self, frame_idx: int) -> torch.Tensor:
+        """CPU-only preprocessing path."""
+        frame_rgb = self._read_frame(frame_idx)
         frame_resized = cv2.resize(frame_rgb, (self.IMAGE_SIZE, self.IMAGE_SIZE))
-        t_resize = time.perf_counter()
-        
-        img_tensor = torch.from_numpy(frame_resized).float() / 255.0
-        img_tensor = img_tensor.permute(2, 0, 1)  # HWC -> CHW
-        
-        if self.offload_to_cpu:
-            img_tensor = (img_tensor - self._img_mean) / self._img_std
-        else:
-            img_tensor = img_tensor.to(self.device)
-            img_tensor = (img_tensor - self._img_mean) / self._img_std
-        t_end = time.perf_counter()
-        
-        print(f"[Loader] Frame {frame_idx}: read={1000*(t_read-t0):.1f}ms resize={1000*(t_resize-t_read):.1f}ms tensor={1000*(t_end-t_resize):.1f}ms total={1000*(t_end-t0):.1f}ms")
-        return img_tensor
+        img_tensor = torch.from_numpy(frame_resized).float()
+        img_tensor = img_tensor.permute(2, 0, 1)
+        return img_tensor * self._scale + self._shift
     
     def get_raw_frame(self, frame_idx: int) -> NDArray[np.uint8]:
         """Get raw RGB frame without preprocessing (for visualization)."""
         if frame_idx < 0 or frame_idx >= self._metadata.num_frames:
             raise IndexError(f"Frame index {frame_idx} out of range [0, {self._metadata.num_frames})")
         
-        if self._current_pos != frame_idx:
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = self._cap.read()
-        self._current_pos = frame_idx + 1
-        if not ret:
-            raise RuntimeError(f"Failed to read frame {frame_idx} from {self.video_path}")
-        
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return self._read_frame(frame_idx)
     
     def close(self) -> None:
         """Release video capture resources."""
