@@ -112,7 +112,7 @@ class SAM2Service:
             
             elif result_type in ("init_session_result", "add_point_prompt_result",
                                 "close_session_result", "reset_state_result",
-                                "propagate_forward_result"):
+                                "propagate_forward_result", "propagate_backward_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -358,6 +358,53 @@ class SAM2Service:
         
         return masks
     
+    def propagate_backward(
+        self,
+        video_id: int,
+        start_frame_idx: int,
+        max_frames: int,
+    ) -> list[tuple[int, np.ndarray]]:
+        """
+        Propagate tracking backward from a given frame.
+        
+        Args:
+            video_id: ID of the video
+            start_frame_idx: Frame index to start propagation from
+            max_frames: Maximum number of frames to propagate
+            
+        Returns:
+            List of (frame_idx, mask) tuples
+            
+        Raises:
+            RuntimeError: If no object has been tracked
+        """
+        session = self.get_session(video_id)
+        if session is None:
+            raise RuntimeError("No session exists. Add a point prompt first.")
+        
+        if not session.has_object:
+            raise RuntimeError("No object tracked. Add a point prompt first.")
+        
+        result = self._send_and_wait({
+            "type": "propagate_backward",
+            "video_id": video_id,
+            "start_frame_idx": start_frame_idx,
+            "max_frames": max_frames,
+        }, timeout=600.0)
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to propagate backward"))
+        
+        masks = []
+        for mask_data in result.get("masks", []):
+            frame_idx = mask_data["frame_idx"]
+            mask_bytes = mask_data["mask_bytes"]
+            mask_shape = tuple(mask_data["mask_shape"])
+            mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
+            masks.append((frame_idx, mask))
+        
+        return masks
+    
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
         if self._command_queue is not None:
@@ -432,6 +479,17 @@ def propagate_forward(
 ) -> list[tuple[int, np.ndarray]]:
     """Propagate tracking forward from a given frame."""
     return SAM2Service.get_instance().propagate_forward(
+        video_id, start_frame_idx, max_frames
+    )
+
+
+def propagate_backward(
+    video_id: int,
+    start_frame_idx: int,
+    max_frames: int,
+) -> list[tuple[int, np.ndarray]]:
+    """Propagate tracking backward from a given frame."""
+    return SAM2Service.get_instance().propagate_backward(
         video_id, start_frame_idx, max_frames
     )
 

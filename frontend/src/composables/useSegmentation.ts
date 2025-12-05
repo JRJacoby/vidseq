@@ -5,6 +5,7 @@ import {
     resetFrame,
     resetVideo,
     propagateForward,
+    propagateBackward,
 } from '@/services/api'
 import { usePromptStorage, type StoredPrompt } from './usePromptStorage'
 
@@ -23,7 +24,8 @@ export interface UseSegmentationReturn {
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
-    handlePropagate: () => Promise<void>
+    handlePropagateForward: () => Promise<void>
+    handlePropagateBackward: () => Promise<void>
     clearPromptStorage: () => void
 }
 
@@ -126,7 +128,7 @@ export function useSegmentation(
         }
     }
 
-    const handlePropagate = async () => {
+    const handlePropagateForward = async () => {
         if (!projectId.value || !videoId.value) return
 
         isPropagating.value = true
@@ -136,11 +138,31 @@ export function useSegmentation(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
-                100
+                1000
             )
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
-            console.error('Failed to propagate:', e)
+            console.error('Failed to propagate forward:', e)
+        } finally {
+            isPropagating.value = false
+        }
+    }
+
+    const handlePropagateBackward = async () => {
+        if (!projectId.value || !videoId.value) return
+
+        isPropagating.value = true
+
+        try {
+            await propagateBackward(
+                projectId.value,
+                videoId.value,
+                currentFrameIdx.value,
+                1000
+            )
+            await loadFrameData(currentFrameIdx.value)
+        } catch (e) {
+            console.error('Failed to propagate backward:', e)
         } finally {
             isPropagating.value = false
         }
@@ -184,7 +206,8 @@ export function useSegmentation(
         handlePointComplete,
         handleResetFrame,
         handleResetVideo,
-        handlePropagate,
+        handlePropagateForward,
+        handlePropagateBackward,
         clearPromptStorage,
     }
 }

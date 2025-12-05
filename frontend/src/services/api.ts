@@ -267,10 +267,10 @@ export async function propagateForward(
     projectId: number,
     videoId: number,
     startFrameIdx: number,
-    maxFrames: number = 100
+    maxFrames: number = 1000
 ): Promise<PropagateResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-forward`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -278,7 +278,27 @@ export async function propagateForward(
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to propagate'))
+        throw new Error(await getErrorMessage(response, 'Failed to propagate forward'))
+    }
+    return response.json()
+}
+
+export async function propagateBackward(
+    projectId: number,
+    videoId: number,
+    startFrameIdx: number,
+    maxFrames: number = 1000
+): Promise<PropagateResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-backward`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to propagate backward'))
     }
     return response.json()
 }

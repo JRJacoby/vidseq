@@ -22,7 +22,7 @@ class SegmentRequest(BaseModel):
 
 class PropagateRequest(BaseModel):
     start_frame_idx: int
-    max_frames: int = 100
+    max_frames: int = 1000
 
 
 class PropagateResponse(BaseModel):

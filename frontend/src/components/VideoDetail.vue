@@ -79,7 +79,8 @@ const {
   handlePointComplete,
   handleResetFrame,
   handleResetVideo,
-  handlePropagate,
+  handlePropagateForward,
+  handlePropagateBackward,
   clearPromptStorage,
 } = useSegmentation(projectId, videoId, currentFrameIdx)
 
@@ -195,11 +196,19 @@ onUnmounted(() => {
           </button>
           <button
             class="tool-button propagate-button"
-            @click="handlePropagate"
+            @click="handlePropagateBackward"
+            :disabled="isSegmenting || isPropagating || !segmentationIsReady"
+          >
+            <span class="tool-icon">◀◀</span>
+            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Backward' }}</span>
+          </button>
+          <button
+            class="tool-button propagate-button"
+            @click="handlePropagateForward"
             :disabled="isSegmenting || isPropagating || !segmentationIsReady"
           >
             <span class="tool-icon">▶▶</span>
-            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate' }}</span>
+            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Forward' }}</span>
           </button>
         </div>
         <div v-if="isSegmenting" class="segmenting-indicator">

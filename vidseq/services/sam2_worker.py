@@ -287,11 +287,60 @@ def worker_loop(command_queue, result_queue):
                     "masks": masks_data,
                 })
             except Exception as e:
-                print(f"[SAM2 Worker] Failed to propagate: {e}")
+                print(f"[SAM2 Worker] Failed to propagate forward: {e}")
                 import traceback
                 traceback.print_exc()
                 result_queue.put({
                     "type": "propagate_forward_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
+        elif cmd_type == "propagate_backward":
+            video_id = cmd["video_id"]
+            start_frame_idx = cmd["start_frame_idx"]
+            max_frames = cmd["max_frames"]
+            request_id = cmd.get("request_id")
+            
+            try:
+                if predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in sessions:
+                    raise RuntimeError(f"No session for video {video_id}")
+                
+                inference_state, loader = sessions[video_id]
+                height = inference_state["video_height"]
+                width = inference_state["video_width"]
+                
+                masks_data = []
+                with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+                    for frame_idx, out_obj_ids, video_res_masks in predictor.propagate_in_video(
+                        inference_state=inference_state,
+                        start_frame_idx=start_frame_idx,
+                        max_frame_num_to_track=max_frames,
+                        reverse=True,
+                    ):
+                        mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
+                        masks_data.append({
+                            "frame_idx": frame_idx,
+                            "mask_bytes": mask.tobytes(),
+                            "mask_shape": mask.shape,
+                        })
+                
+                result_queue.put({
+                    "type": "propagate_backward_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                    "masks": masks_data,
+                })
+            except Exception as e:
+                print(f"[SAM2 Worker] Failed to propagate backward: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put({
+                    "type": "propagate_backward_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
