@@ -119,7 +119,6 @@ async def run_segmentation(
         raise HTTPException(status_code=404, detail=str(e))
     
     video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
     
     label = 1 if segment_request.type == "positive_point" else 0
     
@@ -140,9 +139,9 @@ async def run_segmentation(
         video_id=video_id,
         frame_idx=segment_request.frame_idx,
         mask=mask,
-        num_frames=meta.num_frames,
-        height=meta.height,
-        width=meta.width,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
     )
     
     await conditioning_service.add_conditioning_frame(

@@ -53,6 +53,9 @@ async def add_videos(
             name=path.name,
             path=str(path),
             fps=meta.fps,
+            height=meta.height,
+            width=meta.width,
+            num_frames=meta.num_frames,
         )
         session.add(video)
         added_videos.append(video)

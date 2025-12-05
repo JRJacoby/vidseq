@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from vidseq.models.video import Video
-from vidseq.services import mask_service, sam2_service, video_service
+from vidseq.services import mask_service, sam2_service
 
 
 def mask_to_png(mask: np.ndarray) -> bytes:
@@ -34,16 +34,13 @@ def get_mask_png(
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
-    
     mask = mask_service.load_mask(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
-        num_frames=meta.num_frames,
-        height=meta.height,
-        width=meta.width,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
     )
     
     return mask_to_png(mask)
@@ -108,9 +105,6 @@ def propagate_forward_and_save(
     Returns:
         Number of frames processed
     """
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
-    
     masks = sam2_service.propagate_forward(
         video_id=video.id,
         start_frame_idx=start_frame_idx,
@@ -123,9 +117,9 @@ def propagate_forward_and_save(
             video_id=video.id,
             frame_idx=frame_idx,
             mask=mask,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
         )
     
     return len(masks)
@@ -149,9 +143,6 @@ def propagate_backward_and_save(
     Returns:
         Number of frames processed
     """
-    video_path = Path(video.path)
-    meta = video_service.get_video_metadata(video_path)
-    
     masks = sam2_service.propagate_backward(
         video_id=video.id,
         start_frame_idx=start_frame_idx,
@@ -164,9 +155,9 @@ def propagate_backward_and_save(
             video_id=video.id,
             frame_idx=frame_idx,
             mask=mask,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
         )
     
     return len(masks)
