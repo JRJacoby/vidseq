@@ -3,6 +3,8 @@ SAM3 Service with Multiprocessing.
 
 Manages a separate worker process for SAM3 inference to avoid
 CUDA/signal conflicts with FastAPI's event loop.
+
+Uses Sam3VideoPredictor with point prompts routed to the internal tracker.
 """
 
 import multiprocessing as mp
@@ -26,6 +28,9 @@ class SAM3Status(str, Enum):
     ERROR = "error"
 
 
+OBJ_ID = 1  # Fixed object ID for single-object tracking
+
+
 @dataclass
 class VideoSessionInfo:
     """Info about a video session (stored in main process)."""
@@ -33,7 +38,7 @@ class VideoSessionInfo:
     num_frames: int
     height: int
     width: int
-    active_obj_id: Optional[int] = None
+    has_object: bool = False
 
 
 class SAM3Service:
@@ -105,10 +110,9 @@ class SAM3Service:
                     self._status = SAM3Status.ERROR
                     self._error_message = result.get("error")
             
-            elif result_type in ("init_session_result", "add_bbox_prompt_result",
-                                "add_point_prompt_result", "close_session_result",
-                                "remove_object_result", "propagate_forward_result",
-                                "inject_mask_result"):
+            elif result_type in ("init_session_result", "add_point_prompt_result",
+                                "close_session_result", "remove_object_result",
+                                "propagate_forward_result", "inject_mask_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
@@ -117,7 +121,6 @@ class SAM3Service:
         """Get the current SAM3 loading status."""
         self._drain_result_queue()
         
-        # Check if worker died (e.g., uvicorn restart killed it)
         if self._status == SAM3Status.READY and self._worker_process is not None:
             if not self._worker_process.is_alive():
                 self._status = SAM3Status.NOT_LOADED
@@ -234,52 +237,6 @@ class SAM3Service:
         self._sessions.pop(video_id, None)
         return True
     
-    def add_bbox_prompt(
-        self,
-        video_id: int,
-        video_path: Path,
-        frame_idx: int,
-        bbox: dict,
-        text: str,
-    ) -> np.ndarray:
-        """
-        Add a bounding box prompt and get the segmentation mask.
-        
-        Args:
-            video_id: ID of the video
-            video_path: Path to video file (used to init session if needed)
-            frame_idx: Frame index to segment
-            bbox: Dict with x1, y1, x2, y2 in normalized [0,1] coords
-            text: Text description of the object to segment (e.g., "dog", "person")
-            
-        Returns:
-            Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-        """
-        session = self.get_session(video_id)
-        if session is None:
-            session = self.init_session(video_id, video_path)
-        
-        result = self._send_and_wait({
-            "type": "add_bbox_prompt",
-            "video_id": video_id,
-            "frame_idx": frame_idx,
-            "bbox": bbox,
-            "text": text,
-        }, timeout=120.0)
-        
-        if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to add prompt"))
-        
-        mask_bytes = result["mask_bytes"]
-        mask_shape = tuple(result["mask_shape"])
-        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
-        
-        obj_id = result.get("obj_id")
-        if obj_id is not None and session is not None:
-            session.active_obj_id = obj_id
-        
-        return mask
-    
     def add_point_prompt(
         self,
         video_id: int,
@@ -289,7 +246,9 @@ class SAM3Service:
         labels: list[int],
     ) -> np.ndarray:
         """
-        Add point prompts and get the updated segmentation mask.
+        Add point prompts and get the segmentation mask.
+        
+        First point creates the tracked object, subsequent points refine it.
         
         Args:
             video_id: ID of the video
@@ -300,16 +259,10 @@ class SAM3Service:
             
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-        
-        Raises:
-            RuntimeError: If no object exists (must add bbox first)
         """
         session = self.get_session(video_id)
         if session is None:
-            raise RuntimeError("No session exists. Add a bounding box prompt first.")
-        
-        if session.active_obj_id is None:
-            raise RuntimeError("No active object. Add a bounding box prompt first.")
+            session = self.init_session(video_id, video_path)
         
         result = self._send_and_wait({
             "type": "add_point_prompt",
@@ -317,11 +270,13 @@ class SAM3Service:
             "frame_idx": frame_idx,
             "points": points,
             "labels": labels,
-            "obj_id": session.active_obj_id,
+            "obj_id": OBJ_ID,
         }, timeout=120.0)
         
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to add point prompt"))
+        
+        session.has_object = True
         
         mask_bytes = result["mask_bytes"]
         mask_shape = tuple(result["mask_shape"])
@@ -331,7 +286,7 @@ class SAM3Service:
     
     def remove_object(self, video_id: int) -> bool:
         """
-        Remove the active tracked object from SAM3's inference state.
+        Remove the tracked object from SAM3's inference state.
         
         Args:
             video_id: ID of the video
@@ -340,22 +295,19 @@ class SAM3Service:
             True if successful (or no object to remove)
         """
         session = self.get_session(video_id)
-        if session is None or session.active_obj_id is None:
+        if session is None or not session.has_object:
             return True
-        
-        obj_id = session.active_obj_id
         
         result = self._send_and_wait({
             "type": "remove_object",
             "video_id": video_id,
-            "obj_id": obj_id,
+            "obj_id": OBJ_ID,
         }, timeout=30.0)
         
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to remove object"))
         
-        session.active_obj_id = None
-        return True
+        session.has_object = False
         return True
     
     def propagate_forward(
@@ -376,21 +328,21 @@ class SAM3Service:
             List of (frame_idx, mask) tuples
             
         Raises:
-            RuntimeError: If no active session exists
+            RuntimeError: If no object has been tracked
         """
         session = self.get_session(video_id)
         if session is None:
-            raise RuntimeError("No session exists. Add a bounding box prompt first.")
+            raise RuntimeError("No session exists. Add a point prompt first.")
         
-        if session.active_obj_id is None:
-            raise RuntimeError("No active object. Add a bounding box prompt first.")
+        if not session.has_object:
+            raise RuntimeError("No object tracked. Add a point prompt first.")
         
         result = self._send_and_wait({
             "type": "propagate_forward",
             "video_id": video_id,
             "start_frame_idx": start_frame_idx,
             "max_frames": max_frames,
-        }, timeout=600.0)  # Longer timeout for propagation
+        }, timeout=600.0)
         
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to propagate"))
@@ -411,7 +363,7 @@ class SAM3Service:
         video_path: Path,
         frame_idx: int,
         mask: np.ndarray,
-        obj_id: int = 0,
+        obj_id: int = OBJ_ID,
     ) -> None:
         """
         Inject a mask directly into SAM3's inference state.
@@ -442,8 +394,7 @@ class SAM3Service:
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to inject mask"))
         
-        if session.active_obj_id is None:
-            session.active_obj_id = obj_id
+        session.has_object = True
     
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -466,7 +417,6 @@ class SAM3Service:
 
 
 # Module-level convenience functions that delegate to the singleton.
-# These maintain backwards compatibility with existing code.
 
 def get_status() -> dict:
     """Get the current SAM3 loading status."""
@@ -493,31 +443,6 @@ def close_session(video_id: int) -> bool:
     return SAM3Service.get_instance().close_session(video_id)
 
 
-def add_bbox_prompt(
-    video_id: int,
-    video_path: Path,
-    frame_idx: int,
-    bbox: dict,
-    text: str,
-) -> np.ndarray:
-    """
-    Add a bounding box prompt and get the segmentation mask.
-    
-    Args:
-        video_id: ID of the video
-        video_path: Path to video file (used to init session if needed)
-        frame_idx: Frame index to segment
-        bbox: Dict with x1, y1, x2, y2 in normalized [0,1] coords
-        text: Text description of the object to segment (e.g., "dog", "person")
-        
-    Returns:
-        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-    """
-    return SAM3Service.get_instance().add_bbox_prompt(
-        video_id, video_path, frame_idx, bbox, text
-    )
-
-
 def add_point_prompt(
     video_id: int,
     video_path: Path,
@@ -526,17 +451,9 @@ def add_point_prompt(
     labels: list[int],
 ) -> np.ndarray:
     """
-    Add point prompts and get the updated segmentation mask.
+    Add point prompts and get the segmentation mask.
     
-    Args:
-        video_id: ID of the video
-        video_path: Path to video file (used to init session if needed)
-        frame_idx: Frame index to segment
-        points: List of [x, y] coordinates in normalized [0,1] coords
-        labels: List of labels (1=positive, 0=negative)
-        
-    Returns:
-        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+    First point creates the tracked object, subsequent points refine it.
     """
     return SAM3Service.get_instance().add_point_prompt(
         video_id, video_path, frame_idx, points, labels
@@ -544,15 +461,7 @@ def add_point_prompt(
 
 
 def remove_object(video_id: int) -> bool:
-    """
-    Remove the active tracked object from SAM3's inference state.
-    
-    Args:
-        video_id: ID of the video
-        
-    Returns:
-        True if successful (or no object to remove)
-    """
+    """Remove the tracked object from SAM3's inference state."""
     return SAM3Service.get_instance().remove_object(video_id)
 
 
@@ -561,17 +470,7 @@ def propagate_forward(
     start_frame_idx: int,
     max_frames: int,
 ) -> list[tuple[int, np.ndarray]]:
-    """
-    Propagate tracking forward from a given frame.
-    
-    Args:
-        video_id: ID of the video
-        start_frame_idx: Frame index to start propagation from
-        max_frames: Maximum number of frames to propagate
-        
-    Returns:
-        List of (frame_idx, mask) tuples
-    """
+    """Propagate tracking forward from a given frame."""
     return SAM3Service.get_instance().propagate_forward(
         video_id, start_frame_idx, max_frames
     )
@@ -582,13 +481,9 @@ def inject_mask(
     video_path: Path,
     frame_idx: int,
     mask: np.ndarray,
-    obj_id: int = 0,
+    obj_id: int = OBJ_ID,
 ) -> None:
-    """
-    Inject a mask directly into SAM3's inference state.
-    
-    This is used to restore conditioning frames after a server restart.
-    """
+    """Inject a mask directly into SAM3's inference state."""
     return SAM3Service.get_instance().inject_mask(
         video_id, video_path, frame_idx, mask, obj_id
     )

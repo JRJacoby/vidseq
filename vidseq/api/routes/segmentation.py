@@ -62,7 +62,7 @@ async def init_video_session(
     """
     Initialize a SAM3 session for a video.
     
-    Creates the LazyVideoFrameLoader and inference state.
+    Creates the tracker state and frame loader.
     Also restores any existing conditioning frames from HDF5.
     Call this when entering the video detail view.
     Returns 503 if SAM3 model isn't loaded yet.
@@ -120,9 +120,10 @@ async def run_segmentation(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Run segmentation with the given prompt.
+    Run segmentation with a point prompt.
     
-    Bbox and point coords should be normalized [0,1].
+    Point coords should be normalized [0,1].
+    First point creates the tracked object, subsequent points refine it.
     Marks the frame as a conditioning frame.
     Returns the mask as PNG.
     """
@@ -134,26 +135,9 @@ async def run_segmentation(
     video_path = Path(video.path)
     meta = video_service.get_video_metadata(video_path)
     
-    sam3_session = sam3_service.get_session(video_id)
-    has_active_object = sam3_session is not None and sam3_session.active_obj_id is not None
+    label = 1 if segment_request.type == "positive_point" else 0
     
-    mask = None
-    
-    if segment_request.type == "bbox" and not has_active_object:
-        mask = sam3_service.add_bbox_prompt(
-            video_id=video_id,
-            video_path=video_path,
-            frame_idx=segment_request.frame_idx,
-            bbox=segment_request.details,
-            text=segment_request.text,
-        )
-    elif segment_request.type in ("positive_point", "negative_point"):
-        if not has_active_object:
-            raise HTTPException(
-                status_code=400,
-                detail="No active object. Add a bounding box prompt first."
-            )
-        label = 1 if segment_request.type == "positive_point" else 0
+    try:
         mask = sam3_service.add_point_prompt(
             video_id=video_id,
             video_path=video_path,
@@ -161,38 +145,27 @@ async def run_segmentation(
             points=[[segment_request.details["x"], segment_request.details["y"]]],
             labels=[label],
         )
-    elif segment_request.type == "bbox" and has_active_object:
-        raise HTTPException(
-            status_code=400,
-            detail="Object already exists. Use point prompts to refine or reset frame first."
-        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
-    if mask is not None:
-        from vidseq.services import mask_service
-        mask_service.save_mask(
-            project_path=project_path,
-            video_id=video_id,
-            frame_idx=segment_request.frame_idx,
-            mask=mask,
-            num_frames=meta.num_frames,
-            height=meta.height,
-            width=meta.width,
-        )
-        
-        await conditioning_service.add_conditioning_frame(
-            session=session,
-            video_id=video_id,
-            frame_idx=segment_request.frame_idx,
-        )
-        
-        mask_png = segmentation_service.mask_to_png(mask)
-        return Response(content=mask_png, media_type="image/png")
-    
-    mask_png = segmentation_service.get_mask_png(
+    from vidseq.services import mask_service
+    mask_service.save_mask(
         project_path=project_path,
-        video=video,
+        video_id=video_id,
+        frame_idx=segment_request.frame_idx,
+        mask=mask,
+        num_frames=meta.num_frames,
+        height=meta.height,
+        width=meta.width,
+    )
+    
+    await conditioning_service.add_conditioning_frame(
+        session=session,
+        video_id=video_id,
         frame_idx=segment_request.frame_idx,
     )
+    
+    mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
 
 
@@ -287,7 +260,7 @@ async def propagate_forward(
     """
     Propagate tracking forward from the given frame.
     
-    Requires an active SAM3 session with an object (add a bbox prompt first).
+    Requires an active SAM3 session with a tracked object (add a point prompt first).
     Saves masks to HDF5 as it processes each frame.
     """
     try:

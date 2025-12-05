@@ -8,21 +8,18 @@ import {
 } from '@/services/api'
 import { usePromptStorage, type StoredPrompt } from './usePromptStorage'
 
-export type ToolType = 'none' | 'bbox' | 'positive_point' | 'negative_point'
+export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
-    textPrompt: Ref<string>
     currentMask: Ref<ImageBitmap | null>
     currentPrompts: Ref<StoredPrompt[]>
     isSegmenting: Ref<boolean>
     isPropagating: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
-    toggleTool: () => void
     togglePositivePointTool: () => void
     toggleNegativePointTool: () => void
-    handleBboxComplete: (bbox: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
@@ -36,7 +33,6 @@ export function useSegmentation(
     currentFrameIdx: Ref<number>
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
-    const textPrompt = ref('')
     const currentMask = ref<ImageBitmap | null>(null)
     const isSegmenting = ref(false)
     const isPropagating = ref(false)
@@ -66,10 +62,6 @@ export function useSegmentation(
         }
     }
 
-    const toggleTool = () => {
-        activeTool.value = activeTool.value === 'bbox' ? 'none' : 'bbox'
-    }
-
     const togglePositivePointTool = () => {
         activeTool.value = activeTool.value === 'positive_point' ? 'none' : 'positive_point'
     }
@@ -83,32 +75,6 @@ export function useSegmentation(
         loadFrameData(frameIdx)
     }
 
-    const handleBboxComplete = async (bbox: { x1: number; y1: number; x2: number; y2: number }) => {
-        if (!projectId.value || !videoId.value) return
-
-        isSegmenting.value = true
-        activeTool.value = 'none'
-
-        try {
-            const maskBlob = await runSegmentation(
-                projectId.value,
-                videoId.value,
-                currentFrameIdx.value,
-                'bbox',
-                bbox,
-                textPrompt.value
-            )
-
-            promptStorage.addPrompt(currentFrameIdx.value, { type: 'bbox', details: bbox })
-
-            currentMask.value = await createImageBitmap(maskBlob)
-        } catch (e) {
-            console.error('Failed to segment:', e)
-        } finally {
-            isSegmenting.value = false
-        }
-    }
-
     const handlePointComplete = async (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => {
         if (!projectId.value || !videoId.value) return
 
@@ -120,8 +86,7 @@ export function useSegmentation(
                 videoId.value,
                 currentFrameIdx.value,
                 point.type,
-                { x: point.x, y: point.y },
-                textPrompt.value
+                { x: point.x, y: point.y }
             )
 
             promptStorage.addPrompt(currentFrameIdx.value, {
@@ -209,17 +174,14 @@ export function useSegmentation(
 
     return {
         activeTool,
-        textPrompt,
         currentMask,
         currentPrompts,
         isSegmenting,
         isPropagating,
         loadFrameData,
         seekToFrame,
-        toggleTool,
         togglePositivePointTool,
         toggleNegativePointTool,
-        handleBboxComplete,
         handlePointComplete,
         handleResetFrame,
         handleResetVideo,

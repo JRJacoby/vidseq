@@ -1,8 +1,8 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue'
 
 export interface StoredPrompt {
-    type: 'bbox' | 'positive_point' | 'negative_point'
-    details: Record<string, number>
+    type: 'positive_point' | 'negative_point'
+    details: { x: number; y: number }
     createdAt: string
 }
 

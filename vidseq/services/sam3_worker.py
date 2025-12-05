@@ -3,18 +3,63 @@ SAM3 Worker Process.
 
 Runs in a separate process to avoid CUDA/signal conflicts with FastAPI.
 Communicates with the main process via multiprocessing queues.
+
+Uses Sam3VideoPredictor model with lazy frame loading.
 """
 
 import uuid
-import time
 from pathlib import Path
 from typing import Dict, Any, Tuple
 
 import numpy as np
 
 
-def _init_state_with_lazy_loader(model, loader) -> dict:
-    """Initialize SAM3 inference state using lazy loader."""
+def _extract_mask(outputs: dict, height: int, width: int):
+    """
+    Extract mask from predictor outputs.
+    
+    Args:
+        outputs: Dict with 'video_res_masks' tensor of shape (num_objects, 1, H, W)
+                 and 'obj_ids' list
+        height: Target height
+        width: Target width
+        
+    Returns:
+        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+    """
+    import cv2
+    
+    video_res_masks = outputs.get("video_res_masks")
+    obj_ids = outputs.get("obj_ids", [])
+    
+    if video_res_masks is None or len(obj_ids) == 0:
+        return np.zeros((height, width), dtype=np.uint8)
+    
+    mask_tensor = video_res_masks[0]  # First object (we only track one)
+    if hasattr(mask_tensor, 'cpu'):
+        mask_np = (mask_tensor > 0).cpu().numpy()
+    else:
+        mask_np = np.array(mask_tensor) > 0
+    
+    if mask_np.ndim == 3:
+        mask_np = mask_np[0]
+    
+    if mask_np.shape != (height, width):
+        mask_np = cv2.resize(
+            mask_np.astype(np.uint8),
+            (width, height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    
+    return (mask_np * 255).astype(np.uint8)
+
+
+def _init_state_with_lazy_loader(model, loader):
+    """
+    Initialize inference state using our lazy loader instead of loading all frames.
+    
+    Replicates what model.init_state() does but with custom images source.
+    """
     inference_state = {}
     inference_state["image_size"] = model.image_size
     inference_state["num_frames"] = len(loader)
@@ -22,8 +67,10 @@ def _init_state_with_lazy_loader(model, loader) -> dict:
     inference_state["orig_width"] = loader._video_width
     inference_state["constants"] = {}
     
+    # Use our lazy loader as the images source
     model._construct_initial_input_batch(inference_state, loader)
     
+    # Initialize extra states
     inference_state["tracker_inference_states"] = []
     inference_state["tracker_metadata"] = {}
     inference_state["feature_cache"] = {}
@@ -32,86 +79,6 @@ def _init_state_with_lazy_loader(model, loader) -> dict:
     inference_state["is_image_only"] = False
     
     return inference_state
-
-
-def _start_session_with_lazy_loader(predictor, loader) -> str:
-    """Start a SAM3 session using lazy loader. Returns session_id."""
-    inference_state = _init_state_with_lazy_loader(predictor.model, loader)
-    
-    session_id = str(uuid.uuid4())
-    
-    predictor._ALL_INFERENCE_STATES[session_id] = {
-        "state": inference_state,
-        "session_id": session_id,
-        "start_time": time.time(),
-    }
-    
-    return session_id
-
-
-def _xyxy_to_xywh(x1: float, y1: float, x2: float, y2: float) -> list:
-    """Convert normalized xyxy coords to xywh format."""
-    return [x1, y1, x2 - x1, y2 - y1]
-
-
-def _extract_mask(response: dict, height: int, width: int, return_obj_id: bool = False):
-    """
-    Extract and process mask from predictor response.
-    
-    If return_obj_id=True, returns (mask, obj_id) tuple taking only highest-confidence object.
-    Otherwise returns combined mask of all objects (legacy behavior).
-    """
-    import cv2
-    
-    outputs = response.get("outputs", {})
-    out_obj_ids = outputs.get("out_obj_ids", [])
-    out_masks = outputs.get("out_binary_masks", [])
-    out_probs = outputs.get("out_probs", [])
-    
-    if len(out_obj_ids) == 0:
-        if return_obj_id:
-            return np.zeros((height, width), dtype=np.uint8), None
-        return np.zeros((height, width), dtype=np.uint8)
-    
-    def process_mask(mask):
-        if hasattr(mask, 'cpu'):
-            mask_np = mask.cpu().numpy()
-        else:
-            mask_np = np.array(mask)
-        
-        if mask_np.ndim == 3:
-            mask_np = mask_np[0]
-        
-        if mask_np.shape != (height, width):
-            mask_np = cv2.resize(
-                mask_np.astype(np.uint8),
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
-            )
-        return mask_np.astype(bool)
-    
-    if return_obj_id:
-        if len(out_probs) > 0:
-            best_idx = int(np.argmax(out_probs))
-        else:
-            best_idx = 0
-        
-        best_obj_id = int(out_obj_ids[best_idx])
-        best_mask = process_mask(out_masks[best_idx])
-        return (best_mask * 255).astype(np.uint8), best_obj_id
-    
-    combined_mask = None
-    for mask in out_masks:
-        mask_np = process_mask(mask)
-        if combined_mask is None:
-            combined_mask = mask_np
-        else:
-            combined_mask = combined_mask | mask_np
-    
-    if combined_mask is None:
-        return np.zeros((height, width), dtype=np.uint8)
-    
-    return (combined_mask * 255).astype(np.uint8)
 
 
 def worker_loop(command_queue, result_queue):
@@ -123,7 +90,8 @@ def worker_loop(command_queue, result_queue):
     print("[SAM3 Worker] Starting worker process...")
     
     predictor = None
-    sessions: Dict[int, Tuple[str, Any]] = {}  # video_id -> (session_id, loader)
+    # video_id -> (session_id, inference_state, loader)
+    sessions: Dict[int, Tuple[str, dict, Any]] = {}
     
     while True:
         try:
@@ -140,11 +108,15 @@ def worker_loop(command_queue, result_queue):
             
             try:
                 from sam3.model.sam3_video_predictor import Sam3VideoPredictor
-                predictor = Sam3VideoPredictor(apply_temporal_disambiguation=True)
-                print("[SAM3 Worker] Model loaded successfully!")
+                predictor = Sam3VideoPredictor(
+                    apply_temporal_disambiguation=True,
+                )
+                print("[SAM3 Worker] SAM3 model loaded successfully!")
                 result_queue.put({"type": "status", "status": "ready"})
             except Exception as e:
                 print(f"[SAM3 Worker] Failed to load model: {e}")
+                import traceback
+                traceback.print_exc()
                 result_queue.put({"type": "status", "status": "error", "error": str(e)})
         
         elif cmd_type == "init_session":
@@ -158,94 +130,55 @@ def worker_loop(command_queue, result_queue):
                 if predictor is None:
                     raise RuntimeError("Model not loaded")
                 
-                # Check if session already exists
                 if video_id in sessions:
-                    session_id, loader = sessions[video_id]
+                    session_id, inference_state, loader = sessions[video_id]
                     result_queue.put({
                         "type": "init_session_result",
                         "request_id": request_id,
                         "status": "ok",
                         "video_id": video_id,
-                        "num_frames": len(loader),
-                        "height": loader._video_height,
-                        "width": loader._video_width,
+                        "num_frames": inference_state["num_frames"],
+                        "height": inference_state["orig_height"],
+                        "width": inference_state["orig_width"],
                     })
                     continue
                 
+                # Use our lazy loader instead of loading all frames
                 from vidseq.services.sam3streaming import LazyVideoFrameLoader
                 loader = LazyVideoFrameLoader(video_path, device="cuda")
-                session_id = _start_session_with_lazy_loader(predictor, loader)
-                sessions[video_id] = (session_id, loader)
                 
-                print(f"[SAM3 Worker] Session initialized: {session_id}")
+                # Initialize state with lazy loader
+                inference_state = _init_state_with_lazy_loader(predictor.model, loader)
+                
+                # Register with predictor's session management
+                session_id = str(uuid.uuid4())
+                predictor._ALL_INFERENCE_STATES[session_id] = {
+                    "state": inference_state,
+                    "session_id": session_id,
+                }
+                
+                sessions[video_id] = (session_id, inference_state, loader)
+                
+                height = inference_state["orig_height"]
+                width = inference_state["orig_width"]
+                num_frames = inference_state["num_frames"]
+                
+                print(f"[SAM3 Worker] Session initialized for video {video_id} ({num_frames} frames, {width}x{height})")
                 result_queue.put({
                     "type": "init_session_result",
                     "request_id": request_id,
                     "status": "ok",
                     "video_id": video_id,
-                    "num_frames": len(loader),
-                    "height": loader._video_height,
-                    "width": loader._video_width,
+                    "num_frames": num_frames,
+                    "height": height,
+                    "width": width,
                 })
             except Exception as e:
                 print(f"[SAM3 Worker] Failed to init session: {e}")
-                result_queue.put({
-                    "type": "init_session_result",
-                    "request_id": request_id,
-                    "status": "error",
-                    "error": str(e),
-                })
-        
-        elif cmd_type == "add_bbox_prompt":
-            video_id = cmd["video_id"]
-            frame_idx = cmd["frame_idx"]
-            bbox = cmd["bbox"]
-            text = cmd["text"]
-            request_id = cmd.get("request_id")
-            
-            print(f"[SAM3 Worker] Adding bbox prompt for video {video_id}, frame {frame_idx}, text='{text}'...")
-            
-            try:
-                if predictor is None:
-                    raise RuntimeError("Model not loaded")
-                
-                if video_id not in sessions:
-                    raise RuntimeError(f"No session for video {video_id}")
-                
-                session_id, loader = sessions[video_id]
-                
-                x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
-                boxes_xywh = [_xyxy_to_xywh(x1, y1, x2, y2)]
-                
-                response = predictor.handle_request({
-                    "type": "add_prompt",
-                    "session_id": session_id,
-                    "frame_index": frame_idx,
-                    "text": text,
-                    "bounding_boxes": boxes_xywh,
-                    "bounding_box_labels": [1],
-                })
-                
-                height = loader._video_height
-                width = loader._video_width
-                mask, obj_id = _extract_mask(response, height, width, return_obj_id=True)
-                
-                print(f"[SAM3 Worker] Prompt processed, obj_id={obj_id}, mask shape: {mask.shape}")
-                result_queue.put({
-                    "type": "add_bbox_prompt_result",
-                    "request_id": request_id,
-                    "status": "ok",
-                    "mask_bytes": mask.tobytes(),
-                    "mask_shape": mask.shape,
-                    "mask_dtype": str(mask.dtype),
-                    "obj_id": obj_id,
-                })
-            except Exception as e:
-                print(f"[SAM3 Worker] Failed to add prompt: {e}")
                 import traceback
                 traceback.print_exc()
                 result_queue.put({
-                    "type": "add_bbox_prompt_result",
+                    "type": "init_session_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
@@ -256,10 +189,10 @@ def worker_loop(command_queue, result_queue):
             frame_idx = cmd["frame_idx"]
             points = cmd["points"]  # [[x, y], ...] normalized coords
             labels = cmd["labels"]  # [1, 0, ...] (1=positive, 0=negative)
-            obj_id = cmd["obj_id"]  # Must match the object from bbox prompt
+            obj_id = cmd.get("obj_id", 1)
             request_id = cmd.get("request_id")
             
-            print(f"[SAM3 Worker] Adding point prompt for video {video_id}, frame {frame_idx}, obj_id={obj_id}...")
+            print(f"[SAM3 Worker] Adding point prompt for video {video_id}, frame {frame_idx}, obj_id={obj_id}, points={len(points)}...")
             
             try:
                 if predictor is None:
@@ -268,20 +201,21 @@ def worker_loop(command_queue, result_queue):
                 if video_id not in sessions:
                     raise RuntimeError(f"No session for video {video_id}")
                 
-                session_id, loader = sessions[video_id]
+                session_id, inference_state, loader = sessions[video_id]
+                height = inference_state["orig_height"]
+                width = inference_state["orig_width"]
                 
-                response = predictor.handle_request({
-                    "type": "add_prompt",
-                    "session_id": session_id,
-                    "frame_index": frame_idx,
-                    "points": points,
-                    "point_labels": labels,
-                    "obj_id": obj_id,
-                })
+                # add_prompt with points routes to tracker internally
+                response = predictor.add_prompt(
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    points=points,  # normalized coords
+                    point_labels=labels,
+                    obj_id=obj_id,
+                )
                 
-                height = loader._video_height
-                width = loader._video_width
-                mask = _extract_mask(response, height, width)
+                outputs = response["outputs"]
+                mask = _extract_mask(outputs, height, width)
                 
                 print(f"[SAM3 Worker] Point prompt processed, mask shape: {mask.shape}")
                 result_queue.put({
@@ -291,6 +225,7 @@ def worker_loop(command_queue, result_queue):
                     "mask_bytes": mask.tobytes(),
                     "mask_shape": mask.shape,
                     "mask_dtype": str(mask.dtype),
+                    "obj_id": obj_id,
                 })
             except Exception as e:
                 print(f"[SAM3 Worker] Failed to add point prompt: {e}")
@@ -322,15 +257,12 @@ def worker_loop(command_queue, result_queue):
                     })
                     continue
                 
-                session_id, loader = sessions[video_id]
+                session_id, inference_state, loader = sessions[video_id]
                 
-                predictor.handle_request({
-                    "type": "remove_object",
-                    "session_id": session_id,
-                    "obj_id": obj_id,
-                })
+                # Use reset_session to clear all tracking state
+                predictor.reset_session(session_id)
                 
-                print(f"[SAM3 Worker] Object {obj_id} removed")
+                print(f"[SAM3 Worker] Object {obj_id} removed (session reset)")
                 result_queue.put({
                     "type": "remove_object_result",
                     "request_id": request_id,
@@ -366,35 +298,17 @@ def worker_loop(command_queue, result_queue):
                 if video_id not in sessions:
                     raise RuntimeError(f"No session for video {video_id}")
                 
-                session_id, loader = sessions[video_id]
-                inference_state = predictor._ALL_INFERENCE_STATES[session_id]["state"]
+                session_id, inference_state, loader = sessions[video_id]
                 
                 mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
                 mask_tensor = torch.from_numpy(mask > 127).float().cuda()
                 
-                tracker_states = inference_state.get("tracker_inference_states", [])
-                if not tracker_states:
-                    new_tracker_state = predictor.model.tracker.init_state(
-                        cached_features=inference_state.get("feature_cache", {}),
-                        video_height=inference_state["orig_height"],
-                        video_width=inference_state["orig_width"],
-                        num_frames=inference_state["num_frames"],
-                    )
-                    tracker_states.append(new_tracker_state)
-                    inference_state["tracker_inference_states"] = tracker_states
-                
-                tracker_state = tracker_states[0]
-                
-                predictor.model.tracker.add_new_mask(
-                    inference_state=tracker_state,
+                # Use the model's add_new_mask method
+                predictor.model.add_new_mask(
+                    inference_state=inference_state,
                     frame_idx=frame_idx,
                     obj_id=obj_id,
                     mask=mask_tensor,
-                    add_mask_to_memory=True,
-                )
-                
-                predictor.model.tracker.propagate_in_video_preflight(
-                    tracker_state, run_mem_encoder=True
                 )
                 
                 print(f"[SAM3 Worker] Mask injected successfully for frame {frame_idx}")
@@ -429,20 +343,20 @@ def worker_loop(command_queue, result_queue):
                 if video_id not in sessions:
                     raise RuntimeError(f"No session for video {video_id}")
                 
-                session_id, loader = sessions[video_id]
-                height = loader._video_height
-                width = loader._video_width
+                session_id, inference_state, loader = sessions[video_id]
+                height = inference_state["orig_height"]
+                width = inference_state["orig_width"]
                 
                 masks_data = []
-                for result in predictor.handle_stream_request({
-                    "type": "propagate_in_video",
-                    "session_id": session_id,
-                    "propagation_direction": "forward",
-                    "start_frame_index": start_frame_idx,
-                    "max_frame_num_to_track": max_frames,
-                }):
-                    frame_idx = result["frame_index"]
-                    mask = _extract_mask(result, height, width, return_obj_id=False)
+                for response in predictor.propagate_in_video(
+                    session_id=session_id,
+                    propagation_direction="forward",
+                    start_frame_idx=start_frame_idx,
+                    max_frame_num_to_track=max_frames,
+                ):
+                    frame_idx = response["frame_index"]
+                    outputs = response["outputs"]
+                    mask = _extract_mask(outputs, height, width)
                     masks_data.append({
                         "frame_idx": frame_idx,
                         "mask_bytes": mask.tobytes(),
@@ -475,9 +389,9 @@ def worker_loop(command_queue, result_queue):
             
             try:
                 if video_id in sessions:
-                    session_id, loader = sessions.pop(video_id)
-                    if predictor and session_id in predictor._ALL_INFERENCE_STATES:
-                        del predictor._ALL_INFERENCE_STATES[session_id]
+                    session_id, inference_state, loader = sessions.pop(video_id)
+                    if predictor is not None:
+                        predictor.close_session(session_id)
                     loader.close()
                 
                 result_queue.put({
@@ -496,9 +410,13 @@ def worker_loop(command_queue, result_queue):
         
         elif cmd_type == "shutdown":
             print("[SAM3 Worker] Shutting down...")
-            # Close all sessions
-            for video_id, (session_id, loader) in sessions.items():
-                loader.close()
+            for video_id, (session_id, inference_state, loader) in list(sessions.items()):
+                try:
+                    if predictor is not None:
+                        predictor.close_session(session_id)
+                    loader.close()
+                except Exception:
+                    pass
             sessions.clear()
             
             result_queue.put({"type": "shutdown_result", "status": "ok"})
@@ -512,4 +430,3 @@ def worker_loop(command_queue, result_queue):
             })
     
     print("[SAM3 Worker] Worker process exiting.")
-

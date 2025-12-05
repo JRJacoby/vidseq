@@ -43,8 +43,8 @@ class LazyVideoFrameLoader:
         if not self._cap.isOpened():
             raise ValueError(f"Could not open video: {self.video_path}")
         
-        self._img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float32)[:, None, None]
-        self._img_std = torch.tensor(self.IMG_STD, dtype=torch.float32)[:, None, None]
+        self._img_mean = torch.tensor(self.IMG_MEAN, dtype=torch.float16)[:, None, None]
+        self._img_std = torch.tensor(self.IMG_STD, dtype=torch.float16)[:, None, None]
     
     @property
     def metadata(self) -> VideoMetadata:
@@ -100,12 +100,12 @@ class LazyVideoFrameLoader:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_resized = cv2.resize(frame_rgb, (self.IMAGE_SIZE, self.IMAGE_SIZE))
         
-        img_tensor = torch.from_numpy(frame_resized).float() / 255.0
+        img_tensor = torch.from_numpy(frame_resized).to(dtype=torch.float16) / 255.0
         img_tensor = img_tensor.permute(2, 0, 1)  # HWC -> CHW
         
         img_tensor = (img_tensor - self._img_mean) / self._img_std
         
-        return img_tensor.to(self.device, dtype=torch.float32)
+        return img_tensor.to(self.device)
     
     def get_raw_frame(self, frame_idx: int) -> NDArray[np.uint8]:
         """Get raw RGB frame without preprocessing (for visualization)."""
@@ -118,6 +118,10 @@ class LazyVideoFrameLoader:
             raise RuntimeError(f"Failed to read frame {frame_idx} from {self.video_path}")
         
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    def to(self, device, *args, **kwargs):
+        """No-op to satisfy SAM3's copy_data_to_device. Frames are loaded to device on-demand."""
+        return self
     
     def close(self) -> None:
         """Release video capture resources."""

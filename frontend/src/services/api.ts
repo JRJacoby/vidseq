@@ -133,16 +133,15 @@ export async function runSegmentation(
     projectId: number,
     videoId: number,
     frameIdx: number,
-    type: string,
-    details: Record<string, number>,
-    text: string
+    type: 'positive_point' | 'negative_point',
+    details: { x: number; y: number }
 ): Promise<Blob> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/segment`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ frame_idx: frameIdx, type, details, text }),
+            body: JSON.stringify({ frame_idx: frameIdx, type, details }),
         }
     )
     if (!response.ok) {

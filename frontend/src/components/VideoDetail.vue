@@ -65,17 +65,14 @@ const currentFrameIdx = computed(() => {
 
 const {
   activeTool,
-  textPrompt,
   currentMask,
   currentPrompts,
   isSegmenting,
   isPropagating,
   loadFrameData,
   seekToFrame,
-  toggleTool: toggleBboxTool,
   togglePositivePointTool,
   toggleNegativePointTool,
-  handleBboxComplete,
   handlePointComplete,
   handleResetFrame,
   handleResetVideo,
@@ -83,7 +80,6 @@ const {
   clearPromptStorage,
 } = useSegmentation(projectId, videoId, currentFrameIdx)
 
-// Handle seek: move video AND start loading mask/prompts in parallel
 const handleSeek = (time: number) => {
   seek(time)
   if (video.value) {
@@ -140,7 +136,6 @@ onUnmounted(() => {
               :active-tool="activeTool"
               :mask="currentMask"
               :prompts="currentPrompts"
-              @bbox-complete="handleBboxComplete"
               @point-complete="handlePointComplete"
             />
           </div>
@@ -158,27 +153,8 @@ onUnmounted(() => {
 
     <aside class="action-bar">
       <div class="action-bar-content">
-        <div class="text-prompt-section">
-          <label class="text-prompt-label">Object Description</label>
-          <input
-            v-model="textPrompt"
-            type="text"
-            class="text-prompt-input"
-            placeholder="e.g., dog, person, car..."
-            :disabled="isSegmenting"
-          />
-        </div>
         <h4 class="action-bar-title">Tools</h4>
         <div class="tool-buttons">
-          <button
-            class="tool-button"
-            :class="{ active: activeTool === 'bbox' }"
-            @click="toggleBboxTool"
-            :disabled="isSegmenting || !sam3IsReady || !textPrompt.trim()"
-          >
-            <span class="tool-icon">▢</span>
-            <span class="tool-label">Bounding Box</span>
-          </button>
           <button
             class="tool-button positive-point"
             :class="{ active: activeTool === 'positive_point' }"
@@ -353,38 +329,6 @@ onUnmounted(() => {
 
 .action-bar-content {
   padding: 1rem;
-}
-
-.text-prompt-section {
-  margin-bottom: 1.5rem;
-}
-
-.text-prompt-label {
-  display: block;
-  margin-bottom: 0.5rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: #444;
-}
-
-.text-prompt-input {
-  width: 100%;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 0.9rem;
-  box-sizing: border-box;
-}
-
-.text-prompt-input:focus {
-  outline: none;
-  border-color: #2196f3;
-  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.15);
-}
-
-.text-prompt-input:disabled {
-  background-color: #f5f5f5;
-  color: #999;
 }
 
 .action-bar-title {
