@@ -178,23 +178,23 @@ export async function getConditioningFrames(
     return data.conditioning_frames
 }
 
-export interface SAM3Status {
+export interface SegmentationStatus {
     status: 'not_loaded' | 'loading_model' | 'ready' | 'error'
     error: string | null
 }
 
-export async function getSAM3Status(): Promise<SAM3Status> {
-    const response = await fetch(`${API_BASE}/sam3/status`)
+export async function getSegmentationStatus(): Promise<SegmentationStatus> {
+    const response = await fetch(`${API_BASE}/segmentation/status`)
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch SAM3 status'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch segmentation status'))
     }
     return response.json()
 }
 
-export async function preloadSAM3(): Promise<void> {
-    const response = await fetch(`${API_BASE}/sam3/preload`, { method: 'POST' })
+export async function preloadSegmentation(): Promise<void> {
+    const response = await fetch(`${API_BASE}/segmentation/preload`, { method: 'POST' })
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to start SAM3 preload'))
+        throw new Error(await getErrorMessage(response, 'Failed to start segmentation preload'))
     }
 }
 
@@ -203,7 +203,6 @@ export interface VideoSessionInfo {
     num_frames: number
     height: number
     width: number
-    conditioning_frames_restored: number
 }
 
 export async function initVideoSession(

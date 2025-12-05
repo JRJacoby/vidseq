@@ -1,34 +1,34 @@
 """
-SAM3 Service with Multiprocessing.
+SAM2 Service with Multiprocessing.
 
-Manages a separate worker process for SAM3 inference to avoid
+Manages a separate worker process for SAM2 inference to avoid
 CUDA/signal conflicts with FastAPI's event loop.
 
-Uses Sam3VideoPredictor with point prompts routed to the internal tracker.
+Uses SAM2VideoPredictor with point prompts and lazy frame loading.
 """
 
 import multiprocessing as mp
+import queue
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from enum import Enum
 from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
-from enum import Enum
-import uuid
-import time
-import queue
-import threading
 
 import numpy as np
 
 
-class SAM3Status(str, Enum):
+class SAM2Status(str, Enum):
     NOT_LOADED = "not_loaded"
     LOADING_MODEL = "loading_model"
     READY = "ready"
     ERROR = "error"
 
 
-OBJ_ID = 1  # Fixed object ID for single-object tracking
+OBJ_ID = 1
 
 
 @dataclass
@@ -41,18 +41,18 @@ class VideoSessionInfo:
     has_object: bool = False
 
 
-class SAM3Service:
+class SAM2Service:
     """
-    Singleton service for managing SAM3 inference.
+    Singleton service for managing SAM2 inference.
     
     Manages a separate worker process to avoid CUDA/signal conflicts
     with FastAPI's event loop.
     """
     
-    _instance: Optional["SAM3Service"] = None
+    _instance: Optional["SAM2Service"] = None
     _lock = threading.Lock()
     
-    def __new__(cls) -> "SAM3Service":
+    def __new__(cls) -> "SAM2Service":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -67,7 +67,7 @@ class SAM3Service:
         self._worker_process: Optional[Process] = None
         self._command_queue: Optional[Queue] = None
         self._result_queue: Optional[Queue] = None
-        self._status = SAM3Status.NOT_LOADED
+        self._status = SAM2Status.NOT_LOADED
         self._error_message: Optional[str] = None
         self._sessions: dict[int, VideoSessionInfo] = {}
         self._pending_requests: dict[str, dict | None] = {}
@@ -75,7 +75,7 @@ class SAM3Service:
         self._initialized = True
     
     @classmethod
-    def get_instance(cls) -> "SAM3Service":
+    def get_instance(cls) -> "SAM2Service":
         """Get the singleton instance."""
         return cls()
     
@@ -103,27 +103,27 @@ class SAM3Service:
             if result_type == "status":
                 status_str = result.get("status")
                 if status_str == "loading_model":
-                    self._status = SAM3Status.LOADING_MODEL
+                    self._status = SAM2Status.LOADING_MODEL
                 elif status_str == "ready":
-                    self._status = SAM3Status.READY
+                    self._status = SAM2Status.READY
                 elif status_str == "error":
-                    self._status = SAM3Status.ERROR
+                    self._status = SAM2Status.ERROR
                     self._error_message = result.get("error")
             
             elif result_type in ("init_session_result", "add_point_prompt_result",
-                                "close_session_result", "remove_object_result",
-                                "propagate_forward_result", "inject_mask_result"):
+                                "close_session_result", "reset_state_result",
+                                "propagate_forward_result"):
                 request_id = result.get("request_id")
                 if request_id and request_id in self._pending_requests:
                     self._pending_requests[request_id] = result
     
     def get_status(self) -> dict:
-        """Get the current SAM3 loading status."""
+        """Get the current SAM2 loading status."""
         self._drain_result_queue()
         
-        if self._status == SAM3Status.READY and self._worker_process is not None:
+        if self._status == SAM2Status.READY and self._worker_process is not None:
             if not self._worker_process.is_alive():
-                self._status = SAM3Status.NOT_LOADED
+                self._status = SAM2Status.NOT_LOADED
                 self._worker_process = None
                 self._command_queue = None
                 self._result_queue = None
@@ -135,7 +135,7 @@ class SAM3Service:
         }
     
     def _start_worker(self) -> None:
-        """Start the SAM3 worker process and begin loading the model."""
+        """Start the SAM2 worker process and begin loading the model."""
         if self._worker_process is not None and self._worker_process.is_alive():
             return
         
@@ -143,7 +143,7 @@ class SAM3Service:
         self._command_queue = ctx.Queue()
         self._result_queue = ctx.Queue()
         
-        from vidseq.services.sam3_worker import worker_loop
+        from vidseq.services.sam2_worker import worker_loop
         
         self._worker_process = ctx.Process(
             target=worker_loop,
@@ -151,24 +151,24 @@ class SAM3Service:
             daemon=True,
         )
         self._worker_process.start()
-        self._status = SAM3Status.LOADING_MODEL
+        self._status = SAM2Status.LOADING_MODEL
         
         self._command_queue.put({"type": "load_model"})
     
     def start_loading_in_background(self) -> None:
-        """Start loading SAM3 model in background (via worker process)."""
-        if self._status == SAM3Status.NOT_LOADED:
+        """Start loading SAM2 model in background (via worker process)."""
+        if self._status == SAM2Status.NOT_LOADED:
             self._start_worker()
     
     def _ensure_worker_ready(self) -> None:
         """Ensure worker is running and model is loaded."""
         self._drain_result_queue()
         
-        if self._status != SAM3Status.READY:
-            raise RuntimeError("SAM3 model not loaded. Call preload first.")
+        if self._status != SAM2Status.READY:
+            raise RuntimeError("SAM2 model not loaded. Call preload first.")
         
         if self._worker_process is None or not self._worker_process.is_alive():
-            raise RuntimeError("SAM3 worker process not running.")
+            raise RuntimeError("SAM2 worker process not running.")
     
     def _send_and_wait(self, cmd: dict, timeout: float = 120.0) -> dict:
         """Send a command to worker and wait for the result."""
@@ -203,7 +203,7 @@ class SAM3Service:
             "type": "init_session",
             "video_id": video_id,
             "video_path": str(video_path),
-        })
+        }, timeout=600.0)  # 10 min timeout for first session (torch.compile warmup)
         
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to init session"))
@@ -284,28 +284,29 @@ class SAM3Service:
         
         return mask
     
-    def remove_object(self, video_id: int) -> bool:
+    def reset_state(self, video_id: int) -> bool:
         """
-        Remove the tracked object from SAM3's inference state.
+        Reset the tracking state for a video.
+        
+        Clears all object tracking memory. User must re-click to define object.
         
         Args:
             video_id: ID of the video
             
         Returns:
-            True if successful (or no object to remove)
+            True if successful
         """
         session = self.get_session(video_id)
-        if session is None or not session.has_object:
+        if session is None:
             return True
         
         result = self._send_and_wait({
-            "type": "remove_object",
+            "type": "reset_state",
             "video_id": video_id,
-            "obj_id": OBJ_ID,
         }, timeout=30.0)
         
         if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to remove object"))
+            raise RuntimeError(result.get("error", "Failed to reset state"))
         
         session.has_object = False
         return True
@@ -357,45 +358,6 @@ class SAM3Service:
         
         return masks
     
-    def inject_mask(
-        self,
-        video_id: int,
-        video_path: Path,
-        frame_idx: int,
-        mask: np.ndarray,
-        obj_id: int = OBJ_ID,
-    ) -> None:
-        """
-        Inject a mask directly into SAM3's inference state.
-        
-        This is used to restore conditioning frames after a server restart.
-        The mask becomes part of SAM3's memory for tracking/propagation.
-        
-        Args:
-            video_id: ID of the video
-            video_path: Path to video file (used to init session if needed)
-            frame_idx: Frame index where mask belongs
-            mask: Binary mask (height, width), dtype=uint8, values 0 or 255
-            obj_id: Object ID to associate with this mask
-        """
-        session = self.get_session(video_id)
-        if session is None:
-            session = self.init_session(video_id, video_path)
-        
-        result = self._send_and_wait({
-            "type": "inject_mask",
-            "video_id": video_id,
-            "frame_idx": frame_idx,
-            "mask_bytes": mask.tobytes(),
-            "mask_shape": mask.shape,
-            "obj_id": obj_id,
-        }, timeout=60.0)
-        
-        if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to inject mask"))
-        
-        session.has_object = True
-    
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
         if self._command_queue is not None:
@@ -412,35 +374,33 @@ class SAM3Service:
         
         self._command_queue = None
         self._result_queue = None
-        self._status = SAM3Status.NOT_LOADED
+        self._status = SAM2Status.NOT_LOADED
         self._sessions.clear()
 
 
-# Module-level convenience functions that delegate to the singleton.
-
 def get_status() -> dict:
-    """Get the current SAM3 loading status."""
-    return SAM3Service.get_instance().get_status()
+    """Get the current SAM2 loading status."""
+    return SAM2Service.get_instance().get_status()
 
 
 def start_loading_in_background() -> None:
-    """Start loading SAM3 model in background (via worker process)."""
-    SAM3Service.get_instance().start_loading_in_background()
+    """Start loading SAM2 model in background (via worker process)."""
+    SAM2Service.get_instance().start_loading_in_background()
 
 
 def init_session(video_id: int, video_path: Path) -> VideoSessionInfo:
     """Initialize a segmentation session for a video."""
-    return SAM3Service.get_instance().init_session(video_id, video_path)
+    return SAM2Service.get_instance().init_session(video_id, video_path)
 
 
 def get_session(video_id: int) -> Optional[VideoSessionInfo]:
     """Get session info if it exists."""
-    return SAM3Service.get_instance().get_session(video_id)
+    return SAM2Service.get_instance().get_session(video_id)
 
 
 def close_session(video_id: int) -> bool:
     """Close a video session."""
-    return SAM3Service.get_instance().close_session(video_id)
+    return SAM2Service.get_instance().close_session(video_id)
 
 
 def add_point_prompt(
@@ -455,14 +415,14 @@ def add_point_prompt(
     
     First point creates the tracked object, subsequent points refine it.
     """
-    return SAM3Service.get_instance().add_point_prompt(
+    return SAM2Service.get_instance().add_point_prompt(
         video_id, video_path, frame_idx, points, labels
     )
 
 
-def remove_object(video_id: int) -> bool:
-    """Remove the tracked object from SAM3's inference state."""
-    return SAM3Service.get_instance().remove_object(video_id)
+def reset_state(video_id: int) -> bool:
+    """Reset the tracking state for a video."""
+    return SAM2Service.get_instance().reset_state(video_id)
 
 
 def propagate_forward(
@@ -471,24 +431,13 @@ def propagate_forward(
     max_frames: int,
 ) -> list[tuple[int, np.ndarray]]:
     """Propagate tracking forward from a given frame."""
-    return SAM3Service.get_instance().propagate_forward(
+    return SAM2Service.get_instance().propagate_forward(
         video_id, start_frame_idx, max_frames
-    )
-
-
-def inject_mask(
-    video_id: int,
-    video_path: Path,
-    frame_idx: int,
-    mask: np.ndarray,
-    obj_id: int = OBJ_ID,
-) -> None:
-    """Inject a mask directly into SAM3's inference state."""
-    return SAM3Service.get_instance().inject_mask(
-        video_id, video_path, frame_idx, mask, obj_id
     )
 
 
 def shutdown_worker() -> None:
     """Shutdown the worker process gracefully."""
-    SAM3Service.get_instance().shutdown()
+    SAM2Service.get_instance().shutdown()
+
+

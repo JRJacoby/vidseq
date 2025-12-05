@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
-import { useSAM3Session } from '@/composables/useSAM3Session'
+import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
 import VideoTimeline from './VideoTimeline.vue'
@@ -40,7 +40,7 @@ const handleBack = () => {
   router.push(`/project/${projectId.value}`)
 }
 
-const { sam3Status, isReady: sam3IsReady, statusText: sam3StatusText } = useSAM3Session(projectId, videoId)
+const { segmentationStatus, isReady: segmentationIsReady, statusText: segmentationStatusText } = useSegmentationSession(projectId, videoId)
 
 const {
   videoRef,
@@ -159,7 +159,7 @@ onUnmounted(() => {
             class="tool-button positive-point"
             :class="{ active: activeTool === 'positive_point' }"
             @click="togglePositivePointTool"
-            :disabled="isSegmenting || !sam3IsReady"
+            :disabled="isSegmenting || !segmentationIsReady"
           >
             <span class="tool-icon">⊕</span>
             <span class="tool-label">Positive Point</span>
@@ -168,7 +168,7 @@ onUnmounted(() => {
             class="tool-button negative-point"
             :class="{ active: activeTool === 'negative_point' }"
             @click="toggleNegativePointTool"
-            :disabled="isSegmenting || !sam3IsReady"
+            :disabled="isSegmenting || !segmentationIsReady"
           >
             <span class="tool-icon">⊖</span>
             <span class="tool-label">Negative Point</span>
@@ -192,7 +192,7 @@ onUnmounted(() => {
           <button
             class="tool-button propagate-button"
             @click="handlePropagate"
-            :disabled="isSegmenting || isPropagating || !sam3IsReady"
+            :disabled="isSegmenting || isPropagating || !segmentationIsReady"
           >
             <span class="tool-icon">▶▶</span>
             <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate' }}</span>
@@ -209,8 +209,8 @@ onUnmounted(() => {
           <p>{{ currentPrompts.length }} prompt(s)</p>
         </div>
       </div>
-      <div class="sam3-status" :class="sam3Status.status">
-        {{ sam3StatusText }}
+      <div class="segmentation-status" :class="segmentationStatus.status">
+        {{ segmentationStatusText }}
       </div>
     </aside>
   </div>
@@ -445,7 +445,7 @@ onUnmounted(() => {
   font-size: 0.9rem;
 }
 
-.sam3-status {
+.segmentation-status {
   position: absolute;
   bottom: 0;
   left: 0;
@@ -456,22 +456,22 @@ onUnmounted(() => {
   border-top: 1px solid #e0e0e0;
 }
 
-.sam3-status.not_loaded {
+.segmentation-status.not_loaded {
   background-color: #f5f5f5;
   color: #666;
 }
 
-.sam3-status.loading_model {
+.segmentation-status.loading_model {
   background-color: #fff3cd;
   color: #856404;
 }
 
-.sam3-status.ready {
+.segmentation-status.ready {
   background-color: #d4edda;
   color: #155724;
 }
 
-.sam3-status.error {
+.segmentation-status.error {
   background-color: #f8d7da;
   color: #721c24;
 }

@@ -10,24 +10,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
 from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
-from vidseq.services import conditioning_service, sam3_service, segmentation_service, video_service
+from vidseq.services import conditioning_service, sam2_service, segmentation_service, video_service
 
 router = APIRouter()
 
 
-@router.get("/sam3/status")
-async def get_sam3_status():
-    """Get the current SAM3 model loading status."""
-    return sam3_service.get_status()
+@router.get("/segmentation/status")
+async def get_segmentation_status():
+    """Get the current SAM2 model loading status."""
+    return sam2_service.get_status()
 
 
-@router.get("/sam3/status/stream")
-async def stream_sam3_status():
-    """SSE endpoint for real-time SAM3 status updates."""
+@router.get("/segmentation/status/stream")
+async def stream_segmentation_status():
+    """SSE endpoint for real-time SAM2 status updates."""
     async def event_generator():
         last_status_str = None
         while True:
-            current_status = sam3_service.get_status()
+            current_status = sam2_service.get_status()
             current_status_str = json.dumps(current_status)
             
             if current_status_str != last_status_str:
@@ -46,10 +46,10 @@ async def stream_sam3_status():
     )
 
 
-@router.post("/sam3/preload")
-async def preload_sam3():
-    """Start loading SAM3 model in background."""
-    sam3_service.start_loading_in_background()
+@router.post("/segmentation/preload")
+async def preload_segmentation():
+    """Start loading SAM2 model in background."""
+    sam2_service.start_loading_in_background()
     return {"message": "Loading started"}
 
 
@@ -60,12 +60,11 @@ async def init_video_session(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Initialize a SAM3 session for a video.
+    Initialize a SAM2 session for a video.
     
     Creates the tracker state and frame loader.
-    Also restores any existing conditioning frames from HDF5.
     Call this when entering the video detail view.
-    Returns 503 if SAM3 model isn't loaded yet.
+    Returns 503 if SAM2 model isn't loaded yet.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
@@ -74,28 +73,15 @@ async def init_video_session(
     video_path = Path(video.path)
     
     try:
-        session_info = sam3_service.init_session(video_id, video_path)
+        session_info = sam2_service.init_session(video_id, video_path)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    
-    conditioning_frames = await conditioning_service.get_conditioning_frames(session, video_id)
-    restored_count = 0
-    if conditioning_frames:
-        try:
-            restored_count = segmentation_service.restore_conditioning_frames(
-                project_path=project_path,
-                video=video,
-                frame_indices=conditioning_frames,
-            )
-        except Exception as e:
-            print(f"Warning: Failed to restore some conditioning frames: {e}")
     
     return {
         "video_id": video_id,
         "num_frames": session_info.num_frames,
         "height": session_info.height,
         "width": session_info.width,
-        "conditioning_frames_restored": restored_count,
     }
 
 
@@ -104,11 +90,11 @@ async def close_video_session(
     video_id: int,
 ):
     """
-    Close a SAM3 session for a video.
+    Close a SAM2 session for a video.
     
     Frees GPU memory. Call this when leaving the video detail view.
     """
-    closed = sam3_service.close_session(video_id)
+    closed = sam2_service.close_session(video_id)
     return {"closed": closed}
 
 
@@ -138,7 +124,7 @@ async def run_segmentation(
     label = 1 if segment_request.type == "positive_point" else 0
     
     try:
-        mask = sam3_service.add_point_prompt(
+        mask = sam2_service.add_point_prompt(
             video_id=video_id,
             video_path=video_path,
             frame_idx=segment_request.frame_idx,
@@ -180,6 +166,7 @@ async def reset_frame(
 ):
     """
     Reset a frame: clear the mask and remove conditioning frame record.
+    Does not reset SAM2 tracking state.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
@@ -210,7 +197,7 @@ async def reset_video(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset entire video: clear all masks and conditioning frames.
+    Reset entire video: clear all masks, conditioning frames, and SAM2 tracking state.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
@@ -226,6 +213,8 @@ async def reset_video(
         session=session,
         video_id=video_id,
     )
+    
+    sam2_service.reset_state(video_id)
     
     return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
 
@@ -260,7 +249,7 @@ async def propagate_forward(
     """
     Propagate tracking forward from the given frame.
     
-    Requires an active SAM3 session with a tracked object (add a point prompt first).
+    Requires an active SAM2 session with a tracked object (add a point prompt first).
     Saves masks to HDF5 as it processes each frame.
     """
     try:
