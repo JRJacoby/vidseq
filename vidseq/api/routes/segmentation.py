@@ -328,3 +328,32 @@ async def get_mask(
         frame_idx=frame_idx,
     )
     return Response(content=mask_png, media_type="image/png")
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/masks-batch",
+)
+async def get_masks_batch(
+    video_id: int,
+    start_frame: int,
+    count: int = 100,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get multiple segmentation masks in a single request.
+    
+    Returns JSON with base64-encoded PNG masks for efficient batch transfer.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    masks = segmentation_service.get_masks_batch_json(
+        project_path=project_path,
+        video=video,
+        start_frame=start_frame,
+        count=count,
+    )
+    return {"masks": masks}

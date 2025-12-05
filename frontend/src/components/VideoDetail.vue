@@ -66,6 +66,8 @@ const currentFrameIdx = computed(() => {
   return Math.floor(currentTime.value * video.value.fps)
 })
 
+const fps = computed(() => video.value?.fps ?? 30)
+
 const {
   activeTool,
   currentMask,
@@ -82,7 +84,7 @@ const {
   handlePropagateForward,
   handlePropagateBackward,
   clearPromptStorage,
-} = useSegmentation(projectId, videoId, currentFrameIdx)
+} = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps)
 
 const handleSeek = (time: number) => {
   seek(time)

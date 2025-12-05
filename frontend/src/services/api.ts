@@ -164,6 +164,30 @@ export async function getMask(
     return response.blob()
 }
 
+export interface MaskBatchItem {
+    frame_idx: number
+    png_base64: string
+}
+
+export interface MaskBatchResponse {
+    masks: MaskBatchItem[]
+}
+
+export async function getMasksBatch(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100
+): Promise<MaskBatchResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/masks-batch?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch mask batch'))
+    }
+    return response.json()
+}
+
 export async function getConditioningFrames(
     projectId: number,
     videoId: number

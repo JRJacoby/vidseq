@@ -1,6 +1,7 @@
 import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
     getMask,
+    getMasksBatch,
     runSegmentation,
     resetFrame,
     resetVideo,
@@ -29,10 +30,16 @@ export interface UseSegmentationReturn {
     clearPromptStorage: () => void
 }
 
+const PREFETCH_BATCH_SIZE = 100
+const PREFETCH_THRESHOLD = 100
+
 export function useSegmentation(
     projectId: Ref<number | null>,
     videoId: Ref<number | null>,
-    currentFrameIdx: Ref<number>
+    currentFrameIdx: Ref<number>,
+    isPlaying: Ref<boolean> = ref(false),
+    videoRef: Ref<HTMLVideoElement | null> = ref(null),
+    fps: Ref<number> = ref(30)
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
@@ -47,9 +54,63 @@ export function useSegmentation(
     })
 
     let debounceTimeout: number | null = null
+    
+    const maskCache = new Map<number, ImageBitmap>()
+    let isPrefetching = false
+    let prefetchedUpTo = -1
+    let animationFrameId: number | null = null
+    let lastDisplayedFrame = -1
+
+    const base64ToBlob = (base64: string): Blob => {
+        const binary = atob(base64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i)
+        }
+        return new Blob([bytes], { type: 'image/png' })
+    }
+
+    const prefetchMasks = async (startFrame: number) => {
+        if (!projectId.value || !videoId.value || isPrefetching) return
+        if (startFrame <= prefetchedUpTo) return
+        
+        isPrefetching = true
+        try {
+            const response = await getMasksBatch(
+                projectId.value,
+                videoId.value,
+                startFrame,
+                PREFETCH_BATCH_SIZE
+            )
+            
+            for (const item of response.masks) {
+                if (!maskCache.has(item.frame_idx)) {
+                    const blob = base64ToBlob(item.png_base64)
+                    const bitmap = await createImageBitmap(blob)
+                    maskCache.set(item.frame_idx, bitmap)
+                }
+            }
+            
+            if (response.masks.length > 0) {
+                prefetchedUpTo = response.masks[response.masks.length - 1].frame_idx
+            }
+        } catch (e) {
+            console.error('Failed to prefetch masks:', e)
+        } finally {
+            isPrefetching = false
+        }
+    }
 
     const loadFrameData = async (frameIdx: number) => {
         if (!projectId.value || !videoId.value) return
+
+        const cached = maskCache.get(frameIdx)
+        if (cached) {
+            if (frameIdx === intendedFrameIdx.value) {
+                currentMask.value = cached
+            }
+            return
+        }
 
         try {
             const maskBlob = await getMask(projectId.value, videoId.value, frameIdx)
@@ -179,6 +240,10 @@ export function useSegmentation(
         
         intendedFrameIdx.value = newFrameIdx
         
+        if (isPlaying.value) {
+            return
+        }
+        
         if (debounceTimeout) {
             clearTimeout(debounceTimeout)
         }
@@ -187,10 +252,54 @@ export function useSegmentation(
         }, 100)
     })
 
+    const syncMaskToVideo = () => {
+        if (!isPlaying.value || !videoRef.value) return
+        
+        const frameIdx = Math.floor(videoRef.value.currentTime * fps.value)
+        
+        if (frameIdx !== lastDisplayedFrame) {
+            const cached = maskCache.get(frameIdx)
+            if (cached) {
+                currentMask.value = cached
+                lastDisplayedFrame = frameIdx
+            }
+            
+            const framesAhead = prefetchedUpTo - frameIdx
+            if (framesAhead < PREFETCH_THRESHOLD) {
+                prefetchMasks(prefetchedUpTo + 1)
+            }
+        }
+        
+        animationFrameId = requestAnimationFrame(syncMaskToVideo)
+    }
+
+    watch(isPlaying, async (playing) => {
+        if (playing) {
+            await prefetchMasks(currentFrameIdx.value)
+            prefetchMasks(currentFrameIdx.value + PREFETCH_BATCH_SIZE)
+            lastDisplayedFrame = -1
+            syncMaskToVideo()
+        } else {
+            if (animationFrameId !== null) {
+                cancelAnimationFrame(animationFrameId)
+                animationFrameId = null
+            }
+        }
+    })
+
+    watch(videoId, () => {
+        maskCache.clear()
+        prefetchedUpTo = -1
+    })
+
     onUnmounted(() => {
         if (debounceTimeout) {
             clearTimeout(debounceTimeout)
         }
+        if (animationFrameId !== null) {
+            cancelAnimationFrame(animationFrameId)
+        }
+        maskCache.clear()
     })
 
     return {

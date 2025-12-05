@@ -168,6 +168,43 @@ def load_mask(
         return np.array(h5_file[dataset_name][frame_idx])
 
 
+def load_masks_batch(
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    count: int,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """
+    Load multiple masks efficiently using H5 slice indexing.
+    
+    Returns array of shape (actual_count, height, width) where actual_count
+    may be less than count if start_frame + count exceeds num_frames.
+    """
+    h5_path = _get_h5_path(project_path)
+    h5_file, lock = _h5_manager.get_file(h5_path)
+    dataset_name = f"segmentation_masks/{video_id}"
+    
+    end_frame = min(start_frame + count, num_frames)
+    
+    with lock:
+        if dataset_name not in h5_file:
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames, height, width),
+                dtype=np.uint8,
+                fillvalue=0,
+                chunks=(1, height, width),
+                compression=None,
+            )
+            h5_file.flush()
+            return np.zeros((end_frame - start_frame, height, width), dtype=np.uint8)
+        
+        return np.array(h5_file[dataset_name][start_frame:end_frame])
+
+
 def clear_mask(
     project_path: Path,
     video_id: int,
