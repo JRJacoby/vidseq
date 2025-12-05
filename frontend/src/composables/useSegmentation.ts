@@ -171,6 +171,7 @@ export function useSegmentation(
         try {
             await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
             promptStorage.removePromptsForFrame(currentFrameIdx.value)
+            maskCache.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to reset frame:', e)
@@ -183,6 +184,8 @@ export function useSegmentation(
         try {
             await resetVideo(projectId.value, videoId.value)
             promptStorage.clearAll()
+            maskCache.clear()
+            prefetchedUpTo = -1
             currentMask.value = null
         } catch (e) {
             console.error('Failed to reset video:', e)
@@ -291,6 +294,13 @@ export function useSegmentation(
         maskCache.clear()
         prefetchedUpTo = -1
     })
+
+    watch([projectId, videoId, currentFrameIdx], async ([pid, vid, frameIdx]) => {
+        if (pid && vid !== null && frameIdx !== undefined && !isPlaying.value) {
+            await prefetchMasks(frameIdx)
+            prefetchMasks(frameIdx + PREFETCH_BATCH_SIZE)
+        }
+    }, { immediate: true })
 
     onUnmounted(() => {
         if (debounceTimeout) {
