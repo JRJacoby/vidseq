@@ -172,6 +172,8 @@ async def reset_frame(
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     
+    sam2_service.clear_prompts_for_frame(frame_idx)
+    
     segmentation_service.clear_mask(
         project_path=project_path,
         video_id=video_id,
@@ -357,3 +359,38 @@ async def get_masks_batch(
         count=count,
     )
     return {"masks": masks}
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/prompts/{frame_idx}",
+)
+async def get_prompts_for_frame(
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get all prompts for a specific frame."""
+    try:
+        await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    prompts = sam2_service.get_prompts_for_frame(frame_idx)
+    return prompts
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/prompts",
+)
+async def get_all_prompts(
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get all prompts for all frames."""
+    try:
+        await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    prompts = sam2_service.get_all_prompts()
+    return prompts

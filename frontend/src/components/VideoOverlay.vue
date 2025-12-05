@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import type { StoredPrompt } from '@/composables/usePromptStorage'
+import type { StoredPrompt } from '@/services/api'
 
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
 

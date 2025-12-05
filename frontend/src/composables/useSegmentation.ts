@@ -7,8 +7,9 @@ import {
     resetVideo,
     propagateForward,
     propagateBackward,
+    getPromptsForFrame,
+    type StoredPrompt,
 } from '@/services/api'
-import { usePromptStorage, type StoredPrompt } from './usePromptStorage'
 
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
@@ -27,7 +28,6 @@ export interface UseSegmentationReturn {
     handleResetVideo: () => Promise<void>
     handlePropagateForward: () => Promise<void>
     handlePropagateBackward: () => Promise<void>
-    clearPromptStorage: () => void
 }
 
 const PREFETCH_BATCH_SIZE = 100
@@ -47,11 +47,26 @@ export function useSegmentation(
     const isPropagating = ref(false)
     const intendedFrameIdx = ref(0)
 
-    const promptStorage = usePromptStorage(projectId, videoId)
+    const prompts = ref<Map<number, StoredPrompt[]>>(new Map())
     
     const currentPrompts = computed(() => {
-        return promptStorage.getPromptsForFrame(currentFrameIdx.value)
+        return prompts.value.get(currentFrameIdx.value) || []
     })
+    
+    const fetchPromptsForFrame = async (frameIdx: number) => {
+        if (!projectId.value || !videoId.value) return
+        try {
+            const fetchedPrompts = await getPromptsForFrame(
+                projectId.value,
+                videoId.value,
+                frameIdx
+            )
+            prompts.value.set(frameIdx, fetchedPrompts)
+        } catch (e) {
+            console.error('Failed to fetch prompts:', e)
+            prompts.value.set(frameIdx, [])
+        }
+    }
 
     let debounceTimeout: number | null = null
     
@@ -152,12 +167,10 @@ export function useSegmentation(
                 { x: point.x, y: point.y }
             )
 
-            promptStorage.addPrompt(currentFrameIdx.value, {
-                type: point.type,
-                details: { x: point.x, y: point.y }
-            })
-
             currentMask.value = await createImageBitmap(maskBlob)
+            
+            // Refresh prompts for current frame after adding a point
+            await fetchPromptsForFrame(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to add point:', e)
         } finally {
@@ -170,9 +183,10 @@ export function useSegmentation(
 
         try {
             await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
-            promptStorage.removePromptsForFrame(currentFrameIdx.value)
             maskCache.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
+            // Refresh prompts after reset (should be empty)
+            await fetchPromptsForFrame(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to reset frame:', e)
         }
@@ -183,7 +197,7 @@ export function useSegmentation(
 
         try {
             await resetVideo(projectId.value, videoId.value)
-            promptStorage.clearAll()
+            prompts.value.clear()
             maskCache.clear()
             prefetchedUpTo = -1
             currentMask.value = null
@@ -232,11 +246,7 @@ export function useSegmentation(
         }
     }
 
-    const clearPromptStorage = () => {
-        promptStorage.clearAll()
-    }
-
-    watch(currentFrameIdx, (newFrameIdx, oldFrameIdx) => {
+    watch(currentFrameIdx, async (newFrameIdx, oldFrameIdx) => {
         if (newFrameIdx === intendedFrameIdx.value) {
             return
         }
@@ -245,6 +255,11 @@ export function useSegmentation(
         
         if (isPlaying.value) {
             return
+        }
+        
+        // Fetch prompts for the new frame
+        if (!prompts.value.has(newFrameIdx)) {
+            await fetchPromptsForFrame(newFrameIdx)
         }
         
         if (debounceTimeout) {
@@ -291,6 +306,7 @@ export function useSegmentation(
     })
 
     watch(videoId, () => {
+        prompts.value.clear()
         maskCache.clear()
         prefetchedUpTo = -1
     })
@@ -299,6 +315,10 @@ export function useSegmentation(
         if (pid && vid !== null && frameIdx !== undefined && !isPlaying.value) {
             await prefetchMasks(frameIdx)
             prefetchMasks(frameIdx + PREFETCH_BATCH_SIZE)
+            // Fetch prompts for the current frame
+            if (!prompts.value.has(frameIdx)) {
+                await fetchPromptsForFrame(frameIdx)
+            }
         }
     }, { immediate: true })
 
@@ -327,6 +347,5 @@ export function useSegmentation(
         handleResetVideo,
         handlePropagateForward,
         handlePropagateBackward,
-        clearPromptStorage,
     }
 }

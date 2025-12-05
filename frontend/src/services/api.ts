@@ -326,3 +326,56 @@ export async function propagateBackward(
     }
     return response.json()
 }
+
+export interface StoredPrompt {
+    type: 'positive_point' | 'negative_point'
+    details: { x: number; y: number }
+    createdAt: string
+}
+
+export async function getPromptsForFrame(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<StoredPrompt[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
+    }
+    const prompts = await response.json()
+    // Map backend format to frontend StoredPrompt format
+    return prompts.map((p: { type: string; x: number; y: number }) => ({
+        type: p.type as 'positive_point' | 'negative_point',
+        details: { x: p.x, y: p.y },
+        createdAt: new Date().toISOString(), // Backend doesn't store timestamps
+    }))
+}
+
+export async function getAllPrompts(
+    projectId: number,
+    videoId: number
+): Promise<Map<number, StoredPrompt[]>> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
+    }
+    const promptsDict = await response.json()
+    // Convert dict to Map and map backend format to frontend StoredPrompt format
+    const result = new Map<number, StoredPrompt[]>()
+    for (const [frameIdxStr, prompts] of Object.entries(promptsDict)) {
+        const frameIdx = parseInt(frameIdxStr, 10)
+        result.set(
+            frameIdx,
+            (prompts as any[]).map((p: { type: string; x: number; y: number }) => ({
+                type: p.type as 'positive_point' | 'negative_point',
+                details: { x: p.x, y: p.y },
+                createdAt: new Date().toISOString(),
+            }))
+        )
+    }
+    return result
+}

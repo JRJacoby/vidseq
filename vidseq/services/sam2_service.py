@@ -71,6 +71,7 @@ class SAM2Service:
         self._error_message: Optional[str] = None
         self._sessions: dict[int, VideoSessionInfo] = {}
         self._pending_requests: dict[str, dict | None] = {}
+        self._prompts: dict[int, list[dict]] = {}  # frame_idx -> list of prompts
         
         self._initialized = True
     
@@ -199,6 +200,9 @@ class SAM2Service:
         if video_id in self._sessions:
             return self._sessions[video_id]
         
+        # Clear prompts when initializing a new session
+        self._prompts = {}
+        
         result = self._send_and_wait({
             "type": "init_session",
             "video_id": video_id,
@@ -282,6 +286,19 @@ class SAM2Service:
         mask_shape = tuple(result["mask_shape"])
         mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
         
+        # Store prompt info
+        for i, point in enumerate(points):
+            prompt_type = "positive_point" if labels[i] == 1 else "negative_point"
+            prompt = {
+                "type": prompt_type,
+                "x": point[0],
+                "y": point[1],
+                "frame_idx": frame_idx,
+            }
+            if frame_idx not in self._prompts:
+                self._prompts[frame_idx] = []
+            self._prompts[frame_idx].append(prompt)
+        
         return mask
     
     def reset_state(self, video_id: int) -> bool:
@@ -309,6 +326,8 @@ class SAM2Service:
             raise RuntimeError(result.get("error", "Failed to reset state"))
         
         session.has_object = False
+        # Clear prompts when resetting state
+        self._prompts = {}
         return True
     
     def propagate_forward(
@@ -405,6 +424,19 @@ class SAM2Service:
         
         return masks
     
+    def get_prompts_for_frame(self, frame_idx: int) -> list[dict]:
+        """Get all prompts for a specific frame."""
+        return self._prompts.get(frame_idx, [])
+    
+    def get_all_prompts(self) -> dict[int, list[dict]]:
+        """Get all prompts for all frames."""
+        return self._prompts.copy()
+    
+    def clear_prompts_for_frame(self, frame_idx: int) -> None:
+        """Clear prompts for a specific frame."""
+        if frame_idx in self._prompts:
+            del self._prompts[frame_idx]
+    
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
         if self._command_queue is not None:
@@ -497,5 +529,20 @@ def propagate_backward(
 def shutdown_worker() -> None:
     """Shutdown the worker process gracefully."""
     SAM2Service.get_instance().shutdown()
+
+
+def get_prompts_for_frame(frame_idx: int) -> list[dict]:
+    """Get all prompts for a specific frame."""
+    return SAM2Service.get_instance().get_prompts_for_frame(frame_idx)
+
+
+def get_all_prompts() -> dict[int, list[dict]]:
+    """Get all prompts for all frames."""
+    return SAM2Service.get_instance().get_all_prompts()
+
+
+def clear_prompts_for_frame(frame_idx: int) -> None:
+    """Clear prompts for a specific frame."""
+    SAM2Service.get_instance().clear_prompts_for_frame(frame_idx)
 
 

@@ -85,7 +85,6 @@ const {
   handleResetVideo,
   handlePropagateForward,
   handlePropagateBackward,
-  clearPromptStorage,
 } = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps)
 
 const handleSeek = (time: number) => {
@@ -102,10 +101,6 @@ setMetadataCallback(() => {
 
 onMounted(() => {
   loadVideo()
-})
-
-onUnmounted(() => {
-  clearPromptStorage()
 })
 </script>
 
