@@ -17,6 +17,8 @@ const videoId = computed(() => Number(route.params.videoId))
 const video = ref<Video | null>(null)
 const isLoading = ref(true)
 const error = ref<string | null>(null)
+const showMask = ref(true)
+const showPrompts = ref(true)
 
 const videoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
@@ -143,6 +145,8 @@ onUnmounted(() => {
               :active-tool="activeTool"
               :mask="currentMask"
               :prompts="currentPrompts"
+              :show-mask="showMask"
+              :show-prompts="showPrompts"
               @point-complete="handlePointComplete"
             />
           </div>
@@ -211,6 +215,25 @@ onUnmounted(() => {
           >
             <span class="tool-icon">▶▶</span>
             <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Forward' }}</span>
+          </button>
+        </div>
+        <h4 class="action-bar-title">Visibility</h4>
+        <div class="tool-buttons">
+          <button
+            class="tool-button toggle-button"
+            :class="{ active: showMask }"
+            @click="showMask = !showMask"
+          >
+            <span class="tool-icon">{{ showMask ? '👁' : '👁‍🗨' }}</span>
+            <span class="tool-label">{{ showMask ? 'Mask On' : 'Mask Off' }}</span>
+          </button>
+          <button
+            class="tool-button toggle-button"
+            :class="{ active: showPrompts }"
+            @click="showPrompts = !showPrompts"
+          >
+            <span class="tool-icon">{{ showPrompts ? '📍' : '📍' }}</span>
+            <span class="tool-label">{{ showPrompts ? 'Prompts On' : 'Prompts Off' }}</span>
           </button>
         </div>
         <div v-if="isSegmenting" class="segmenting-indicator">
@@ -411,6 +434,18 @@ onUnmounted(() => {
   background-color: #fee2e2;
   border-color: #ef4444;
   color: #b91c1c;
+}
+
+.tool-button.toggle-button {
+  background-color: #fafafa;
+  border-color: #ccc;
+  color: #666;
+}
+
+.tool-button.toggle-button.active {
+  background-color: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
 }
 
 .tool-icon {

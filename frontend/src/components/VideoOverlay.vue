@@ -10,6 +10,8 @@ const props = defineProps<{
   activeTool: ToolType
   mask: ImageBitmap | null
   prompts: StoredPrompt[]
+  showMask?: boolean
+  showPrompts?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -54,7 +56,7 @@ function render() {
   
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   
-  if (props.mask) {
+  if (props.mask && props.showMask !== false) {
     ctx.drawImage(props.mask, 0, 0, canvas.width, canvas.height)
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
     const data = imageData.data
@@ -75,6 +77,7 @@ function render() {
   }
   
   // Draw prompts (points only)
+  if (props.showPrompts === false) return
   for (const prompt of props.prompts) {
     if (prompt.type === 'positive_point' || prompt.type === 'negative_point') {
       const { x, y } = prompt.details
@@ -139,7 +142,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts], () => {
+watch(() => [props.mask, props.prompts, props.showMask, props.showPrompts], () => {
   pendingPoint.value = null
   render()
 }, { deep: true })
