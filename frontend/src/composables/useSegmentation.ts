@@ -28,6 +28,7 @@ export interface UseSegmentationReturn {
     handleResetVideo: () => Promise<void>
     handlePropagateForward: () => Promise<void>
     handlePropagateBackward: () => Promise<void>
+    clearMaskCache: (startFrame?: number, endFrame?: number) => void
 }
 
 const PREFETCH_BATCH_SIZE = 100
@@ -218,6 +219,8 @@ export function useSegmentation(
                 currentFrameIdx.value,
                 1000
             )
+            maskCache.clear()
+            prefetchedUpTo = -1
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to propagate forward:', e)
@@ -238,6 +241,8 @@ export function useSegmentation(
                 currentFrameIdx.value,
                 1000
             )
+            maskCache.clear()
+            prefetchedUpTo = -1
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to propagate backward:', e)
@@ -332,6 +337,17 @@ export function useSegmentation(
         maskCache.clear()
     })
 
+    const clearMaskCache = (startFrame?: number, endFrame?: number) => {
+        if (startFrame !== undefined && endFrame !== undefined) {
+            for (let i = startFrame; i <= endFrame; i++) {
+                maskCache.delete(i)
+            }
+        } else {
+            maskCache.clear()
+        }
+        prefetchedUpTo = -1
+    }
+
     return {
         activeTool,
         currentMask,
@@ -347,5 +363,6 @@ export function useSegmentation(
         handleResetVideo,
         handlePropagateForward,
         handlePropagateBackward,
+        clearMaskCache,
     }
 }

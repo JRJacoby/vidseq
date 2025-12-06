@@ -18,6 +18,8 @@ dependencies = [
     "h5py>=3.11.0",
     "pillow>=10.0.0",
     "httpx>=0.28.1",
+    "segmentation-models-pytorch>=0.3.0",
+    "tqdm>=4.66.0",
 ]
 
 [build-system]

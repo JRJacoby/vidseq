@@ -126,6 +126,10 @@ def clear_video(
         project_path=project_path,
         video_id=video_id,
     )
+    mask_service.clear_all_frame_types(
+        project_path=project_path,
+        video_id=video_id,
+    )
 
 
 def propagate_forward_and_save(
@@ -161,6 +165,13 @@ def propagate_forward_and_save(
             num_frames=video.num_frames,
             height=video.height,
             width=video.width,
+        )
+        mask_service.mark_frame_type(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            frame_type='train',
+            num_frames=video.num_frames,
         )
     
     return len(masks)
@@ -199,6 +210,13 @@ def propagate_backward_and_save(
             num_frames=video.num_frames,
             height=video.height,
             width=video.width,
+        )
+        mask_service.mark_frame_type(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            frame_type='train',
+            num_frames=video.num_frames,
         )
     
     return len(masks)

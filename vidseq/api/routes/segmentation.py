@@ -143,6 +143,13 @@ async def run_segmentation(
         height=video.height,
         width=video.width,
     )
+    mask_service.mark_frame_type(
+        project_path=project_path,
+        video_id=video_id,
+        frame_idx=segment_request.frame_idx,
+        frame_type='train',
+        num_frames=video.num_frames,
+    )
     
     await conditioning_service.add_conditioning_frame(
         session=session,
@@ -172,12 +179,26 @@ async def reset_frame(
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
     sam2_service.clear_prompts_for_frame(frame_idx)
     
     segmentation_service.clear_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=frame_idx,
+    )
+    
+    from vidseq.services import mask_service
+    mask_service.mark_frame_type(
+        project_path=project_path,
+        video_id=video_id,
+        frame_idx=frame_idx,
+        frame_type='',
+        num_frames=video.num_frames,
     )
     
     await conditioning_service.remove_conditioning_frame(
@@ -198,7 +219,7 @@ async def reset_video(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset entire video: clear all masks, conditioning frames, and SAM2 tracking state.
+    Reset entire video: clear all masks, conditioning frames, frame type labels, and SAM2 tracking state.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
@@ -212,6 +233,12 @@ async def reset_video(
     
     deleted_count = await conditioning_service.clear_conditioning_frames(
         session=session,
+        video_id=video_id,
+    )
+    
+    from vidseq.services import mask_service
+    mask_service.clear_all_frame_types(
+        project_path=project_path,
         video_id=video_id,
     )
     

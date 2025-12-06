@@ -379,3 +379,59 @@ export async function getAllPrompts(
     }
     return result
 }
+
+export interface UNetModelStatus {
+    exists: boolean
+    model_path: string | null
+    is_training: boolean
+    is_applying: boolean
+}
+
+export async function trainUNetModel(projectId: number): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/train-model`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to train UNet model'))
+    }
+}
+
+export async function applyUNetModel(
+    projectId: number,
+    videoId: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/apply-model`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to apply UNet model'))
+    }
+}
+
+export async function testApplyUNetModel(
+    projectId: number,
+    videoId: number,
+    startFrame: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/test-apply-model?start_frame=${startFrame}`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to test apply UNet model'))
+    }
+}
+
+export async function getUNetModelStatus(
+    projectId: number
+): Promise<UNetModelStatus> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/model-status`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get UNet model status'))
+    }
+    return response.json()
+}
