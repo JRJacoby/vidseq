@@ -8,6 +8,7 @@ Handles UNet training and inference.
 """
 
 import sys
+import random
 from pathlib import Path
 from typing import Any, Dict
 from collections import defaultdict
@@ -16,6 +17,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 
@@ -208,59 +210,170 @@ def _build_training_dataset(project_path: Path):
     return training_samples
 
 
-class SequentialBatchSampler(torch.utils.data.Sampler):
+def _apply_horizontal_flip(rgb, prev_mask, target_mask):
+    """Flip all tensors horizontally (left-right)."""
+    rgb_flipped = torch.flip(rgb, dims=[2])
+    prev_mask_flipped = torch.flip(prev_mask, dims=[2])
+    target_mask_flipped = torch.flip(target_mask, dims=[2])
+    return rgb_flipped, prev_mask_flipped, target_mask_flipped
+
+
+def _apply_rotation_180(rgb, prev_mask, target_mask):
+    """Rotate all tensors 180 degrees."""
+    rgb_rotated = torch.rot90(rgb, k=2, dims=[1, 2])
+    prev_mask_rotated = torch.rot90(prev_mask, k=2, dims=[1, 2])
+    target_mask_rotated = torch.rot90(target_mask, k=2, dims=[1, 2])
+    return rgb_rotated, prev_mask_rotated, target_mask_rotated
+
+
+def _apply_color_augmentation(rgb):
     """
-    Sampler that creates batches of sequential frames from the same video.
-    Batches are randomized, but frames within each batch are sequential.
+    Apply aggressive color/brightness/contrast augmentations.
+    Brightness: ±40% (multiply by 0.6-1.4)
+    Contrast: ±40% (adjust contrast)
+    Hue/Saturation: Random HSV shifts
     """
+    rgb_aug = rgb.clone()
     
-    def __init__(self, samples, batch_size, shuffle=True):
-        self.samples = samples
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        
-        self._group_by_video()
+    brightness_factor = random.uniform(0.6, 1.4)
+    rgb_aug = rgb_aug * brightness_factor
+    rgb_aug = torch.clamp(rgb_aug, 0.0, 1.0)
     
-    def _group_by_video(self):
-        """Group samples by video_id and sort by frame_idx within each video."""
-        video_groups = defaultdict(list)
-        for idx, sample in enumerate(self.samples):
-            video_groups[sample["video_id"]].append((idx, sample))
-        
-        for video_id in video_groups:
-            video_groups[video_id].sort(key=lambda x: x[1]["frame_idx"])
-        
-        self.video_groups = dict(video_groups)
+    contrast_factor = random.uniform(0.6, 1.4)
+    mean = rgb_aug.mean(dim=(1, 2), keepdim=True)
+    rgb_aug = (rgb_aug - mean) * contrast_factor + mean
+    rgb_aug = torch.clamp(rgb_aug, 0.0, 1.0)
     
-    def __iter__(self):
-        batches = []
-        
-        for video_id, video_samples in self.video_groups.items():
-            for i in range(0, len(video_samples), self.batch_size):
-                batch_indices = [idx for idx, _ in video_samples[i:i+self.batch_size]]
-                batches.append(batch_indices)
-        
-        if self.shuffle:
-            import random
-            random.shuffle(batches)
-        
-        for batch in batches:
-            yield batch
+    hue_shift = random.uniform(-0.1, 0.1)
+    saturation_factor = random.uniform(0.6, 1.4)
     
-    def __len__(self):
-        total_batches = sum(
-            (len(video_samples) + self.batch_size - 1) // self.batch_size
-            for video_samples in self.video_groups.values()
+    rgb_aug_np = rgb_aug.permute(1, 2, 0).cpu().numpy()
+    rgb_aug_np_uint8 = (rgb_aug_np * 255.0).astype(np.uint8)
+    hsv = cv2.cvtColor(rgb_aug_np_uint8, cv2.COLOR_RGB2HSV).astype(np.float32)
+    
+    hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift * 180) % 180
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation_factor, 0, 255)
+    
+    rgb_aug_np_uint8 = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+    rgb_aug = torch.from_numpy(rgb_aug_np_uint8).permute(2, 0, 1).float() / 255.0
+    
+    return rgb_aug
+
+
+def _apply_scale_augmentation(rgb, prev_mask, target_mask, scale_range=(0.8, 1.2)):
+    """
+    Apply random crop/zoom augmentation.
+    Scale range: 0.8-1.2 (zoom out to zoom in)
+    """
+    _, h, w = rgb.shape
+    scale = random.uniform(scale_range[0], scale_range[1])
+    
+    new_h = int(h * scale)
+    new_w = int(w * scale)
+    
+    if scale < 1.0:
+        rgb_scaled = F.interpolate(rgb.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        prev_mask_scaled = F.interpolate(prev_mask.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        target_mask_scaled = F.interpolate(target_mask.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        
+        top = random.randint(0, h - new_h)
+        left = random.randint(0, w - new_w)
+        
+        rgb_padded = torch.zeros_like(rgb)
+        rgb_padded[:, top:top+new_h, left:left+new_w] = rgb_scaled
+        
+        prev_mask_padded = torch.zeros_like(prev_mask)
+        prev_mask_padded[:, top:top+new_h, left:left+new_w] = prev_mask_scaled
+        
+        target_mask_padded = torch.zeros_like(target_mask)
+        target_mask_padded[:, top:top+new_h, left:left+new_w] = target_mask_scaled
+        
+        return rgb_padded, prev_mask_padded, target_mask_padded
+    else:
+        rgb_scaled = F.interpolate(rgb.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        prev_mask_scaled = F.interpolate(prev_mask.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        target_mask_scaled = F.interpolate(target_mask.unsqueeze(0), size=(new_h, new_w), mode='bilinear', align_corners=False).squeeze(0)
+        
+        top = random.randint(0, new_h - h)
+        left = random.randint(0, new_w - w)
+        
+        rgb_cropped = rgb_scaled[:, top:top+h, left:left+w]
+        prev_mask_cropped = prev_mask_scaled[:, top:top+h, left:left+w]
+        target_mask_cropped = target_mask_scaled[:, top:top+h, left:left+w]
+        
+        return rgb_cropped, prev_mask_cropped, target_mask_cropped
+
+
+def _random_empty_prev_mask():
+    """Return True with 50% probability for empty prev_mask augmentation."""
+    return random.random() < 0.5
+
+
+def _apply_prev_mask_perturbation(prev_mask, scale_range=(0.9, 1.1), max_shift=0.05, max_rotation=10):
+    """
+    Apply small random transformations to previous mask to teach model to correct mistakes.
+    Rotation is performed around the center of mass of the mask, not the image center.
+    
+    Args:
+        prev_mask: Previous mask tensor (1, H, W)
+        scale_range: Range for random scaling (e.g., 0.9-1.1 means ±10%)
+        max_shift: Maximum shift as fraction of image size (e.g., 0.05 = 5%)
+        max_rotation: Maximum rotation in degrees
+    
+    Returns:
+        Perturbed previous mask tensor
+    """
+    _, h, w = prev_mask.shape
+    
+    scale = random.uniform(scale_range[0], scale_range[1])
+    shift_x = random.uniform(-max_shift, max_shift) * w
+    shift_y = random.uniform(-max_shift, max_shift) * h
+    rotation = random.uniform(-max_rotation, max_rotation)
+    
+    angle_rad = rotation * np.pi / 180.0
+    
+    mask_sum = prev_mask.sum()
+    if mask_sum > 0:
+        y_coords, x_coords = torch.meshgrid(
+            torch.arange(h, dtype=torch.float32, device=prev_mask.device),
+            torch.arange(w, dtype=torch.float32, device=prev_mask.device),
+            indexing='ij'
         )
-        return total_batches
+        center_x = (x_coords * prev_mask.squeeze(0)).sum() / mask_sum
+        center_y = (y_coords * prev_mask.squeeze(0)).sum() / mask_sum
+    else:
+        center_x, center_y = w / 2.0, h / 2.0
+    
+    cos_a = scale * np.cos(angle_rad)
+    sin_a = scale * np.sin(angle_rad)
+    
+    tx = center_x + shift_x - center_x * cos_a + center_y * sin_a
+    ty = center_y + shift_y - center_x * sin_a - center_y * cos_a
+    
+    theta = torch.tensor([
+        [cos_a, -sin_a, tx],
+        [sin_a, cos_a, ty]
+    ], dtype=torch.float32)
+    
+    grid = F.affine_grid(theta.unsqueeze(0), prev_mask.unsqueeze(0).shape, align_corners=False)
+    prev_mask_perturbed = F.grid_sample(
+        prev_mask.unsqueeze(0),
+        grid,
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=False
+    ).squeeze(0)
+    
+    return prev_mask_perturbed
 
 
 class VideoMaskDataset(torch.utils.data.Dataset):
     """Dataset for training UNet on video frames + previous masks."""
     
-    def __init__(self, samples, project_path: Path):
+    def __init__(self, samples, project_path: Path, apply_augmentation: bool = True):
         self.samples = samples
         self.project_path = project_path
+        self.apply_augmentation = apply_augmentation
     
     def __len__(self):
         return len(self.samples)
@@ -300,6 +413,31 @@ class VideoMaskDataset(torch.utils.data.Dataset):
             width=width,
         )
         target_mask_tensor = torch.from_numpy(target_mask).float().unsqueeze(0) / 255.0
+        
+        if self.apply_augmentation:
+            if prev_frame_idx is not None:
+                if _random_empty_prev_mask():
+                    prev_mask_tensor = torch.zeros_like(prev_mask_tensor)
+                elif random.random() < 0.5:
+                    prev_mask_tensor = _apply_prev_mask_perturbation(prev_mask_tensor)
+            
+            geometric_aug = random.choice(['none', 'flip', 'rotate', 'scale'])
+            
+            if geometric_aug == 'flip':
+                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_horizontal_flip(
+                    rgb_tensor, prev_mask_tensor, target_mask_tensor
+                )
+            elif geometric_aug == 'rotate':
+                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_rotation_180(
+                    rgb_tensor, prev_mask_tensor, target_mask_tensor
+                )
+            elif geometric_aug == 'scale':
+                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_scale_augmentation(
+                    rgb_tensor, prev_mask_tensor, target_mask_tensor
+                )
+            
+            if random.random() < 0.8:
+                rgb_tensor = _apply_color_augmentation(rgb_tensor)
         
         input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=0)
         
@@ -377,30 +515,39 @@ def _train_model(project_path: Path):
     
     print(f"[UNet Worker] Found {len(samples)} training samples")
     
-    dataset = VideoMaskDataset(samples, project_path)
+    train_size = int(0.8 * len(samples))
+    test_size = len(samples) - train_size
     
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [train_size, test_size],
-        generator=torch.Generator().manual_seed(42)
+    indices = list(range(len(samples)))
+    generator = torch.Generator().manual_seed(42)
+    train_indices = torch.randperm(len(samples), generator=generator)[:train_size].tolist()
+    test_indices = [i for i in indices if i not in train_indices]
+    
+    train_samples = [samples[i] for i in train_indices]
+    test_samples = [samples[i] for i in test_indices]
+    
+    print(f"[UNet Worker] Split: {len(train_samples)} train, {len(test_samples)} test samples")
+    
+    train_dataset = VideoMaskDataset(train_samples, project_path, apply_augmentation=True)
+    test_dataset = VideoMaskDataset(test_samples, project_path, apply_augmentation=False)
+    
+    train_sampler = torch.utils.data.WeightedRandomSampler(
+        weights=torch.ones(len(train_dataset)),
+        num_samples=len(train_dataset) * 5,
+        replacement=True
     )
-    
-    print(f"[UNet Worker] Split: {train_size} train, {test_size} test samples")
-    
-    train_samples = [train_dataset.dataset.samples[i] for i in train_dataset.indices]
-    train_batch_sampler = SequentialBatchSampler(train_samples, batch_size=24, shuffle=True)
     
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_sampler=train_batch_sampler,
+        batch_size=64,
+        sampler=train_sampler,
         num_workers=0,
         pin_memory=True,
     )
     
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset,
-        batch_size=24,
+        batch_size=64,
         shuffle=False,
         num_workers=0,
         pin_memory=True,

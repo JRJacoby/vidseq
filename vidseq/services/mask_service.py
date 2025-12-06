@@ -71,7 +71,7 @@ class H5FileManager:
                 except BlockingIOError:
                     # OS-level lock is stuck (e.g., from crashed process)
                     # Retry opening once - if this fails, let the exception propagate
-                    self._files[path_str] = h5py.File(path, "a")
+                self._files[path_str] = h5py.File(path, "a")
             
             return self._files[path_str], lock
     

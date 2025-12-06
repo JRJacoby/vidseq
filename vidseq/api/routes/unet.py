@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.services import unet_service, video_service
+from vidseq.services import sam2_service, unet_service, video_service
 
 router = APIRouter()
 
@@ -21,10 +21,21 @@ async def train_model(
     
     Uses frames marked as 'train' from all videos in the project.
     """
+    from vidseq.services import mask_service
+    
     service = unet_service.UNetService.get_instance()
     
     if service.is_training():
         raise HTTPException(status_code=400, detail="Training already in progress")
+    
+    # Shutdown SAM2 to free GPU memory before training
+    sam2_status = sam2_service.get_status()
+    if sam2_status["status"] == "ready":
+        print("[UNet API] Shutting down SAM2 to free GPU memory for training...")
+        sam2_service.shutdown_worker()
+    
+    # Close HDF5 files in main process to avoid conflicts with worker process
+    mask_service.close_project_h5(project_path)
     
     try:
         service.train_model(project_path)
