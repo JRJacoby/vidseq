@@ -74,6 +74,7 @@ const fps = computed(() => video.value?.fps ?? 30)
 const {
   activeTool,
   currentMask,
+  currentBbox,
   currentPrompts,
   isSegmenting,
   isPropagating,
@@ -193,8 +194,10 @@ onMounted(() => {
               :video-height="videoHeight"
               :active-tool="activeTool"
               :mask="currentMask"
+              :bbox="currentBbox"
               :prompts="currentPrompts"
               :show-mask="showMask"
+              :show-bbox="true"
               :show-prompts="showPrompts"
               @point-complete="handlePointComplete"
             />

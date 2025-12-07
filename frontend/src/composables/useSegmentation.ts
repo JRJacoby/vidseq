@@ -2,6 +2,8 @@ import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
     getMask,
     getMasksBatch,
+    getBbox,
+    getBboxesBatch,
     runSegmentation,
     resetFrame,
     resetVideo,
@@ -9,6 +11,7 @@ import {
     propagateBackward,
     getPromptsForFrame,
     type StoredPrompt,
+    type Bbox,
 } from '@/services/api'
 
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
@@ -16,6 +19,7 @@ export type ToolType = 'none' | 'positive_point' | 'negative_point'
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
     currentMask: Ref<ImageBitmap | null>
+    currentBbox: Ref<Bbox | null>
     currentPrompts: Ref<StoredPrompt[]>
     isSegmenting: Ref<boolean>
     isPropagating: Ref<boolean>
@@ -44,6 +48,7 @@ export function useSegmentation(
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
+    const currentBbox = ref<Bbox | null>(null)
     const isSegmenting = ref(false)
     const isPropagating = ref(false)
     const intendedFrameIdx = ref(0)
@@ -72,6 +77,7 @@ export function useSegmentation(
     let debounceTimeout: number | null = null
     
     const maskCache = new Map<number, ImageBitmap>()
+    const bboxCache = new Map<number, Bbox | null>()
     let isPrefetching = false
     let prefetchedUpTo = -1
     let animationFrameId: number | null = null
@@ -92,14 +98,22 @@ export function useSegmentation(
         
         isPrefetching = true
         try {
-            const response = await getMasksBatch(
-                projectId.value,
-                videoId.value,
-                startFrame,
-                PREFETCH_BATCH_SIZE
-            )
+            const [maskResponse, bboxResponse] = await Promise.all([
+                getMasksBatch(
+                    projectId.value,
+                    videoId.value,
+                    startFrame,
+                    PREFETCH_BATCH_SIZE
+                ),
+                getBboxesBatch(
+                    projectId.value,
+                    videoId.value,
+                    startFrame,
+                    PREFETCH_BATCH_SIZE
+                )
+            ])
             
-            for (const item of response.masks) {
+            for (const item of maskResponse.masks) {
                 if (!maskCache.has(item.frame_idx)) {
                     const blob = base64ToBlob(item.png_base64)
                     const bitmap = await createImageBitmap(blob)
@@ -107,8 +121,19 @@ export function useSegmentation(
                 }
             }
             
-            if (response.masks.length > 0) {
-                prefetchedUpTo = response.masks[response.masks.length - 1].frame_idx
+            for (const item of bboxResponse.bboxes) {
+                if (!bboxCache.has(item.frame_idx)) {
+                    bboxCache.set(item.frame_idx, item.bbox ? {
+                        x1: item.bbox[0],
+                        y1: item.bbox[1],
+                        x2: item.bbox[2],
+                        y2: item.bbox[3],
+                    } : null)
+                }
+            }
+            
+            if (maskResponse.masks.length > 0) {
+                prefetchedUpTo = maskResponse.masks[maskResponse.masks.length - 1].frame_idx
             }
         } catch (e) {
             console.error('Failed to prefetch masks:', e)
@@ -120,22 +145,33 @@ export function useSegmentation(
     const loadFrameData = async (frameIdx: number) => {
         if (!projectId.value || !videoId.value) return
 
-        const cached = maskCache.get(frameIdx)
-        if (cached) {
+        const cachedMask = maskCache.get(frameIdx)
+        const cachedBbox = bboxCache.get(frameIdx)
+        
+        if (cachedMask !== undefined && cachedBbox !== undefined) {
             if (frameIdx === intendedFrameIdx.value) {
-                currentMask.value = cached
+                currentMask.value = cachedMask
+                currentBbox.value = cachedBbox
             }
             return
         }
 
         try {
-            const maskBlob = await getMask(projectId.value, videoId.value, frameIdx)
+            const [maskBlob, bbox] = await Promise.all([
+                getMask(projectId.value, videoId.value, frameIdx),
+                getBbox(projectId.value, videoId.value, frameIdx)
+            ])
 
             if (frameIdx !== intendedFrameIdx.value) {
                 return
             }
 
             currentMask.value = await createImageBitmap(maskBlob)
+            currentBbox.value = bbox
+            // Debug: log bbox loading
+            if (frameIdx === intendedFrameIdx.value) {
+                console.log(`Loaded bbox for frame ${frameIdx}:`, bbox)
+            }
         } catch (e) {
             console.error('Failed to load frame data:', e)
         }
@@ -281,9 +317,11 @@ export function useSegmentation(
         const frameIdx = Math.floor(videoRef.value.currentTime * fps.value)
         
         if (frameIdx !== lastDisplayedFrame) {
-            const cached = maskCache.get(frameIdx)
-            if (cached) {
-                currentMask.value = cached
+            const cachedMask = maskCache.get(frameIdx)
+            const cachedBbox = bboxCache.get(frameIdx)
+            if (cachedMask !== undefined && cachedBbox !== undefined) {
+                currentMask.value = cachedMask
+                currentBbox.value = cachedBbox
                 lastDisplayedFrame = frameIdx
             }
             
@@ -313,6 +351,7 @@ export function useSegmentation(
     watch(videoId, () => {
         prompts.value.clear()
         maskCache.clear()
+        bboxCache.clear()
         prefetchedUpTo = -1
     })
 
@@ -341,9 +380,11 @@ export function useSegmentation(
         if (startFrame !== undefined && endFrame !== undefined) {
             for (let i = startFrame; i <= endFrame; i++) {
                 maskCache.delete(i)
+                bboxCache.delete(i)
             }
         } else {
             maskCache.clear()
+            bboxCache.clear()
         }
         prefetchedUpTo = -1
     }
@@ -351,6 +392,7 @@ export function useSegmentation(
     return {
         activeTool,
         currentMask,
+        currentBbox,
         currentPrompts,
         isSegmenting,
         isPropagating,

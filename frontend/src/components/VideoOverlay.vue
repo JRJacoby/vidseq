@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import type { StoredPrompt } from '@/services/api'
+import type { StoredPrompt, Bbox } from '@/services/api'
 
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
@@ -9,8 +9,10 @@ const props = defineProps<{
   videoHeight: number
   activeTool: ToolType
   mask: ImageBitmap | null
+  bbox: Bbox | null
   prompts: StoredPrompt[]
   showMask?: boolean
+  showBbox?: boolean
   showPrompts?: boolean
 }>()
 
@@ -74,6 +76,21 @@ function render() {
     }
     
     ctx.putImageData(imageData, 0, 0)
+  }
+  
+  // Draw bounding box
+  if (props.bbox && props.showBbox !== false) {
+    const { x1, y1, x2, y2 } = props.bbox
+    // Ensure coordinates are within canvas bounds
+    const clampedX1 = Math.max(0, Math.min(x1, canvas.width))
+    const clampedY1 = Math.max(0, Math.min(y1, canvas.height))
+    const clampedX2 = Math.max(0, Math.min(x2, canvas.width))
+    const clampedY2 = Math.max(0, Math.min(y2, canvas.height))
+    
+    ctx.strokeStyle = '#22c55e'
+    ctx.lineWidth = 3
+    ctx.setLineDash([])
+    ctx.strokeRect(clampedX1, clampedY1, clampedX2 - clampedX1, clampedY2 - clampedY1)
   }
   
   // Draw prompts (points only)
@@ -142,7 +159,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts, props.showMask, props.showPrompts], () => {
+watch(() => [props.mask, props.bbox, props.prompts, props.showMask, props.showBbox, props.showPrompts], () => {
   pendingPoint.value = null
   render()
 }, { deep: true })

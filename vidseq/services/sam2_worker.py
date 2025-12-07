@@ -267,6 +267,8 @@ def worker_loop(command_queue, result_queue):
                 
                 masks_data = []
                 with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+                    from sam2.utils.misc import mask_to_box
+                    
                     for frame_idx, out_obj_ids, video_res_masks in predictor.propagate_in_video(
                         inference_state=inference_state,
                         start_frame_idx=start_frame_idx,
@@ -274,10 +276,23 @@ def worker_loop(command_queue, result_queue):
                         reverse=False,
                     ):
                         mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
+                        
+                        # Compute bounding box from mask
+                        mask_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)
+                        # Convert to boolean (True/False) - mask_to_box expects boolean tensor
+                        mask_binary = (mask_tensor > 0).bool()
+                        bbox_tensor = mask_to_box(mask_binary)
+                        bbox_np = bbox_tensor[0, 0].cpu().numpy()  # Shape: [4] with [x1, y1, x2, y2]
+                        
+                        # Check if bbox is valid (not all zeros)
+                        if np.all(bbox_np == 0):
+                            bbox_np = None
+                        
                         masks_data.append({
                             "frame_idx": frame_idx,
                             "mask_bytes": mask.tobytes(),
                             "mask_shape": mask.shape,
+                            "bbox": bbox_np.tolist() if bbox_np is not None else None,
                         })
                 
                 result_queue.put({
@@ -316,6 +331,8 @@ def worker_loop(command_queue, result_queue):
                 
                 masks_data = []
                 with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+                    from sam2.utils.misc import mask_to_box
+                    
                     for frame_idx, out_obj_ids, video_res_masks in predictor.propagate_in_video(
                         inference_state=inference_state,
                         start_frame_idx=start_frame_idx,
@@ -323,10 +340,23 @@ def worker_loop(command_queue, result_queue):
                         reverse=True,
                     ):
                         mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
+                        
+                        # Compute bounding box from mask
+                        mask_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)
+                        # Convert to boolean (True/False) - mask_to_box expects boolean tensor
+                        mask_binary = (mask_tensor > 0).bool()
+                        bbox_tensor = mask_to_box(mask_binary)
+                        bbox_np = bbox_tensor[0, 0].cpu().numpy()  # Shape: [4] with [x1, y1, x2, y2]
+                        
+                        # Check if bbox is valid (not all zeros)
+                        if np.all(bbox_np == 0):
+                            bbox_np = None
+                        
                         masks_data.append({
                             "frame_idx": frame_idx,
                             "mask_bytes": mask.tobytes(),
                             "mask_shape": mask.shape,
+                            "bbox": bbox_np.tolist() if bbox_np is not None else None,
                         })
                 
                 result_queue.put({

@@ -2,15 +2,19 @@
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
 from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
-from vidseq.services import conditioning_service, sam2_service, segmentation_service, video_service
+from vidseq.services import conditioning_service, mask_service, sam2_service, segmentation_service, video_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -293,7 +297,11 @@ async def propagate_forward(
             max_frames=request.max_frames,
         )
     except RuntimeError as e:
+        logger.error(f"Propagate forward failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in propagate forward: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     
     return PropagateResponse(frames_processed=frames_processed)
 
@@ -327,7 +335,11 @@ async def propagate_backward(
             max_frames=request.max_frames,
         )
     except RuntimeError as e:
+        logger.error(f"Propagate backward failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in propagate backward: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     
     return PropagateResponse(frames_processed=frames_processed)
 
@@ -357,6 +369,89 @@ async def get_mask(
         frame_idx=frame_idx,
     )
     return Response(content=mask_png, media_type="image/png")
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/bbox/{frame_idx}",
+)
+async def get_bbox(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get the bounding box for a specific frame.
+    
+    Returns JSON with bbox coordinates or null if no bbox exists.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    bbox = mask_service.load_bbox(
+        project_path=project_path,
+        video_id=video.id,
+        frame_idx=frame_idx,
+        num_frames=video.num_frames,
+    )
+    
+    if bbox is None:
+        return None
+    
+    return {
+        "x1": float(bbox[0]),
+        "y1": float(bbox[1]),
+        "x2": float(bbox[2]),
+        "y2": float(bbox[3]),
+    }
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/bboxes-batch",
+)
+async def get_bboxes_batch(
+    video_id: int,
+    start_frame: int,
+    count: int = 100,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get bounding boxes for a batch of frames.
+    
+    Returns JSON array of {frame_idx, bbox} objects where bbox is [x1, y1, x2, y2] or null.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    bboxes = mask_service.load_bboxes_batch(
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        count=count,
+        num_frames=video.num_frames,
+    )
+    
+    result = []
+    for i, bbox in enumerate(bboxes):
+        frame_idx = start_frame + i
+        if frame_idx >= video.num_frames:
+            break
+        
+        if bbox is None or np.all(bbox == 0):
+            result.append({"frame_idx": frame_idx, "bbox": None})
+        else:
+            result.append({
+                "frame_idx": frame_idx,
+                "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
+            })
+    
+    return {"bboxes": result}
 
 
 @router.get(

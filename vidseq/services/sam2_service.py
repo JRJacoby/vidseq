@@ -344,7 +344,7 @@ class SAM2Service:
         video_id: int,
         start_frame_idx: int,
         max_frames: int,
-    ) -> list[tuple[int, np.ndarray]]:
+    ) -> list[tuple[int, np.ndarray, Optional[list[float]]]]:
         """
         Propagate tracking forward from a given frame.
         
@@ -354,7 +354,7 @@ class SAM2Service:
             max_frames: Maximum number of frames to propagate
             
         Returns:
-            List of (frame_idx, mask) tuples
+            List of (frame_idx, mask, bbox) tuples where bbox is [x1, y1, x2, y2] or None
             
         Raises:
             RuntimeError: If no object has been tracked
@@ -382,7 +382,8 @@ class SAM2Service:
             mask_bytes = mask_data["mask_bytes"]
             mask_shape = tuple(mask_data["mask_shape"])
             mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
-            masks.append((frame_idx, mask))
+            bbox = mask_data.get("bbox")  # [x1, y1, x2, y2] or None
+            masks.append((frame_idx, mask, bbox))
         
         return masks
     
@@ -391,7 +392,7 @@ class SAM2Service:
         video_id: int,
         start_frame_idx: int,
         max_frames: int,
-    ) -> list[tuple[int, np.ndarray]]:
+    ) -> list[tuple[int, np.ndarray, Optional[list[float]]]]:
         """
         Propagate tracking backward from a given frame.
         
@@ -401,7 +402,7 @@ class SAM2Service:
             max_frames: Maximum number of frames to propagate
             
         Returns:
-            List of (frame_idx, mask) tuples
+            List of (frame_idx, mask, bbox) tuples where bbox is [x1, y1, x2, y2] or None
             
         Raises:
             RuntimeError: If no object has been tracked
@@ -429,7 +430,8 @@ class SAM2Service:
             mask_bytes = mask_data["mask_bytes"]
             mask_shape = tuple(mask_data["mask_shape"])
             mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
-            masks.append((frame_idx, mask))
+            bbox = mask_data.get("bbox")  # [x1, y1, x2, y2] or None
+            masks.append((frame_idx, mask, bbox))
         
         return masks
     

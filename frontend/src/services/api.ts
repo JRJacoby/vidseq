@@ -188,6 +188,52 @@ export async function getMasksBatch(
     return response.json()
 }
 
+export interface Bbox {
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+}
+
+export async function getBbox(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<Bbox | null> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/bbox/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch bbox'))
+    }
+    const data = await response.json()
+    return data === null ? null : data as Bbox
+}
+
+export interface BboxBatchItem {
+    frame_idx: number
+    bbox: [number, number, number, number] | null
+}
+
+export interface BboxBatchResponse {
+    bboxes: BboxBatchItem[]
+}
+
+export async function getBboxesBatch(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100
+): Promise<BboxBatchResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/bboxes-batch?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch bboxes batch'))
+    }
+    return response.json()
+}
+
 export async function getConditioningFrames(
     projectId: number,
     videoId: number

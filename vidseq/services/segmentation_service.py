@@ -159,7 +159,7 @@ def propagate_forward_and_save(
     from vidseq.services.mask_service import open_h5
     
     with open_h5(project_path, 'a') as h5_file:
-        for frame_idx, mask in masks:
+        for frame_idx, mask, bbox in masks:
             mask_service.save_mask(
                 project_path=project_path,
                 video_id=video.id,
@@ -170,6 +170,15 @@ def propagate_forward_and_save(
                 width=video.width,
                 h5_file=h5_file,
             )
+            if bbox is not None:
+                mask_service.save_bbox(
+                    project_path=project_path,
+                    video_id=video.id,
+                    frame_idx=frame_idx,
+                    bbox=np.array(bbox, dtype=np.float32),
+                    num_frames=video.num_frames,
+                    h5_file=h5_file,
+                )
             mask_service.mark_frame_type(
                 project_path=project_path,
                 video_id=video.id,
@@ -209,7 +218,7 @@ def propagate_backward_and_save(
     from vidseq.services.mask_service import open_h5
     
     with open_h5(project_path, 'a') as h5_file:
-        for frame_idx, mask in masks:
+        for frame_idx, mask, bbox in masks:
             mask_service.save_mask(
                 project_path=project_path,
                 video_id=video.id,
@@ -220,6 +229,15 @@ def propagate_backward_and_save(
                 width=video.width,
                 h5_file=h5_file,
             )
+            if bbox is not None:
+                mask_service.save_bbox(
+                    project_path=project_path,
+                    video_id=video.id,
+                    frame_idx=frame_idx,
+                    bbox=np.array(bbox, dtype=np.float32),
+                    num_frames=video.num_frames,
+                    h5_file=h5_file,
+                )
             mask_service.mark_frame_type(
                 project_path=project_path,
                 video_id=video.id,

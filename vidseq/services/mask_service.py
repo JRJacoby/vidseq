@@ -492,3 +492,243 @@ def clear_all_frame_types(
             if dataset_name in h5_file:
                 del h5_file[dataset_name]
                 h5_file.flush()
+
+
+def get_or_create_bbox_dataset(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    h5_file: Optional[h5py.File] = None,
+) -> None:
+    """Ensure bbox dataset exists for a video, creating it with zeros if needed."""
+    dataset_name = f"bounding_boxes/{video_id}"
+    
+    if h5_file is not None:
+        if dataset_name not in h5_file:
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames, 4),
+                dtype=np.float32,
+                fillvalue=0.0,
+                chunks=(1, 4),
+                compression=None,
+            )
+            h5_file.flush()
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name not in h5_file:
+                h5_file.create_dataset(
+                    dataset_name,
+                    shape=(num_frames, 4),
+                    dtype=np.float32,
+                    fillvalue=0.0,
+                    chunks=(1, 4),
+                    compression=None,
+                )
+                h5_file.flush()
+
+
+def save_bbox(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    bbox: np.ndarray,
+    num_frames: Optional[int] = None,
+    h5_file: Optional[h5py.File] = None,
+) -> None:
+    """
+    Save a bounding box to the HDF5 file.
+    
+    Args:
+        project_path: Path to the project folder
+        video_id: Video ID
+        frame_idx: Frame index
+        bbox: Bounding box as numpy array [x1, y1, x2, y2]
+        num_frames: Number of frames (required if dataset doesn't exist)
+        h5_file: Optional pre-opened HDF5 file handle
+    """
+    dataset_name = f"bounding_boxes/{video_id}"
+    
+    if h5_file is not None:
+        if dataset_name not in h5_file:
+            if num_frames is None:
+                raise ValueError("num_frames required when dataset doesn't exist")
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames, 4),
+                dtype=np.float32,
+                fillvalue=0.0,
+                chunks=(1, 4),
+                compression=None,
+            )
+        
+        h5_file[dataset_name][frame_idx] = bbox
+        h5_file.flush()
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name not in h5_file:
+                if num_frames is None:
+                    raise ValueError("num_frames required when dataset doesn't exist")
+                h5_file.create_dataset(
+                    dataset_name,
+                    shape=(num_frames, 4),
+                    dtype=np.float32,
+                    fillvalue=0.0,
+                    chunks=(1, 4),
+                    compression=None,
+                )
+            
+            h5_file[dataset_name][frame_idx] = bbox
+            h5_file.flush()
+
+
+def load_bbox(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    num_frames: Optional[int] = None,
+    h5_file: Optional[h5py.File] = None,
+) -> Optional[np.ndarray]:
+    """
+    Load a bounding box from the HDF5 file.
+    
+    Args:
+        project_path: Path to the project folder
+        video_id: Video ID
+        frame_idx: Frame index
+        num_frames: Number of frames (required if dataset doesn't exist)
+        h5_file: Optional pre-opened HDF5 file handle
+        
+    Returns:
+        Bounding box as numpy array [x1, y1, x2, y2] or None if no bbox exists
+    """
+    dataset_name = f"bounding_boxes/{video_id}"
+    
+    if h5_file is not None:
+        if dataset_name not in h5_file:
+            if num_frames is None:
+                return None
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames, 4),
+                dtype=np.float32,
+                fillvalue=0.0,
+                chunks=(1, 4),
+                compression=None,
+            )
+            h5_file.flush()
+            return None
+        
+        bbox = np.array(h5_file[dataset_name][frame_idx])
+        # Check if bbox is empty (all zeros)
+        if np.all(bbox == 0):
+            return None
+        return bbox
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name not in h5_file:
+                if num_frames is None:
+                    return None
+                h5_file.create_dataset(
+                    dataset_name,
+                    shape=(num_frames, 4),
+                    dtype=np.float32,
+                    fillvalue=0.0,
+                    chunks=(1, 4),
+                    compression=None,
+                )
+                h5_file.flush()
+                return None
+            
+            bbox = np.array(h5_file[dataset_name][frame_idx])
+            # Check if bbox is empty (all zeros)
+            if np.all(bbox == 0):
+                return None
+            return bbox
+
+
+def load_bboxes_batch(
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    count: int,
+    num_frames: int,
+    h5_file: Optional[h5py.File] = None,
+) -> np.ndarray:
+    """
+    Load multiple bounding boxes efficiently using H5 slice indexing.
+    
+    Returns array of shape (actual_count, 4) where actual_count
+    may be less than count if start_frame + count exceeds num_frames.
+    """
+    dataset_name = f"bounding_boxes/{video_id}"
+    end_frame = min(start_frame + count, num_frames)
+    
+    if h5_file is not None:
+        if dataset_name not in h5_file:
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames, 4),
+                dtype=np.float32,
+                fillvalue=0.0,
+                chunks=(1, 4),
+                compression=None,
+            )
+            h5_file.flush()
+            return np.zeros((end_frame - start_frame, 4), dtype=np.float32)
+        
+        return np.array(h5_file[dataset_name][start_frame:end_frame])
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name not in h5_file:
+                h5_file.create_dataset(
+                    dataset_name,
+                    shape=(num_frames, 4),
+                    dtype=np.float32,
+                    fillvalue=0.0,
+                    chunks=(1, 4),
+                    compression=None,
+                )
+                h5_file.flush()
+                return np.zeros((end_frame - start_frame, 4), dtype=np.float32)
+            
+            return np.array(h5_file[dataset_name][start_frame:end_frame])
+
+
+def clear_bbox(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    h5_file: Optional[h5py.File] = None,
+) -> None:
+    """Clear (zero out) a bounding box for a specific frame."""
+    dataset_name = f"bounding_boxes/{video_id}"
+    
+    if h5_file is not None:
+        if dataset_name in h5_file:
+            h5_file[dataset_name][frame_idx] = np.zeros(4, dtype=np.float32)
+            h5_file.flush()
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name in h5_file:
+                h5_file[dataset_name][frame_idx] = np.zeros(4, dtype=np.float32)
+                h5_file.flush()
+
+
+def clear_all_bboxes(
+    project_path: Path,
+    video_id: int,
+    h5_file: Optional[h5py.File] = None,
+) -> None:
+    """Delete all bounding boxes for a video by removing the dataset."""
+    dataset_name = f"bounding_boxes/{video_id}"
+    
+    if h5_file is not None:
+        if dataset_name in h5_file:
+            del h5_file[dataset_name]
+            h5_file.flush()
+    else:
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name in h5_file:
+                del h5_file[dataset_name]
+                h5_file.flush()
