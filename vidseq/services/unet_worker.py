@@ -370,10 +370,11 @@ def _apply_prev_mask_perturbation(prev_mask, scale_range=(0.9, 1.1), max_shift=0
 class VideoMaskDataset(torch.utils.data.Dataset):
     """Dataset for training UNet on video frames + previous masks."""
     
-    def __init__(self, samples, project_path: Path, apply_augmentation: bool = True):
+    def __init__(self, samples, project_path: Path, apply_augmentation: bool = True, h5_file=None):
         self.samples = samples
         self.project_path = project_path
         self.apply_augmentation = apply_augmentation
+        self.h5_file = h5_file
     
     def __len__(self):
         return len(self.samples)
@@ -399,6 +400,7 @@ class VideoMaskDataset(torch.utils.data.Dataset):
                 num_frames=sample["num_frames"],
                 height=height,
                 width=width,
+                h5_file=self.h5_file,
             )
             prev_mask_tensor = torch.from_numpy(prev_mask).float().unsqueeze(0) / 255.0
         else:
@@ -411,33 +413,45 @@ class VideoMaskDataset(torch.utils.data.Dataset):
             num_frames=sample["num_frames"],
             height=height,
             width=width,
+            h5_file=self.h5_file,
         )
         target_mask_tensor = torch.from_numpy(target_mask).float().unsqueeze(0) / 255.0
         
         if self.apply_augmentation:
-            if prev_frame_idx is not None:
-                if _random_empty_prev_mask():
-                    prev_mask_tensor = torch.zeros_like(prev_mask_tensor)
-                elif random.random() < 0.5:
-                    prev_mask_tensor = _apply_prev_mask_perturbation(prev_mask_tensor)
-            
-            geometric_aug = random.choice(['none', 'flip', 'rotate', 'scale'])
-            
-            if geometric_aug == 'flip':
-                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_horizontal_flip(
-                    rgb_tensor, prev_mask_tensor, target_mask_tensor
-                )
-            elif geometric_aug == 'rotate':
-                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_rotation_180(
-                    rgb_tensor, prev_mask_tensor, target_mask_tensor
-                )
-            elif geometric_aug == 'scale':
-                rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_scale_augmentation(
-                    rgb_tensor, prev_mask_tensor, target_mask_tensor
-                )
-            
-            if random.random() < 0.8:
-                rgb_tensor = _apply_color_augmentation(rgb_tensor)
+            # Step 1: 90% chance of augmentation, 10% raw
+            if random.random() < 0.9:
+                # Step 2: If augmentation, handle prev_mask: 34% real, 33% empty, 33% perturbed
+                if prev_frame_idx is not None:
+                    prev_mask_choice = random.random()
+                    if prev_mask_choice < 0.33:
+                        # 33% empty
+                        prev_mask_tensor = torch.zeros_like(prev_mask_tensor)
+                    elif prev_mask_choice < 0.66:
+                        # 33% perturbed (0.33 to 0.66)
+                        prev_mask_tensor = _apply_prev_mask_perturbation(prev_mask_tensor)
+                    # else 34% (0.66 to 1.0) - keep real prev_mask
+                
+                # Step 3: 50% chance of geometric augmentation
+                if random.random() < 0.5:
+                    geometric_aug = random.choice(['flip', 'rotate', 'scale'])
+                    
+                    if geometric_aug == 'flip':
+                        rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_horizontal_flip(
+                            rgb_tensor, prev_mask_tensor, target_mask_tensor
+                        )
+                    elif geometric_aug == 'rotate':
+                        rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_rotation_180(
+                            rgb_tensor, prev_mask_tensor, target_mask_tensor
+                        )
+                    elif geometric_aug == 'scale':
+                        rgb_tensor, prev_mask_tensor, target_mask_tensor = _apply_scale_augmentation(
+                            rgb_tensor, prev_mask_tensor, target_mask_tensor
+                        )
+                
+                # Step 4: 50% chance of color augmentation
+                if random.random() < 0.5:
+                    rgb_tensor = _apply_color_augmentation(rgb_tensor)
+            # else 10% - raw image, no augmentation
         
         input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=0)
         
@@ -528,31 +542,6 @@ def _train_model(project_path: Path):
     
     print(f"[UNet Worker] Split: {len(train_samples)} train, {len(test_samples)} test samples")
     
-    train_dataset = VideoMaskDataset(train_samples, project_path, apply_augmentation=True)
-    test_dataset = VideoMaskDataset(test_samples, project_path, apply_augmentation=False)
-    
-    train_sampler = torch.utils.data.WeightedRandomSampler(
-        weights=torch.ones(len(train_dataset)),
-        num_samples=len(train_dataset) * 5,
-        replacement=True
-    )
-    
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=64,
-        sampler=train_sampler,
-        num_workers=0,
-        pin_memory=True,
-    )
-    
-    test_dataloader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-    )
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[UNet Worker] Using device: {device}")
     
@@ -583,29 +572,51 @@ def _train_model(project_path: Path):
     
     model.train()
     
+    from vidseq.services.mask_service import open_h5
+    
     print(f"[UNet Worker] Starting training with adaptive LR (initial: {initial_lr})...")
     for epoch in range(max_epochs):
-        epoch_train_loss = 0.0
-        num_batches = 0
-        pbar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{max_epochs}")
-        
-        for batch_inputs, batch_targets in pbar:
-            batch_inputs = batch_inputs.to(device)
-            batch_targets = batch_targets.to(device)
+        with open_h5(project_path, 'r') as h5_file:
+            train_dataset = VideoMaskDataset(train_samples, project_path, apply_augmentation=True, h5_file=h5_file)
+            test_dataset = VideoMaskDataset(test_samples, project_path, apply_augmentation=False, h5_file=h5_file)
             
-            optimizer.zero_grad()
-            outputs = model(batch_inputs)
-            loss = criterion(outputs, batch_targets)
-            loss.backward()
-            optimizer.step()
+            train_dataloader = torch.utils.data.DataLoader(
+                train_dataset,
+                batch_size=64,
+                shuffle=True,
+                num_workers=0,
+                pin_memory=True,
+            )
             
-            epoch_train_loss += loss.item()
-            num_batches += 1
-            pbar.set_postfix({"train_loss": loss.item()})
-        
-        avg_train_loss = epoch_train_loss / num_batches if num_batches > 0 else 0.0
-        
-        test_loss = _evaluate_model(model, test_dataloader, criterion, device)
+            test_dataloader = torch.utils.data.DataLoader(
+                test_dataset,
+                batch_size=64,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=True,
+            )
+            
+            epoch_train_loss = 0.0
+            num_batches = 0
+            pbar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{max_epochs}")
+            
+            for batch_inputs, batch_targets in pbar:
+                batch_inputs = batch_inputs.to(device)
+                batch_targets = batch_targets.to(device)
+                
+                optimizer.zero_grad()
+                outputs = model(batch_inputs)
+                loss = criterion(outputs, batch_targets)
+                loss.backward()
+                optimizer.step()
+                
+                epoch_train_loss += loss.item()
+                num_batches += 1
+                pbar.set_postfix({"train_loss": loss.item()})
+            
+            avg_train_loss = epoch_train_loss / num_batches if num_batches > 0 else 0.0
+            
+            test_loss = _evaluate_model(model, test_dataloader, criterion, device)
         
         current_lr = optimizer.param_groups[0]['lr']
         print(
@@ -690,48 +701,53 @@ def _apply_model(project_path: Path, video_id: int):
     
     print(f"[UNet Worker] Applying model to video {video_id}...")
     
+    from vidseq.services.mask_service import open_h5
+    
     prev_mask = None
     
-    with torch.no_grad():
-        for frame_idx in tqdm(range(video.num_frames), desc="Applying model"):
-            current_mask = mask_service.load_mask(
-                project_path=project_path,
-                video_id=video_id,
-                frame_idx=frame_idx,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-            )
-            
-            if current_mask.sum() > 0:
-                prev_mask = current_mask
-                continue
-            
-            rgb_frame = _load_video_frame(video_path, frame_idx)
-            rgb_tensor = torch.from_numpy(rgb_frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            
-            if prev_mask is not None:
-                prev_mask_tensor = torch.from_numpy(prev_mask).float().unsqueeze(0).unsqueeze(0) / 255.0
-            else:
-                prev_mask_tensor = torch.zeros((1, 1, video.height, video.width), dtype=torch.float32)
-            
-            input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=1).to(device)
-            
-            output = model(input_tensor)
-            predicted_mask = torch.sigmoid(output).squeeze().cpu().numpy()
-            predicted_mask_binary = (predicted_mask > 0.5).astype(np.uint8) * 255
-            
-            mask_service.save_mask(
-                project_path=project_path,
-                video_id=video_id,
-                frame_idx=frame_idx,
-                mask=predicted_mask_binary,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-            )
-            
-            prev_mask = predicted_mask_binary
+    with open_h5(project_path, 'a') as h5_file:
+        with torch.no_grad():
+            for frame_idx in tqdm(range(video.num_frames), desc="Applying model"):
+                current_mask = mask_service.load_mask(
+                    project_path=project_path,
+                    video_id=video_id,
+                    frame_idx=frame_idx,
+                    num_frames=video.num_frames,
+                    height=video.height,
+                    width=video.width,
+                    h5_file=h5_file,
+                )
+                
+                if current_mask.sum() > 0:
+                    prev_mask = current_mask
+                    continue
+                
+                rgb_frame = _load_video_frame(video_path, frame_idx)
+                rgb_tensor = torch.from_numpy(rgb_frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+                
+                if prev_mask is not None:
+                    prev_mask_tensor = torch.from_numpy(prev_mask).float().unsqueeze(0).unsqueeze(0) / 255.0
+                else:
+                    prev_mask_tensor = torch.zeros((1, 1, video.height, video.width), dtype=torch.float32)
+                
+                input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=1).to(device)
+                
+                output = model(input_tensor)
+                predicted_mask = torch.sigmoid(output).squeeze().cpu().numpy()
+                predicted_mask_binary = (predicted_mask > 0.5).astype(np.uint8) * 255
+                
+                mask_service.save_mask(
+                    project_path=project_path,
+                    video_id=video_id,
+                    frame_idx=frame_idx,
+                    mask=predicted_mask_binary,
+                    num_frames=video.num_frames,
+                    height=video.height,
+                    width=video.width,
+                    h5_file=h5_file,
+                )
+                
+                prev_mask = predicted_mask_binary
     
     print(f"[UNet Worker] Finished applying model to video {video_id}")
 
@@ -784,6 +800,8 @@ def _test_apply_model(project_path: Path, video_id: int, start_frame: int):
     
     print(f"[UNet Worker] Test applying model to video {video_id}, frames {start_frame} to {end_frame-1}...")
     
+    from vidseq.services.mask_service import open_h5
+    
     prev_mask = None
     
     frames_processed = 0
@@ -791,74 +809,78 @@ def _test_apply_model(project_path: Path, video_id: int, start_frame: int):
     frames_skipped_existing = 0
     frames_with_predictions = 0
     
-    with torch.no_grad():
-        for frame_idx in tqdm(range(start_frame, end_frame), desc="Test applying model"):
-            frame_type = mask_service.get_frame_type(
-                project_path=project_path,
-                video_id=video_id,
-                frame_idx=frame_idx,
-                num_frames=video.num_frames,
-            )
-            
-            if frame_type == "train":
-                frames_skipped_train += 1
-                continue
-            
-            current_mask = mask_service.load_mask(
-                project_path=project_path,
-                video_id=video_id,
-                frame_idx=frame_idx,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-            )
-            
-            if current_mask.sum() > 0:
-                prev_mask = current_mask
-                frames_skipped_existing += 1
-                continue
-            
-            rgb_frame = _load_video_frame(video_path, frame_idx)
-            rgb_tensor = torch.from_numpy(rgb_frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            
-            if prev_mask is not None:
-                prev_mask_tensor = torch.from_numpy(prev_mask).float().unsqueeze(0).unsqueeze(0) / 255.0
-            else:
-                prev_mask_tensor = torch.zeros((1, 1, video.height, video.width), dtype=torch.float32)
-            
-            input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=1).to(device)
-            
-            output = model(input_tensor)
-            predicted_mask = torch.sigmoid(output).squeeze().cpu().numpy()
-            predicted_mask_binary = (predicted_mask > 0.5).astype(np.uint8) * 255
-            
-            frames_processed += 1
-            
-            if frame_idx == start_frame or frame_idx % 100 == 0 or frames_processed <= 10:
-                pixels_above_threshold = (predicted_mask > 0.5).sum()
-                print(
-                    f"[UNet Worker] Frame {frame_idx}: "
-                    f"pred_max={predicted_mask.max():.4f}, "
-                    f"pred_mean={predicted_mask.mean():.4f}, "
-                    f"pred_min={predicted_mask.min():.4f}, "
-                    f"pixels_above_0.5={pixels_above_threshold}, "
-                    f"binary_sum={predicted_mask_binary.sum()}"
+    with open_h5(project_path, 'a') as h5_file:
+        with torch.no_grad():
+            for frame_idx in tqdm(range(start_frame, end_frame), desc="Test applying model"):
+                frame_type = mask_service.get_frame_type(
+                    project_path=project_path,
+                    video_id=video_id,
+                    frame_idx=frame_idx,
+                    num_frames=video.num_frames,
+                    h5_file=h5_file,
                 )
-            
-            if predicted_mask_binary.sum() > 0:
-                frames_with_predictions += 1
-            
-            mask_service.save_mask(
-                project_path=project_path,
-                video_id=video_id,
-                frame_idx=frame_idx,
-                mask=predicted_mask_binary,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-            )
-            
-            prev_mask = predicted_mask_binary
+                
+                if frame_type == "train":
+                    frames_skipped_train += 1
+                    continue
+                
+                current_mask = mask_service.load_mask(
+                    project_path=project_path,
+                    video_id=video_id,
+                    frame_idx=frame_idx,
+                    num_frames=video.num_frames,
+                    height=video.height,
+                    width=video.width,
+                    h5_file=h5_file,
+                )
+                
+                if current_mask.sum() > 0:
+                    prev_mask = current_mask
+                    frames_skipped_existing += 1
+                    continue
+                
+                rgb_frame = _load_video_frame(video_path, frame_idx)
+                rgb_tensor = torch.from_numpy(rgb_frame).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+                
+                if prev_mask is not None:
+                    prev_mask_tensor = torch.from_numpy(prev_mask).float().unsqueeze(0).unsqueeze(0) / 255.0
+                else:
+                    prev_mask_tensor = torch.zeros((1, 1, video.height, video.width), dtype=torch.float32)
+                
+                input_tensor = torch.cat([rgb_tensor, prev_mask_tensor], dim=1).to(device)
+                
+                output = model(input_tensor)
+                predicted_mask = torch.sigmoid(output).squeeze().cpu().numpy()
+                predicted_mask_binary = (predicted_mask > 0.5).astype(np.uint8) * 255
+                
+                frames_processed += 1
+                
+                if frame_idx == start_frame or frame_idx % 100 == 0 or frames_processed <= 10:
+                    pixels_above_threshold = (predicted_mask > 0.5).sum()
+                    print(
+                        f"[UNet Worker] Frame {frame_idx}: "
+                        f"pred_max={predicted_mask.max():.4f}, "
+                        f"pred_mean={predicted_mask.mean():.4f}, "
+                        f"pred_min={predicted_mask.min():.4f}, "
+                        f"pixels_above_0.5={pixels_above_threshold}, "
+                        f"binary_sum={predicted_mask_binary.sum()}"
+                    )
+                
+                if predicted_mask_binary.sum() > 0:
+                    frames_with_predictions += 1
+                
+                mask_service.save_mask(
+                    project_path=project_path,
+                    video_id=video_id,
+                    frame_idx=frame_idx,
+                    mask=predicted_mask_binary,
+                    num_frames=video.num_frames,
+                    height=video.height,
+                    width=video.width,
+                    h5_file=h5_file,
+                )
+                
+                prev_mask = predicted_mask_binary
     
     print(
         f"[UNet Worker] Test apply summary: "

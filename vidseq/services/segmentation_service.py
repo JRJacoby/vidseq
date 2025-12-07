@@ -156,23 +156,28 @@ def propagate_forward_and_save(
         max_frames=max_frames,
     )
     
-    for frame_idx, mask in masks:
-        mask_service.save_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            mask=mask,
-            num_frames=video.num_frames,
-            height=video.height,
-            width=video.width,
-        )
-        mask_service.mark_frame_type(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            frame_type='train',
-            num_frames=video.num_frames,
-        )
+    from vidseq.services.mask_service import open_h5
+    
+    with open_h5(project_path, 'a') as h5_file:
+        for frame_idx, mask in masks:
+            mask_service.save_mask(
+                project_path=project_path,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                mask=mask,
+                num_frames=video.num_frames,
+                height=video.height,
+                width=video.width,
+                h5_file=h5_file,
+            )
+            mask_service.mark_frame_type(
+                project_path=project_path,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                frame_type='train',
+                num_frames=video.num_frames,
+                h5_file=h5_file,
+            )
     
     return len(masks)
 
@@ -201,22 +206,27 @@ def propagate_backward_and_save(
         max_frames=max_frames,
     )
     
-    for frame_idx, mask in masks:
-        mask_service.save_mask(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            mask=mask,
-            num_frames=video.num_frames,
-            height=video.height,
-            width=video.width,
-        )
-        mask_service.mark_frame_type(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=frame_idx,
-            frame_type='train',
-            num_frames=video.num_frames,
-        )
+    from vidseq.services.mask_service import open_h5
+    
+    with open_h5(project_path, 'a') as h5_file:
+        for frame_idx, mask in masks:
+            mask_service.save_mask(
+                project_path=project_path,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                mask=mask,
+                num_frames=video.num_frames,
+                height=video.height,
+                width=video.width,
+                h5_file=h5_file,
+            )
+            mask_service.mark_frame_type(
+                project_path=project_path,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                frame_type='train',
+                num_frames=video.num_frames,
+                h5_file=h5_file,
+            )
     
     return len(masks)

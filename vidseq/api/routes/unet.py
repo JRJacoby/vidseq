@@ -34,9 +34,6 @@ async def train_model(
         print("[UNet API] Shutting down SAM2 to free GPU memory for training...")
         sam2_service.shutdown_worker()
     
-    # Close HDF5 files in main process to avoid conflicts with worker process
-    mask_service.close_project_h5(project_path)
-    
     try:
         service.train_model(project_path)
         return {"message": "Training started"}

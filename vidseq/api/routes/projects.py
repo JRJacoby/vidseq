@@ -79,9 +79,6 @@ async def delete_project(
     db_manager = DatabaseManager.get_instance()
     await db_manager.dispose_project(project_path)
     
-    # Close any open h5 file handles before deleting
-    mask_service.close_project_h5(project_path)
-    
     await db.delete(project)
     await db.commit()
     

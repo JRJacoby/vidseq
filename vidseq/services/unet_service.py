@@ -144,10 +144,6 @@ class UNetService:
         if self._is_training:
             raise RuntimeError("Training already in progress")
         
-        # Close HDF5 file in main process so worker can open it
-        from vidseq.services import mask_service
-        mask_service.close_project_h5(project_path)
-        
         self._is_training = True
         self._ensure_worker_ready()
         
@@ -169,10 +165,6 @@ class UNetService:
         """
         if self._is_applying:
             raise RuntimeError("Application already in progress")
-        
-        # Close HDF5 file in main process so worker can open it
-        from vidseq.services import mask_service
-        mask_service.close_project_h5(project_path)
         
         self._is_applying = True
         self._ensure_worker_ready()
@@ -197,10 +189,6 @@ class UNetService:
         """
         if self._is_applying:
             raise RuntimeError("Application already in progress")
-        
-        # Close HDF5 file in main process so worker can open it
-        from vidseq.services import mask_service
-        mask_service.close_project_h5(project_path)
         
         self._is_applying = True
         self._ensure_worker_ready()
