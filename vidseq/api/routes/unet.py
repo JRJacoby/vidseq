@@ -1,4 +1,4 @@
-"""UNet API routes."""
+"""YOLO API routes (formerly UNet)."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.services import sam2_service, unet_service, video_service
+from vidseq.services import sam2_service, yolo_service, video_service
 
 router = APIRouter()
 
@@ -17,13 +17,11 @@ async def train_model(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Start training UNet model for the project.
+    Start training YOLO model for the project.
     
     Uses frames marked as 'train' from all videos in the project.
     """
-    from vidseq.services import mask_service
-    
-    service = unet_service.UNetService.get_instance()
+    service = yolo_service.YOLOService.get_instance()
     
     if service.is_training():
         raise HTTPException(status_code=400, detail="Training already in progress")
@@ -31,7 +29,7 @@ async def train_model(
     # Shutdown SAM2 to free GPU memory before training
     sam2_status = sam2_service.get_status()
     if sam2_status["status"] == "ready":
-        print("[UNet API] Shutting down SAM2 to free GPU memory for training...")
+        print("[YOLO API] Shutting down SAM2 to free GPU memory for training...")
         sam2_service.shutdown_worker()
     
     try:
@@ -49,16 +47,16 @@ async def apply_model(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Apply trained UNet model to a video.
+    Apply trained YOLO model to a video.
     
-    Predicts masks for frames that don't already have masks.
+    Predicts bounding boxes for frames that don't already have bboxes.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     
-    service = unet_service.UNetService.get_instance()
+    service = yolo_service.YOLOService.get_instance()
     
     if service.is_applying():
         raise HTTPException(status_code=400, detail="Application already in progress")
@@ -82,16 +80,16 @@ async def test_apply_model(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Test apply trained UNet model to a limited range of frames.
+    Test apply trained YOLO model to a limited range of frames.
     
-    Applies model to current frame plus next 1000 frames, skipping frames labeled 'train'.
+    Applies model to current frame plus next 1000 frames, skipping frames that already have bboxes.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     
-    service = unet_service.UNetService.get_instance()
+    service = yolo_service.YOLOService.get_instance()
     
     if service.is_applying():
         raise HTTPException(status_code=400, detail="Application already in progress")
@@ -111,8 +109,8 @@ async def get_model_status(
     project_id: int,
     project_path: Path = Depends(get_project_folder),
 ):
-    """Check if UNet model exists for the project."""
-    service = unet_service.UNetService.get_instance()
+    """Check if YOLO model exists for the project."""
+    service = yolo_service.YOLOService.get_instance()
     exists = service.model_exists(project_path)
     model_path = str(service.get_model_path(project_path)) if exists else None
     

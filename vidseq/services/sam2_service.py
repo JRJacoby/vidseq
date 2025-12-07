@@ -158,11 +158,11 @@ class SAM2Service:
     
     def start_loading_in_background(self) -> None:
         """Start loading SAM2 model in background (via worker process)."""
-        # Don't start if UNet is training (to avoid GPU memory conflicts)
+        # Don't start if YOLO is training (to avoid GPU memory conflicts)
         try:
-            from vidseq.services import unet_service
-            unet = unet_service.UNetService.get_instance()
-            if unet.is_training():
+            from vidseq.services import yolo_service
+            yolo = yolo_service.YOLOService.get_instance()
+            if yolo.is_training():
                 return
         except Exception:
             pass

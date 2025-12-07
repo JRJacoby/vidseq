@@ -426,6 +426,9 @@ export async function getAllPrompts(
     return result
 }
 
+// Note: These functions are named with "UNet" for backward compatibility,
+// but they now use YOLO (YOLOv8-nano) for bounding box detection.
+
 export interface UNetModelStatus {
     exists: boolean
     model_path: string | null
@@ -434,12 +437,13 @@ export interface UNetModelStatus {
 }
 
 export async function trainUNetModel(projectId: number): Promise<void> {
+    // Trains YOLOv8-nano model for bounding box detection
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/train-model`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to train UNet model'))
+        throw new Error(await getErrorMessage(response, 'Failed to train YOLO model'))
     }
 }
 
@@ -447,12 +451,13 @@ export async function applyUNetModel(
     projectId: number,
     videoId: number
 ): Promise<void> {
+    // Applies YOLOv8-nano model to detect bounding boxes
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/apply-model`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to apply UNet model'))
+        throw new Error(await getErrorMessage(response, 'Failed to apply YOLO model'))
     }
 }
 
@@ -461,23 +466,25 @@ export async function testApplyUNetModel(
     videoId: number,
     startFrame: number
 ): Promise<void> {
+    // Test applies YOLOv8-nano model to limited frame range
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/test-apply-model?start_frame=${startFrame}`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to test apply UNet model'))
+        throw new Error(await getErrorMessage(response, 'Failed to test apply YOLO model'))
     }
 }
 
 export async function getUNetModelStatus(
     projectId: number
 ): Promise<UNetModelStatus> {
+    // Gets YOLO model status
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/model-status`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get UNet model status'))
+        throw new Error(await getErrorMessage(response, 'Failed to get YOLO model status'))
     }
     return response.json()
 }
