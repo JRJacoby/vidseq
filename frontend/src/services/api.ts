@@ -96,6 +96,20 @@ export function getVideoStreamUrl(projectId: number, videoId: number): string {
     return `${API_BASE}/projects/${projectId}/videos/${videoId}/stream`
 }
 
+export async function getFrameImage(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch frame image'))
+    }
+    return response.blob()
+}
+
 export interface DirectoryEntry {
     name: string
     path: string

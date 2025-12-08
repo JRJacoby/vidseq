@@ -1,10 +1,14 @@
 import mimetypes
 from pathlib import Path
+import cv2
+import numpy as np
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from PIL import Image
 
 from vidseq.api.dependencies import get_project_session
 from vidseq.models.video import Video
@@ -134,3 +138,55 @@ async def stream_video(
         media_type=content_type,
         headers={"Accept-Ranges": "bytes"},
     )
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/frame/{frame_idx}")
+async def get_frame(
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Extract a specific frame from a video and return it as a JPEG image.
+    
+    Args:
+        video_id: ID of the video
+        frame_idx: Frame index to extract (0-based)
+        
+    Returns:
+        JPEG image bytes
+    """
+    try:
+        video = await get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    if frame_idx < 0 or frame_idx >= video.num_frames:
+        raise HTTPException(status_code=400, detail=f"Frame index {frame_idx} out of range [0, {video.num_frames})")
+    
+    video_path = Path(video.path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file not found: {video.path}")
+    
+    # Extract frame using OpenCV
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise HTTPException(status_code=500, detail=f"Failed to open video: {video.path}")
+    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    
+    if not ret:
+        raise HTTPException(status_code=500, detail=f"Failed to read frame {frame_idx} from video")
+    
+    # Convert BGR to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Convert to PIL Image and then to JPEG bytes
+    pil_image = Image.fromarray(frame_rgb)
+    img_bytes = BytesIO()
+    pil_image.save(img_bytes, format='JPEG', quality=95)
+    img_bytes.seek(0)
+    
+    return Response(content=img_bytes.read(), media_type="image/jpeg")

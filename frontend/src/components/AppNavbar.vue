@@ -18,6 +18,12 @@ const navigateToJobs = () => {
   }
 }
 
+const navigateToFirstFrames = () => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/first-frames`)
+  }
+}
+
 const isActiveRoute = (routeName: string) => {
   return route.name === routeName
 }
@@ -33,6 +39,14 @@ const isActiveRoute = (routeName: string) => {
         :disabled="!projectStore.currentProjectId"
       >
         Video Pipeline
+      </button>
+      <button 
+        class="navbar-button"
+        :class="{ 'navbar-button-active': isActiveRoute('firstFrames') }"
+        @click="navigateToFirstFrames"
+        :disabled="!projectStore.currentProjectId"
+      >
+        First Frames
       </button>
     </div>
     <div class="navbar-bottom">

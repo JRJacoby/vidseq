@@ -4,6 +4,7 @@ import ProjectView from '../views/ProjectView.vue'
 import VideoPipeline from '../components/VideoPipeline.vue'
 import JobsList from '../components/JobsList.vue'
 import VideoDetail from '../components/VideoDetail.vue'
+import FirstFramesView from '../components/FirstFramesView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -21,6 +22,11 @@ const router = createRouter({
           path: '',
           name: 'pipeline',
           component: VideoPipeline
+        },
+        {
+          path: 'first-frames',
+          name: 'firstFrames',
+          component: FirstFramesView
         },
         {
           path: 'jobs',
