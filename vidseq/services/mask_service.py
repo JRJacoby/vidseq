@@ -429,6 +429,9 @@ def get_frame_type(
     
     if h5_file is not None:
         if dataset_name not in h5_file:
+            # If file is opened in read mode, can't create dataset - return default
+            if h5_file.mode == 'r':
+                return ''
             if num_frames is None:
                 return ''
             h5_file.create_dataset(

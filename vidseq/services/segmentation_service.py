@@ -136,14 +136,14 @@ def clear_video(
     )
 
 
-def propagate_forward_and_save(
+def generate_training_masks_and_save(
     project_path: Path,
     video: Video,
     start_frame_idx: int,
     max_frames: int,
 ) -> int:
     """
-    Propagate tracking forward and save all resulting masks.
+    Generate training masks by propagating tracking forward and save all resulting masks and bounding boxes.
     
     Args:
         project_path: Path to the project folder
@@ -155,65 +155,6 @@ def propagate_forward_and_save(
         Number of frames processed
     """
     masks = sam2_service.propagate_forward(
-        video_id=video.id,
-        start_frame_idx=start_frame_idx,
-        max_frames=max_frames,
-    )
-    
-    from vidseq.services.mask_service import open_h5
-    
-    with open_h5(project_path, 'a') as h5_file:
-        for frame_idx, mask, bbox in masks:
-            mask_service.save_mask(
-                project_path=project_path,
-                video_id=video.id,
-                frame_idx=frame_idx,
-                mask=mask,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-                h5_file=h5_file,
-            )
-            if bbox is not None:
-                mask_service.save_bbox(
-                    project_path=project_path,
-                    video_id=video.id,
-                    frame_idx=frame_idx,
-                    bbox=np.array(bbox, dtype=np.float32),
-                    num_frames=video.num_frames,
-                    h5_file=h5_file,
-                )
-            mask_service.mark_frame_type(
-                project_path=project_path,
-                video_id=video.id,
-                frame_idx=frame_idx,
-                frame_type='train',
-                num_frames=video.num_frames,
-                h5_file=h5_file,
-            )
-    
-    return len(masks)
-
-
-def propagate_backward_and_save(
-    project_path: Path,
-    video: Video,
-    start_frame_idx: int,
-    max_frames: int,
-) -> int:
-    """
-    Propagate tracking backward and save all resulting masks.
-    
-    Args:
-        project_path: Path to the project folder
-        video: Video model instance
-        start_frame_idx: Frame index to start from
-        max_frames: Maximum number of frames to propagate
-        
-    Returns:
-        Number of frames processed
-    """
-    masks = sam2_service.propagate_backward(
         video_id=video.id,
         start_frame_idx=start_frame_idx,
         max_frames=max_frames,

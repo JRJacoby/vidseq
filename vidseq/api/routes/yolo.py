@@ -1,12 +1,12 @@
-"""YOLO API routes (formerly UNet). Uses YOLOv11-nano for bounding box detection."""
+"""YOLO API routes. Uses YOLOv11-nano for bounding box detection."""
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vidseq.api.dependencies import get_project_folder, get_project_session
-from vidseq.services import sam2_service, yolo_service, video_service
+from vidseq.api.dependencies import get_project_folder
+from vidseq.services import sam2_service, yolo_service
 
 router = APIRouter()
 
@@ -20,6 +20,7 @@ async def train_model(
     Start training YOLO model for the project.
     
     Uses frames marked as 'train' from all videos in the project.
+    Trains the initial detection model.
     """
     service = yolo_service.YOLOService.get_instance()
     
@@ -39,23 +40,17 @@ async def train_model(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/projects/{project_id}/videos/{video_id}/apply-model")
-async def apply_model(
+@router.post("/projects/{project_id}/run-initial-detection")
+async def run_initial_detection(
     project_id: int,
-    video_id: int,
-    session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Apply trained YOLO model to a video.
+    Run initial detection on all videos in the project.
     
-    Predicts bounding boxes for frames that don't already have bboxes.
+    Applies trained YOLO model to frame 0 of each video in the project.
+    Skips videos that already have a bounding box on frame 0.
     """
-    try:
-        await video_service.get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
     service = yolo_service.YOLOService.get_instance()
     
     if service.is_applying():
@@ -65,41 +60,8 @@ async def apply_model(
         raise HTTPException(status_code=404, detail="Model not found. Train model first.")
     
     try:
-        service.apply_model(project_path, video_id)
-        return {"message": "Application started"}
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/projects/{project_id}/videos/{video_id}/test-apply-model")
-async def test_apply_model(
-    project_id: int,
-    video_id: int,
-    start_frame: int = Query(0, description="Starting frame index"),
-    session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
-):
-    """
-    Test apply trained YOLO model to a limited range of frames.
-    
-    Applies model to current frame plus next 1000 frames, skipping frames that already have bboxes.
-    """
-    try:
-        await video_service.get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
-    service = yolo_service.YOLOService.get_instance()
-    
-    if service.is_applying():
-        raise HTTPException(status_code=400, detail="Application already in progress")
-    
-    if not service.model_exists(project_path):
-        raise HTTPException(status_code=404, detail="Model not found. Train model first.")
-    
-    try:
-        service.test_apply_model(project_path, video_id, start_frame)
-        return {"message": "Test application started"}
+        service.run_initial_detection(project_path)
+        return {"message": "Initial detection started"}
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

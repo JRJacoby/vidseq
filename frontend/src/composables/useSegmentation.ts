@@ -7,8 +7,7 @@ import {
     runSegmentation,
     resetFrame,
     resetVideo,
-    propagateForward,
-    propagateBackward,
+    generateTrainingMasks,
     getPromptsForFrame,
     type StoredPrompt,
     type Bbox,
@@ -30,8 +29,7 @@ export interface UseSegmentationReturn {
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
-    handlePropagateForward: () => Promise<void>
-    handlePropagateBackward: () => Promise<void>
+    handleGenerateTrainingMasks: () => Promise<void>
     clearMaskCache: (startFrame?: number, endFrame?: number) => void
 }
 
@@ -259,47 +257,24 @@ export function useSegmentation(
         }
     }
 
-    const handlePropagateForward = async () => {
+    const handleGenerateTrainingMasks = async () => {
         if (!projectId.value || !videoId.value) return
 
         isPropagating.value = true
 
         try {
-            await propagateForward(
+            await generateTrainingMasks(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
-                1000
+                100
             )
             maskCache.clear()
             bboxCache.clear()
             prefetchedUpTo = -1
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
-            console.error('Failed to propagate forward:', e)
-        } finally {
-            isPropagating.value = false
-        }
-    }
-
-    const handlePropagateBackward = async () => {
-        if (!projectId.value || !videoId.value) return
-
-        isPropagating.value = true
-
-        try {
-            await propagateBackward(
-                projectId.value,
-                videoId.value,
-                currentFrameIdx.value,
-                1000
-            )
-            maskCache.clear()
-            bboxCache.clear()
-            prefetchedUpTo = -1
-            await loadFrameData(currentFrameIdx.value)
-        } catch (e) {
-            console.error('Failed to propagate backward:', e)
+            console.error('Failed to generate training masks:', e)
         } finally {
             isPropagating.value = false
         }
@@ -426,8 +401,7 @@ export function useSegmentation(
         handlePointComplete,
         handleResetFrame,
         handleResetVideo,
-        handlePropagateForward,
-        handlePropagateBackward,
+        handleGenerateTrainingMasks,
         clearMaskCache,
     }
 }

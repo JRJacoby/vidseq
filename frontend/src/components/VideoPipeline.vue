@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { getProject, getVideos, addVideos, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
+import { useYOLO } from '@/composables/useYOLO'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -12,6 +13,17 @@ const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
 const isLoading = ref(false)
 const showFilePicker = ref(false)
+
+const projectId = computed(() => projectStore.currentProjectId)
+
+const {
+  isTraining,
+  isApplying,
+  modelExists,
+  trainModel,
+  runInitialDetection,
+  checkModelStatus,
+} = useYOLO(projectId)
 
 const loadProject = async () => {
   if (!projectStore.currentProjectId) return
@@ -64,6 +76,24 @@ const handleVideoDoubleClick = (videoId: number) => {
     router.push(`/project/${projectStore.currentProjectId}/video/${videoId}`)
   }
 }
+
+const handleTrainModel = async () => {
+  if (!projectId.value || isTraining.value) return
+  try {
+    await trainModel(projectId.value)
+  } catch (e) {
+    console.error('Failed to train model:', e)
+  }
+}
+
+const handleRunInitialDetection = async () => {
+  if (!projectId.value || isApplying.value || !modelExists.value) return
+  try {
+    await runInitialDetection(projectId.value)
+  } catch (e) {
+    console.error('Failed to run initial detection:', e)
+  }
+}
 </script>
 
 <template>
@@ -93,6 +123,24 @@ const handleVideoDoubleClick = (videoId: number) => {
         </div>
         <aside class="sidebar">
           <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
+          <h4 class="sidebar-section-title">Initial Detection</h4>
+          <button 
+            class="sidebar-button train-button"
+            @click="handleTrainModel"
+            :disabled="isTraining || isApplying"
+          >
+            <span class="button-label">{{ isTraining ? 'Training...' : 'Train Initial Detection Model' }}</span>
+          </button>
+          <button 
+            class="sidebar-button apply-button"
+            @click="handleRunInitialDetection"
+            :disabled="isTraining || isApplying || !modelExists"
+          >
+            <span class="button-label">{{ isApplying ? 'Running...' : 'Run Initial Detection' }}</span>
+          </button>
+          <div v-if="isTraining || isApplying" class="status-indicator">
+            {{ isTraining ? 'Training model...' : 'Running initial detection...' }}
+          </div>
         </aside>
       </div>
     </div>
@@ -163,6 +211,30 @@ const handleVideoDoubleClick = (videoId: number) => {
 
 .sidebar-button:hover {
   background-color: #e8e8e8;
+}
+
+.sidebar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sidebar-section-title {
+  margin: 1rem 0 0.5rem 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.button-label {
+  display: block;
+}
+
+.status-indicator {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  font-style: italic;
 }
 
 .loading-state,

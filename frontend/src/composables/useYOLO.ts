@@ -1,35 +1,30 @@
 import { ref, watch, type Ref } from 'vue'
 import {
-    trainUNetModel,
-    applyUNetModel,
-    testApplyUNetModel,
-    getUNetModelStatus,
-    type UNetModelStatus,
+    trainInitialDetectionModel,
+    runInitialDetection,
+    getYOLOModelStatus,
+    type YOLOModelStatus,
 } from '@/services/api'
 
-// Note: This composable is named useUNet for backward compatibility,
-// but it now uses YOLO (YOLOv11-nano) for bounding box detection instead of UNet.
-
-export interface UseUNetReturn {
+export interface UseYOLOReturn {
     isTraining: Ref<boolean>
     isApplying: Ref<boolean>
     modelExists: Ref<boolean>
     trainModel: (projectId: number) => Promise<void>
-    applyModel: (projectId: number, videoId: number) => Promise<void>
-    testApplyModel: (projectId: number, videoId: number, startFrame: number) => Promise<void>
+    runInitialDetection: (projectId: number) => Promise<void>
     checkModelStatus: (projectId: number) => Promise<void>
 }
 
-export function useUNet(
+export function useYOLO(
     projectId: Ref<number | null>,
-): UseUNetReturn {
+): UseYOLOReturn {
     const isTraining = ref(false)
     const isApplying = ref(false)
     const modelExists = ref(false)
 
     const checkModelStatus = async (projectIdValue: number) => {
         try {
-            const status = await getUNetModelStatus(projectIdValue)
+            const status = await getYOLOModelStatus(projectIdValue)
             modelExists.value = status.exists
             isTraining.value = status.is_training
             isApplying.value = status.is_applying
@@ -43,7 +38,7 @@ export function useUNet(
 
         isTraining.value = true
         try {
-            await trainUNetModel(projectIdValue)
+            await trainInitialDetectionModel(projectIdValue)
             await checkModelStatus(projectIdValue)
         } catch (e) {
             console.error('Failed to train model:', e)
@@ -53,30 +48,15 @@ export function useUNet(
         }
     }
 
-    const applyModel = async (projectIdValue: number, videoId: number) => {
+    const runInitialDetectionFn = async (projectIdValue: number) => {
         if (isApplying.value || !modelExists.value) return
 
         isApplying.value = true
         try {
-            await applyUNetModel(projectIdValue, videoId)
+            await runInitialDetection(projectIdValue)
             await checkModelStatus(projectIdValue)
         } catch (e) {
-            console.error('Failed to apply model:', e)
-            throw e
-        } finally {
-            isApplying.value = false
-        }
-    }
-
-    const testApplyModel = async (projectIdValue: number, videoId: number, startFrame: number) => {
-        if (isApplying.value || !modelExists.value) return
-
-        isApplying.value = true
-        try {
-            await testApplyUNetModel(projectIdValue, videoId, startFrame)
-            await checkModelStatus(projectIdValue)
-        } catch (e) {
-            console.error('Failed to test apply model:', e)
+            console.error('Failed to run initial detection:', e)
             throw e
         } finally {
             isApplying.value = false
@@ -119,8 +99,7 @@ export function useUNet(
         isApplying,
         modelExists,
         trainModel,
-        applyModel,
-        testApplyModel,
+        runInitialDetection: runInitialDetectionFn,
         checkModelStatus,
     }
 }

@@ -5,7 +5,6 @@ import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
-import { useUNet } from '@/composables/useUNet'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 
@@ -85,62 +84,11 @@ const {
   handlePointComplete,
   handleResetFrame,
   handleResetVideo,
-  handlePropagateForward,
-  handlePropagateBackward,
+  handleGenerateTrainingMasks,
   clearMaskCache,
 } = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps)
 
-const {
-  isTraining,
-  isApplying,
-  modelExists,
-  trainModel,
-  applyModel,
-  testApplyModel,
-} = useUNet(projectId)
 
-const handleTrainModel = async () => {
-  if (!projectId.value || isTraining.value) return
-  try {
-    await trainModel(projectId.value)
-  } catch (e) {
-    console.error('Failed to train model:', e)
-  }
-}
-
-const handleApplyModel = async () => {
-  if (!projectId.value || !videoId.value || isApplying.value || !modelExists.value) return
-  try {
-    await applyModel(projectId.value, videoId.value)
-    await loadFrameData(currentFrameIdx.value)
-  } catch (e) {
-    console.error('Failed to apply model:', e)
-  }
-}
-
-const handleTestApplyModel = async () => {
-  if (!projectId.value || !videoId.value || isApplying.value || !modelExists.value) return
-  try {
-    await testApplyModel(projectId.value, videoId.value, currentFrameIdx.value)
-    
-    const startFrame = currentFrameIdx.value
-    const endFrame = Math.min(startFrame + 1000, (video.value?.num_frames ?? 0) - 1)
-    
-    await new Promise<void>((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (!isApplying.value) {
-          clearInterval(checkInterval)
-          resolve()
-        }
-      }, 500)
-    })
-    
-    clearMaskCache(startFrame, endFrame)
-    await loadFrameData(currentFrameIdx.value)
-  } catch (e) {
-    console.error('Failed to test apply model:', e)
-  }
-}
 
 const handleSeek = (time: number) => {
   seek(time)
@@ -254,46 +202,11 @@ onMounted(() => {
           </button>
           <button
             class="tool-button propagate-button"
-            @click="handlePropagateBackward"
-            :disabled="isSegmenting || isPropagating || !segmentationIsReady"
-          >
-            <span class="tool-icon">◀◀</span>
-            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Backward' }}</span>
-          </button>
-          <button
-            class="tool-button propagate-button"
-            @click="handlePropagateForward"
+            @click="handleGenerateTrainingMasks"
             :disabled="isSegmenting || isPropagating || !segmentationIsReady"
           >
             <span class="tool-icon">▶▶</span>
-            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Forward' }}</span>
-          </button>
-        </div>
-        <h4 class="action-bar-title">Model</h4>
-        <div class="tool-buttons">
-          <button
-            class="tool-button train-button"
-            @click="handleTrainModel"
-            :disabled="isTraining || isApplying || isSegmenting || isPropagating"
-          >
-            <span class="tool-icon">🎓</span>
-            <span class="tool-label">{{ isTraining ? 'Training...' : 'Train Model' }}</span>
-          </button>
-          <button
-            class="tool-button apply-button"
-            @click="handleApplyModel"
-            :disabled="isTraining || isApplying || !modelExists || isSegmenting || isPropagating"
-          >
-            <span class="tool-icon">▶</span>
-            <span class="tool-label">{{ isApplying ? 'Applying...' : 'Apply Model' }}</span>
-          </button>
-          <button
-            class="tool-button test-apply-button"
-            @click="handleTestApplyModel"
-            :disabled="isTraining || isApplying || !modelExists || isSegmenting || isPropagating"
-          >
-            <span class="tool-icon">🧪</span>
-            <span class="tool-label">{{ isApplying ? 'Applying...' : 'Test Apply' }}</span>
+            <span class="tool-label">{{ isPropagating ? 'Generating...' : 'Generate Training Masks' }}</span>
           </button>
         </div>
         <h4 class="action-bar-title">Visibility</h4>

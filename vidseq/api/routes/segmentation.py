@@ -274,20 +274,21 @@ async def get_conditioning_frames(
 
 
 @router.post(
-    "/projects/{project_id}/videos/{video_id}/propagate-forward",
+    "/projects/{project_id}/videos/{video_id}/generate-training-masks",
     response_model=PropagateResponse,
 )
-async def propagate_forward(
+async def generate_training_masks(
     video_id: int,
     request: PropagateRequest,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Propagate tracking forward from the given frame.
+    Generate training masks by propagating tracking forward from the given frame.
     
     Requires an active SAM2 session with a tracked object (add a point prompt first).
-    Saves masks to HDF5 as it processes each frame.
+    Saves masks and bounding boxes to HDF5 as it processes each frame.
+    Marks frames as 'train' type for YOLO training.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
@@ -295,55 +296,17 @@ async def propagate_forward(
         raise HTTPException(status_code=404, detail=str(e))
     
     try:
-        frames_processed = segmentation_service.propagate_forward_and_save(
+        frames_processed = segmentation_service.generate_training_masks_and_save(
             project_path=project_path,
             video=video,
             start_frame_idx=request.start_frame_idx,
             max_frames=request.max_frames,
         )
     except RuntimeError as e:
-        logger.error(f"Propagate forward failed: {e}", exc_info=True)
+        logger.error(f"Generate training masks failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in propagate forward: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    return PropagateResponse(frames_processed=frames_processed)
-
-
-@router.post(
-    "/projects/{project_id}/videos/{video_id}/propagate-backward",
-    response_model=PropagateResponse,
-)
-async def propagate_backward(
-    video_id: int,
-    request: PropagateRequest,
-    session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
-):
-    """
-    Propagate tracking backward from the given frame.
-    
-    Requires an active SAM2 session with a tracked object (add a point prompt first).
-    Saves masks to HDF5 as it processes each frame.
-    """
-    try:
-        video = await video_service.get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
-    try:
-        frames_processed = segmentation_service.propagate_backward_and_save(
-            project_path=project_path,
-            video=video,
-            start_frame_idx=request.start_frame_idx,
-            max_frames=request.max_frames,
-        )
-    except RuntimeError as e:
-        logger.error(f"Propagate backward failed: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error in propagate backward: {e}", exc_info=True)
+        logger.error(f"Unexpected error in generate training masks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
     return PropagateResponse(frames_processed=frames_processed)

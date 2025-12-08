@@ -336,18 +336,18 @@ export async function resetVideo(
     }
 }
 
-export interface PropagateResponse {
+export interface GenerateTrainingMasksResponse {
     frames_processed: number
 }
 
-export async function propagateForward(
+export async function generateTrainingMasks(
     projectId: number,
     videoId: number,
     startFrameIdx: number,
     maxFrames: number = 1000
-): Promise<PropagateResponse> {
+): Promise<GenerateTrainingMasksResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-forward`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/generate-training-masks`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -355,27 +355,7 @@ export async function propagateForward(
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to propagate forward'))
-    }
-    return response.json()
-}
-
-export async function propagateBackward(
-    projectId: number,
-    videoId: number,
-    startFrameIdx: number,
-    maxFrames: number = 1000
-): Promise<PropagateResponse> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-backward`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
-        }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to propagate backward'))
+        throw new Error(await getErrorMessage(response, 'Failed to generate training masks'))
     }
     return response.json()
 }
@@ -433,60 +413,38 @@ export async function getAllPrompts(
     return result
 }
 
-// Note: These functions are named with "UNet" for backward compatibility,
-// but they now use YOLO (YOLOv11-nano) for bounding box detection.
-
-export interface UNetModelStatus {
+export interface YOLOModelStatus {
     exists: boolean
     model_path: string | null
     is_training: boolean
     is_applying: boolean
 }
 
-export async function trainUNetModel(projectId: number): Promise<void> {
-    // Trains YOLOv11-nano model for bounding box detection
+export async function trainInitialDetectionModel(projectId: number): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/train-model`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to train YOLO model'))
+        throw new Error(await getErrorMessage(response, 'Failed to train initial detection model'))
     }
 }
 
-export async function applyUNetModel(
-    projectId: number,
-    videoId: number
-): Promise<void> {
-    // Applies YOLOv11-nano model to detect bounding boxes
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/apply-model`,
-        { method: 'POST' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to apply YOLO model'))
-    }
-}
-
-export async function testApplyUNetModel(
-    projectId: number,
-    videoId: number,
-    startFrame: number
-): Promise<void> {
-    // Test applies YOLOv11-nano model to limited frame range
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/test-apply-model?start_frame=${startFrame}`,
-        { method: 'POST' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to test apply YOLO model'))
-    }
-}
-
-export async function getUNetModelStatus(
+export async function runInitialDetection(
     projectId: number
-): Promise<UNetModelStatus> {
-    // Gets YOLO model status
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/run-initial-detection`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to run initial detection'))
+    }
+}
+
+export async function getYOLOModelStatus(
+    projectId: number
+): Promise<YOLOModelStatus> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/model-status`
     )
