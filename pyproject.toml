@@ -20,6 +20,7 @@ dependencies = [
     "httpx>=0.28.1",
     "segmentation-models-pytorch>=0.3.0",
     "tqdm>=4.66.0",
+    "ultralytics>=8.3.235",
 ]
 
 [build-system]

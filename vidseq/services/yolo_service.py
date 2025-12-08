@@ -1,4 +1,4 @@
-"""YOLO Service for training and inference using Ultralytics YOLOv8-nano."""
+"""YOLO Service for training and inference using Ultralytics YOLOv11-nano."""
 
 import threading
 from pathlib import Path
@@ -11,7 +11,7 @@ class YOLOService:
     """
     Singleton service for managing YOLO training and inference.
     
-    Uses Ultralytics YOLOv8-nano for bounding box detection.
+    Uses Ultralytics YOLOv11-nano for bounding box detection.
     """
     
     _instance: Optional["YOLOService"] = None
@@ -98,8 +98,10 @@ names: ['object']  # class names
 """)
                 
                 # Train YOLO model
-                model = YOLO('yolov8n.pt')  # Load nano model
+                print(f"[YOLO Service] Starting training...")
+                model = YOLO('yolo11n.pt')  # Load nano model
                 
+                print(f"[YOLO Service] Model loaded, beginning training epochs...")
                 model.train(
                     data=str(dataset_yaml),
                     epochs=100,

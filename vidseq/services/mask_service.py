@@ -192,6 +192,15 @@ def load_mask(
         
         return np.array(h5_file[dataset_name][frame_idx])
     else:
+        # Try read mode first (no lock required, can run in parallel with writes)
+        try:
+            with open_h5(project_path, 'r') as h5_file:
+                if dataset_name in h5_file:
+                    return np.array(h5_file[dataset_name][frame_idx])
+        except (KeyError, OSError):
+            pass
+        
+        # Dataset doesn't exist, need write mode to create it
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
                 h5_file.create_dataset(
@@ -242,6 +251,15 @@ def load_masks_batch(
         
         return np.array(h5_file[dataset_name][start_frame:end_frame])
     else:
+        # Try read mode first (no lock required, can run in parallel with writes)
+        try:
+            with open_h5(project_path, 'r') as h5_file:
+                if dataset_name in h5_file:
+                    return np.array(h5_file[dataset_name][start_frame:end_frame])
+        except (KeyError, OSError):
+            pass
+        
+        # Dataset doesn't exist, need write mode to create it
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
                 h5_file.create_dataset(
@@ -625,6 +643,19 @@ def load_bbox(
             return None
         return bbox
     else:
+        # Try read mode first (no lock required, can run in parallel with writes)
+        try:
+            with open_h5(project_path, 'r') as h5_file:
+                if dataset_name in h5_file:
+                    bbox = np.array(h5_file[dataset_name][frame_idx])
+                    # Check if bbox is empty (all zeros)
+                    if np.all(bbox == 0):
+                        return None
+                    return bbox
+        except (KeyError, OSError):
+            pass
+        
+        # Dataset doesn't exist, need write mode to create it
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
                 if num_frames is None:
@@ -679,6 +710,15 @@ def load_bboxes_batch(
         
         return np.array(h5_file[dataset_name][start_frame:end_frame])
     else:
+        # Try read mode first (no lock required, can run in parallel with writes)
+        try:
+            with open_h5(project_path, 'r') as h5_file:
+                if dataset_name in h5_file:
+                    return np.array(h5_file[dataset_name][start_frame:end_frame])
+        except (KeyError, OSError):
+            pass
+        
+        # Dataset doesn't exist, need write mode to create it
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
                 h5_file.create_dataset(

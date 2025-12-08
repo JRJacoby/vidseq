@@ -207,6 +207,9 @@ export async function getBbox(
         throw new Error(await getErrorMessage(response, 'Failed to fetch bbox'))
     }
     const data = await response.json()
+    if (frameIdx < 10) {
+        console.log(`[getBbox API] Frame ${frameIdx}:`, data)
+    }
     return data === null ? null : data as Bbox
 }
 
@@ -231,7 +234,11 @@ export async function getBboxesBatch(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch bboxes batch'))
     }
-    return response.json()
+    const data = await response.json()
+    if (startFrame < 10) {
+        console.log(`[getBboxesBatch API] Start frame ${startFrame}, count ${count}:`, data.bboxes.slice(0, 10))
+    }
+    return data
 }
 
 export async function getConditioningFrames(
@@ -427,7 +434,7 @@ export async function getAllPrompts(
 }
 
 // Note: These functions are named with "UNet" for backward compatibility,
-// but they now use YOLO (YOLOv8-nano) for bounding box detection.
+// but they now use YOLO (YOLOv11-nano) for bounding box detection.
 
 export interface UNetModelStatus {
     exists: boolean
@@ -437,7 +444,7 @@ export interface UNetModelStatus {
 }
 
 export async function trainUNetModel(projectId: number): Promise<void> {
-    // Trains YOLOv8-nano model for bounding box detection
+    // Trains YOLOv11-nano model for bounding box detection
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/train-model`,
         { method: 'POST' }
@@ -451,7 +458,7 @@ export async function applyUNetModel(
     projectId: number,
     videoId: number
 ): Promise<void> {
-    // Applies YOLOv8-nano model to detect bounding boxes
+    // Applies YOLOv11-nano model to detect bounding boxes
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/apply-model`,
         { method: 'POST' }
@@ -466,7 +473,7 @@ export async function testApplyUNetModel(
     videoId: number,
     startFrame: number
 ): Promise<void> {
-    // Test applies YOLOv8-nano model to limited frame range
+    // Test applies YOLOv11-nano model to limited frame range
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/test-apply-model?start_frame=${startFrame}`,
         { method: 'POST' }

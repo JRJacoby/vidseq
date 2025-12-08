@@ -8,7 +8,7 @@ import {
 } from '@/services/api'
 
 // Note: This composable is named useUNet for backward compatibility,
-// but it now uses YOLO (YOLOv8-nano) for bounding box detection instead of UNet.
+// but it now uses YOLO (YOLOv11-nano) for bounding box detection instead of UNet.
 
 export interface UseUNetReturn {
     isTraining: Ref<boolean>

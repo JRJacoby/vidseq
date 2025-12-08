@@ -123,12 +123,16 @@ export function useSegmentation(
             
             for (const item of bboxResponse.bboxes) {
                 if (!bboxCache.has(item.frame_idx)) {
-                    bboxCache.set(item.frame_idx, item.bbox ? {
+                    const bboxValue = item.bbox ? {
                         x1: item.bbox[0],
                         y1: item.bbox[1],
                         x2: item.bbox[2],
                         y2: item.bbox[3],
-                    } : null)
+                    } : null
+                    bboxCache.set(item.frame_idx, bboxValue)
+                    if (item.frame_idx < 10) {
+                        console.log(`[Prefetch] Cached bbox for frame ${item.frame_idx}:`, bboxValue)
+                    }
                 }
             }
             
@@ -148,10 +152,17 @@ export function useSegmentation(
         const cachedMask = maskCache.get(frameIdx)
         const cachedBbox = bboxCache.get(frameIdx)
         
+        if (frameIdx < 10) {
+            console.log(`[loadFrameData] Frame ${frameIdx}: cachedMask=${cachedMask !== undefined}, cachedBbox=${cachedBbox !== undefined}, intendedFrameIdx=${intendedFrameIdx.value}`)
+        }
+        
         if (cachedMask !== undefined && cachedBbox !== undefined) {
             if (frameIdx === intendedFrameIdx.value) {
                 currentMask.value = cachedMask
                 currentBbox.value = cachedBbox
+                if (frameIdx < 10) {
+                    console.log(`[loadFrameData] Set from cache - Frame ${frameIdx}: bbox=`, cachedBbox)
+                }
             }
             return
         }
@@ -163,14 +174,16 @@ export function useSegmentation(
             ])
 
             if (frameIdx !== intendedFrameIdx.value) {
+                if (frameIdx < 10) {
+                    console.log(`[loadFrameData] Frame ${frameIdx} changed, skipping (intended=${intendedFrameIdx.value})`)
+                }
                 return
             }
 
             currentMask.value = await createImageBitmap(maskBlob)
             currentBbox.value = bbox
-            // Debug: log bbox loading
-            if (frameIdx === intendedFrameIdx.value) {
-                console.log(`Loaded bbox for frame ${frameIdx}:`, bbox)
+            if (frameIdx < 10) {
+                console.log(`[loadFrameData] Loaded from API - Frame ${frameIdx}: bbox=`, bbox)
             }
         } catch (e) {
             console.error('Failed to load frame data:', e)
@@ -221,6 +234,7 @@ export function useSegmentation(
         try {
             await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
             maskCache.delete(currentFrameIdx.value)
+            bboxCache.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
             // Refresh prompts after reset (should be empty)
             await fetchPromptsForFrame(currentFrameIdx.value)
@@ -236,8 +250,10 @@ export function useSegmentation(
             await resetVideo(projectId.value, videoId.value)
             prompts.value.clear()
             maskCache.clear()
+            bboxCache.clear()
             prefetchedUpTo = -1
             currentMask.value = null
+            currentBbox.value = null
         } catch (e) {
             console.error('Failed to reset video:', e)
         }
@@ -256,6 +272,7 @@ export function useSegmentation(
                 1000
             )
             maskCache.clear()
+            bboxCache.clear()
             prefetchedUpTo = -1
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
@@ -278,6 +295,7 @@ export function useSegmentation(
                 1000
             )
             maskCache.clear()
+            bboxCache.clear()
             prefetchedUpTo = -1
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
@@ -323,6 +341,11 @@ export function useSegmentation(
                 currentMask.value = cachedMask
                 currentBbox.value = cachedBbox
                 lastDisplayedFrame = frameIdx
+                if (frameIdx < 10) {
+                    console.log(`[syncMaskToVideo] Frame ${frameIdx}: bbox=`, cachedBbox)
+                }
+            } else if (frameIdx < 10) {
+                console.log(`[syncMaskToVideo] Frame ${frameIdx}: missing cache (mask=${cachedMask !== undefined}, bbox=${cachedBbox !== undefined})`)
             }
             
             const framesAhead = prefetchedUpTo - frameIdx

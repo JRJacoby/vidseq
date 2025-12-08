@@ -1,4 +1,4 @@
-"""YOLO API routes (formerly UNet)."""
+"""YOLO API routes (formerly UNet). Uses YOLOv11-nano for bounding box detection."""
 
 from pathlib import Path
 

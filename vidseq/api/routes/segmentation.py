@@ -175,7 +175,7 @@ async def reset_frame(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset a frame: clear the mask and remove conditioning frame record.
+    Reset a frame: clear the mask, bounding box, and remove conditioning frame record.
     Does not reset SAM2 tracking state.
     """
     try:
@@ -197,6 +197,11 @@ async def reset_frame(
     )
     
     from vidseq.services import mask_service
+    mask_service.clear_bbox(
+        project_path=project_path,
+        video_id=video_id,
+        frame_idx=frame_idx,
+    )
     mask_service.mark_frame_type(
         project_path=project_path,
         video_id=video_id,
@@ -398,6 +403,11 @@ async def get_bbox(
         num_frames=video.num_frames,
     )
     
+    if frame_idx < 10:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[get_bbox] Frame {frame_idx}: bbox={bbox}")
+    
     if bbox is None:
         return None
     
@@ -442,6 +452,11 @@ async def get_bboxes_batch(
         frame_idx = start_frame + i
         if frame_idx >= video.num_frames:
             break
+        
+        if frame_idx < 10:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[get_bboxes_batch] Frame {frame_idx}: raw bbox={bbox}, all_zero={np.all(bbox == 0) if bbox is not None else 'N/A'}")
         
         if bbox is None or np.all(bbox == 0):
             result.append({"frame_idx": frame_idx, "bbox": None})

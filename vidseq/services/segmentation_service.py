@@ -114,7 +114,7 @@ def clear_video(
     video_id: int,
 ) -> None:
     """
-    Clear all masks for a video.
+    Clear all masks and bounding boxes for a video.
     
     SAM2 tracking state reset is handled separately via sam2_service.reset_state().
     
@@ -123,6 +123,10 @@ def clear_video(
         video_id: Video ID
     """
     mask_service.clear_all_masks(
+        project_path=project_path,
+        video_id=video_id,
+    )
+    mask_service.clear_all_bboxes(
         project_path=project_path,
         video_id=video_id,
     )

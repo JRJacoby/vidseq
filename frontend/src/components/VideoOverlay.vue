@@ -87,10 +87,22 @@ function render() {
     const clampedX2 = Math.max(0, Math.min(x2, canvas.width))
     const clampedY2 = Math.max(0, Math.min(y2, canvas.height))
     
+    // Debug logging for first few frames
+    const frameNum = Math.floor(Date.now() / 1000) % 1000  // Rough frame estimate
+    if (frameNum < 10) {
+      console.log(`[VideoOverlay] Drawing bbox:`, { x1, y1, x2, y2, canvasWidth: canvas.width, canvasHeight: canvas.height, clampedX1, clampedY1, clampedX2, clampedY2 })
+    }
+    
     ctx.strokeStyle = '#22c55e'
     ctx.lineWidth = 3
     ctx.setLineDash([])
     ctx.strokeRect(clampedX1, clampedY1, clampedX2 - clampedX1, clampedY2 - clampedY1)
+  } else {
+    // Debug logging when bbox is not drawn
+    const frameNum = Math.floor(Date.now() / 1000) % 1000
+    if (frameNum < 10) {
+      console.log(`[VideoOverlay] Not drawing bbox:`, { bbox: props.bbox, showBbox: props.showBbox })
+    }
   }
   
   // Draw prompts (points only)
