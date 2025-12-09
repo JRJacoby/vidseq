@@ -1,24 +1,68 @@
 """
-SAM2 Service with Multiprocessing.
+SAM2 Service with TCP IPC.
 
 Manages a separate worker process for SAM2 inference to avoid
 CUDA/signal conflicts with FastAPI's event loop.
 
 Uses SAM2VideoPredictor with point prompts and lazy frame loading.
+Communicates with worker via TCP sockets.
 """
 
-import multiprocessing as mp
-import queue
+import base64
+import os
+import struct
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from vidseq.services.sam2_config import (
+    get_sam2_port,
+    is_sam2_worker_running,
+)
+from vidseq.services.sam2_tcp_client import SAM2TCPClient
+
+
+def _decode_mask_rle(mask_rle: str, shape: tuple[int, ...], dtype: str = "uint8") -> np.ndarray:
+    """
+    Decode binary RLE + base64 mask back to numpy array.
+    
+    Args:
+        mask_rle: Base64-encoded RLE string
+        shape: Target shape tuple (height, width)
+        dtype: Data type (default: "uint8")
+        
+    Returns:
+        Reconstructed mask array
+    """
+    # Base64 decode
+    binary_data = base64.b64decode(mask_rle.encode('utf-8'))
+    
+    # Parse runs and reconstruct array
+    flat_size = int(np.prod(shape))
+    flat_array = np.zeros(flat_size, dtype=np.uint8)
+    
+    i = 0
+    offset = 0
+    
+    while offset < len(binary_data):
+        # Unpack: 1 byte value, 4 bytes length (big-endian uint32)
+        value, length = struct.unpack_from('>BI', binary_data, offset)
+        offset += 5  # 1 byte + 4 bytes
+        
+        # Fill the run
+        flat_array[i:i+length] = value
+        i += length
+    
+    # Reshape to original shape
+    return flat_array.reshape(shape).astype(dtype)
 
 
 class SAM2Status(str, Enum):
@@ -64,13 +108,11 @@ class SAM2Service:
         if self._initialized:
             return
         
-        self._worker_process: Optional[Process] = None
-        self._command_queue: Optional[Queue] = None
-        self._result_queue: Optional[Queue] = None
+        self._worker_process: Optional[subprocess.Popen] = None
+        self._tcp_client: Optional[SAM2TCPClient] = None
         self._status = SAM2Status.NOT_LOADED
         self._error_message: Optional[str] = None
         self._sessions: dict[int, VideoSessionInfo] = {}
-        self._pending_requests: dict[str, dict | None] = {}
         self._prompts: dict[int, list[dict]] = {}  # frame_idx -> list of prompts
         
         self._initialized = True
@@ -88,47 +130,18 @@ class SAM2Service:
                 cls._instance.shutdown()
                 cls._instance = None
     
-    def _drain_result_queue(self) -> None:
-        """Process any pending results from the worker."""
-        if self._result_queue is None:
-            return
-        
-        while True:
-            try:
-                result = self._result_queue.get_nowait()
-            except queue.Empty:
-                break
-            
-            result_type = result.get("type")
-            
-            if result_type == "status":
-                status_str = result.get("status")
-                if status_str == "loading_model":
-                    self._status = SAM2Status.LOADING_MODEL
-                elif status_str == "ready":
-                    self._status = SAM2Status.READY
-                elif status_str == "error":
-                    self._status = SAM2Status.ERROR
-                    self._error_message = result.get("error")
-            
-            elif result_type in ("init_session_result", "add_point_prompt_result",
-                                "close_session_result", "reset_state_result",
-                                "propagate_forward_result"):
-                request_id = result.get("request_id")
-                if request_id and request_id in self._pending_requests:
-                    self._pending_requests[request_id] = result
-    
     def get_status(self) -> dict:
         """Get the current SAM2 loading status."""
-        self._drain_result_queue()
-        
-        if self._status == SAM2Status.READY and self._worker_process is not None:
-            if not self._worker_process.is_alive():
-                self._status = SAM2Status.NOT_LOADED
-                self._worker_process = None
-                self._command_queue = None
-                self._result_queue = None
-                self._sessions.clear()
+        # Only check if worker is running if we have a client connection
+        # This avoids creating new connections on every status check
+        if self._status == SAM2Status.READY:
+            # If we have a client, assume it's still connected unless we get an error
+            # Only check worker if we don't have a client
+            if self._tcp_client is None:
+                if not is_sam2_worker_running():
+                    self._status = SAM2Status.NOT_LOADED
+                    self._worker_process = None
+                    self._sessions.clear()
         
         return {
             "status": self._status.value,
@@ -137,24 +150,69 @@ class SAM2Service:
     
     def _start_worker(self) -> None:
         """Start the SAM2 worker process and begin loading the model."""
-        if self._worker_process is not None and self._worker_process.is_alive():
+        # Check if worker is already running
+        if is_sam2_worker_running():
+            port = get_sam2_port()
+            if port:
+                self._tcp_client = SAM2TCPClient()
+                try:
+                    self._tcp_client.connect("localhost", port)
+                    self._status = SAM2Status.READY
+                    return
+                except Exception as e:
+                    print(f"[SAM2 Service] Failed to connect to existing worker: {e}")
+                    self._tcp_client = None
+        
+        # Start new worker process
+        # Use -m format for more robust module resolution
+        kwargs = {}
+        if sys.platform != 'win32':
+            kwargs['start_new_session'] = True
+        
+        self._worker_process = subprocess.Popen(
+            [sys.executable, "-m", "vidseq.services.sam2_tcp_server"],
+            **kwargs
+        )
+        
+        # Wait for port file to appear (poll with timeout)
+        timeout = 30.0
+        start_time = time.time()
+        port = None
+        
+        while time.time() - start_time < timeout:
+            port = get_sam2_port()
+            if port is not None:
+                break
+            time.sleep(0.1)
+        
+        if port is None:
+            self._status = SAM2Status.ERROR
+            self._error_message = "Failed to start SAM2 worker (timeout waiting for port file)"
             return
         
-        ctx = mp.get_context("spawn")
-        self._command_queue = ctx.Queue()
-        self._result_queue = ctx.Queue()
+        # Connect to worker
+        self._tcp_client = SAM2TCPClient()
+        try:
+            self._tcp_client.connect("localhost", port, timeout=10.0)
+        except Exception as e:
+            self._status = SAM2Status.ERROR
+            self._error_message = f"Failed to connect to SAM2 worker: {e}"
+            self._tcp_client = None
+            return
         
-        from vidseq.services.sam2_worker import worker_loop
-        
-        self._worker_process = ctx.Process(
-            target=worker_loop,
-            args=(self._command_queue, self._result_queue),
-            daemon=True,
-        )
-        self._worker_process.start()
         self._status = SAM2Status.LOADING_MODEL
         
-        self._command_queue.put({"type": "load_model"})
+        # Send load_model command
+        try:
+            result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
+            if result.get("status") == "ready":
+                self._status = SAM2Status.READY
+            elif result.get("status") == "error":
+                self._status = SAM2Status.ERROR
+                self._error_message = result.get("error", "Unknown error")
+        except Exception as e:
+            self._status = SAM2Status.ERROR
+            self._error_message = str(e)
     
     def start_loading_in_background(self) -> None:
         """Start loading SAM2 model in background (via worker process)."""
@@ -172,13 +230,18 @@ class SAM2Service:
     
     def _ensure_worker_ready(self) -> None:
         """Ensure worker is running and model is loaded."""
-        self._drain_result_queue()
-        
         if self._status != SAM2Status.READY:
             raise RuntimeError("SAM2 model not loaded. Call preload first.")
         
-        if self._worker_process is None or not self._worker_process.is_alive():
-            raise RuntimeError("SAM2 worker process not running.")
+        # Only create client if it doesn't exist
+        # Don't check is_connected() here - let send_command() handle connection errors
+        if self._tcp_client is None:
+            if not is_sam2_worker_running():
+                raise RuntimeError("SAM2 worker process not running.")
+            port = get_sam2_port()
+            if port:
+                self._tcp_client = SAM2TCPClient()
+                self._tcp_client.connect("localhost", port)
     
     def _send_and_wait(self, cmd: dict, timeout: float = 120.0) -> dict:
         """Send a command to worker and wait for the result."""
@@ -186,23 +249,28 @@ class SAM2Service:
         
         request_id = str(uuid.uuid4())
         cmd["request_id"] = request_id
-        self._pending_requests[request_id] = None
         
-        self._command_queue.put(cmd)
-        
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            self._drain_result_queue()
+        try:
+            result = self._tcp_client.send_command(cmd, timeout=timeout)
             
-            result = self._pending_requests.get(request_id)
-            if result is not None:
-                del self._pending_requests[request_id]
-                return result
+            # Update status if we got a status update
+            if result.get("type") == "status":
+                status_str = result.get("status")
+                if status_str == "loading_model":
+                    self._status = SAM2Status.LOADING_MODEL
+                elif status_str == "ready":
+                    self._status = SAM2Status.READY
+                elif status_str == "error":
+                    self._status = SAM2Status.ERROR
+                    self._error_message = result.get("error")
             
-            time.sleep(0.01)
-        
-        del self._pending_requests[request_id]
-        raise TimeoutError(f"Timeout waiting for response to {cmd['type']}")
+            return result
+        except Exception as e:
+            # If connection error, mark client as disconnected
+            if isinstance(e, (ConnectionError, TimeoutError)) or "Connection" in str(e):
+                self._tcp_client = None
+                # Don't change status - might be temporary connection issue
+            raise RuntimeError(f"Failed to communicate with SAM2 worker: {e}") from e
     
     def init_session(self, video_id: int, video_path: Path) -> VideoSessionInfo:
         """Initialize a segmentation session for a video."""
@@ -291,9 +359,10 @@ class SAM2Service:
         
         session.has_object = True
         
-        mask_bytes = result["mask_bytes"]
+        mask_rle = result["mask_rle"]
         mask_shape = tuple(result["mask_shape"])
-        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
+        mask_dtype = result.get("mask_dtype", "uint8")
+        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
         
         # Store prompt info
         for i, point in enumerate(points):
@@ -339,22 +408,30 @@ class SAM2Service:
         self._prompts = {}
         return True
     
-    def propagate_forward(
+    def generate_training_masks(
         self,
         video_id: int,
         start_frame_idx: int,
         max_frames: int,
-    ) -> list[tuple[int, np.ndarray, Optional[list[float]]]]:
+        project_path: Path,
+        num_frames: int,
+        height: int,
+        width: int,
+    ) -> int:
         """
-        Propagate tracking forward from a given frame.
+        Generate training masks by propagating tracking forward and save to H5.
         
         Args:
             video_id: ID of the video
             start_frame_idx: Frame index to start propagation from
             max_frames: Maximum number of frames to propagate
+            project_path: Path to the project folder
+            num_frames: Total number of frames in the video
+            height: Video height in pixels
+            width: Video width in pixels
             
         Returns:
-            List of (frame_idx, mask, bbox) tuples where bbox is [x1, y1, x2, y2] or None
+            Number of frames processed
             
         Raises:
             RuntimeError: If no object has been tracked
@@ -367,25 +444,20 @@ class SAM2Service:
             raise RuntimeError("No object tracked. Add a point prompt first.")
         
         result = self._send_and_wait({
-            "type": "propagate_forward",
+            "type": "generate_training_masks",
             "video_id": video_id,
             "start_frame_idx": start_frame_idx,
             "max_frames": max_frames,
+            "project_path": str(project_path),
+            "num_frames": num_frames,
+            "height": height,
+            "width": width,
         }, timeout=600.0)
         
         if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to propagate"))
+            raise RuntimeError(result.get("error", "Failed to generate training masks"))
         
-        masks = []
-        for mask_data in result.get("masks", []):
-            frame_idx = mask_data["frame_idx"]
-            mask_bytes = mask_data["mask_bytes"]
-            mask_shape = tuple(mask_data["mask_shape"])
-            mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(mask_shape)
-            bbox = mask_data.get("bbox")  # [x1, y1, x2, y2] or None
-            masks.append((frame_idx, mask, bbox))
-        
-        return masks
+        return result.get("frames_processed", 0)
     
     def get_prompts_for_frame(self, frame_idx: int) -> list[dict]:
         """Get all prompts for a specific frame."""
@@ -402,20 +474,18 @@ class SAM2Service:
     
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
-        if self._command_queue is not None:
+        if self._tcp_client is not None and self._tcp_client.is_connected():
             try:
-                self._command_queue.put({"type": "shutdown"})
+                self._tcp_client.send_command({"type": "shutdown"}, timeout=5.0)
             except Exception:
                 pass
+            self._tcp_client.disconnect()
+            self._tcp_client = None
         
-        if self._worker_process is not None:
-            self._worker_process.join(timeout=5.0)
-            if self._worker_process.is_alive():
-                self._worker_process.terminate()
-            self._worker_process = None
-        
-        self._command_queue = None
-        self._result_queue = None
+        # Note: We don't terminate the worker process here because it might be
+        # used by other clients (e.g., job executor). The worker will auto-shutdown
+        # when no connections remain.
+        self._worker_process = None
         self._status = SAM2Status.NOT_LOADED
         self._sessions.clear()
 
@@ -467,14 +537,18 @@ def reset_state(video_id: int) -> bool:
     return SAM2Service.get_instance().reset_state(video_id)
 
 
-def propagate_forward(
+def generate_training_masks(
     video_id: int,
     start_frame_idx: int,
     max_frames: int,
-) -> list[tuple[int, np.ndarray]]:
-    """Propagate tracking forward from a given frame."""
-    return SAM2Service.get_instance().propagate_forward(
-        video_id, start_frame_idx, max_frames
+    project_path: Path,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> int:
+    """Generate training masks by propagating tracking forward and save to H5."""
+    return SAM2Service.get_instance().generate_training_masks(
+        video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
     )
 
 

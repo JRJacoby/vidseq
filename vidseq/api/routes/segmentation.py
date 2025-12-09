@@ -296,11 +296,14 @@ async def generate_training_masks(
         raise HTTPException(status_code=404, detail=str(e))
     
     try:
-        frames_processed = segmentation_service.generate_training_masks_and_save(
-            project_path=project_path,
-            video=video,
+        frames_processed = sam2_service.generate_training_masks(
+            video_id=video.id,
             start_frame_idx=request.start_frame_idx,
             max_frames=request.max_frames,
+            project_path=project_path,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
         )
     except RuntimeError as e:
         logger.error(f"Generate training masks failed: {e}", exc_info=True)

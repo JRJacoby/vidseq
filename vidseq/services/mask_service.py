@@ -144,7 +144,6 @@ def save_mask(
             )
         
         h5_file[dataset_name][frame_idx] = mask
-        h5_file.flush()
     else:
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
@@ -386,7 +385,6 @@ def mark_frame_type(
             )
         
         h5_file[dataset_name][frame_idx] = frame_type
-        h5_file.flush()
     else:
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
@@ -584,7 +582,6 @@ def save_bbox(
             )
         
         h5_file[dataset_name][frame_idx] = bbox
-        h5_file.flush()
     else:
         with open_h5(project_path, 'a') as h5_file:
             if dataset_name not in h5_file:
