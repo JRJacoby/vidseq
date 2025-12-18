@@ -106,6 +106,71 @@ class SAM2TCPClient:
         finally:
             self.socket.settimeout(old_timeout)
     
+    def send_command_streaming(self, cmd: dict, timeout: float = 120.0):
+        """
+        Send command to server and yield multiple responses.
+        
+        Args:
+            cmd: Command dictionary (will be JSON serialized)
+            timeout: Response timeout in seconds
+            
+        Yields:
+            Response dictionary from server
+            
+        Raises:
+            ConnectionError: If not connected or connection lost
+            TimeoutError: If response timeout exceeded
+        """
+        if self.socket is None:
+            raise ConnectionError("Not connected to SAM2 worker")
+        
+        # Set socket timeout
+        old_timeout = self.socket.gettimeout()
+        self.socket.settimeout(timeout)
+        
+        try:
+            # Serialize command to JSON
+            cmd_json = json.dumps(cmd)
+            cmd_bytes = cmd_json.encode('utf-8')
+            
+            # Send length prefix (4 bytes, big-endian)
+            length_prefix = struct.pack('>I', len(cmd_bytes))
+            self.socket.sendall(length_prefix)
+            
+            # Send command data
+            self.socket.sendall(cmd_bytes)
+            
+            while True:
+                # Receive response length
+                length_bytes = self._recv_exact(4)
+                if len(length_bytes) != 4:
+                    raise ConnectionError("Connection closed by server")
+                
+                response_length = struct.unpack('>I', length_bytes)[0]
+                
+                # Receive response data
+                response_bytes = self._recv_exact(response_length)
+                response_json = response_bytes.decode('utf-8')
+                response = json.loads(response_json)
+                
+                yield response
+                
+                # Check if this is the final response
+                # Final responses usually have the command type with '_result' suffix
+                cmd_type = cmd.get("type", "")
+                resp_type = response.get("type", "")
+                if resp_type == f"{cmd_type}_result" or resp_type == "error":
+                    break
+                    
+        except socket.timeout:
+            raise TimeoutError(f"Timeout waiting for response to {cmd.get('type', 'unknown')}")
+        except Exception as e:
+            if isinstance(e, (ConnectionError, TimeoutError)):
+                raise
+            raise ConnectionError(f"Error communicating with SAM2 worker: {e}")
+        finally:
+            self.socket.settimeout(old_timeout)
+
     def _recv_exact(self, n: int) -> bytes:
         """Receive exactly n bytes from socket."""
         data = b''

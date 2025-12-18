@@ -1,20 +1,49 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getProject, getVideos, addVideos, type Video, type Project } from '@/services/api'
+import { getProject, getVideos, addVideos, segmentAllVideos, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
+import { useJobs } from '@/composables/useJobs'
 
 const router = useRouter()
 const projectStore = useProjectStore()
+const { jobs } = useJobs()
 
 const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
 const isLoading = ref(false)
 const showFilePicker = ref(false)
+const isSegmenting = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
+
+const segmentationJobs = computed(() => {
+  return jobs.value.filter(j => j.type === 'video_segmentation' && j.project_id === projectId.value)
+})
+
+const getVideoJob = (videoId: number) => {
+  return segmentationJobs.value.find(j => j.details.video_id === videoId)
+}
+
+const getJobStatusDisplay = (videoId: number) => {
+  const job = getVideoJob(videoId)
+  if (!job) return null
+  
+  if (job.status === 'running') {
+    const current = job.details.current_frame || 0
+    const total = job.details.total_frames || 0
+    const percent = total > 0 ? Math.round((current / total) * 100) : 0
+    return `Segmenting: ${current}/${total} (${percent}%)`
+  }
+  
+  if (job.status === 'failed') {
+    return `Failed: ${job.details.error || 'Unknown error'}`
+  }
+  
+  return job.status.charAt(0).toUpperCase() + job.status.slice(1)
+}
 
 const {
   isTraining,
@@ -94,6 +123,19 @@ const handleRunInitialDetection = async () => {
     console.error('Failed to run initial detection:', e)
   }
 }
+
+const handleSegmentAll = async () => {
+  if (!projectId.value || isSegmenting.value) return
+  isSegmenting.value = true
+  try {
+    await segmentAllVideos(projectId.value)
+  } catch (e: any) {
+    console.error('Failed to segment all videos:', e)
+    alert(e.message || 'Failed to start segmentation')
+  } finally {
+    isSegmenting.value = false
+  }
+}
 </script>
 
 <template>
@@ -113,16 +155,24 @@ const handleRunInitialDetection = async () => {
               v-for="video in videos" 
               :key="video.id" 
               class="video-item"
+              :class="getVideoJob(video.id)?.status"
               @dblclick="handleVideoDoubleClick(video.id)"
             >
-              <p>ID: {{ video.id }}</p>
-              <p>Name: {{ video.name }}</p>
-              <p>Path: {{ video.path }}</p>
+              <div class="video-info">
+                <p class="video-name">{{ video.name }}</p>
+                <p class="video-path">{{ video.path }}</p>
+              </div>
+              <div v-if="getVideoJob(video.id)" class="video-status">
+                <span class="status-badge" :class="getVideoJob(video.id)?.status">
+                  {{ getJobStatusDisplay(video.id) }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
         <aside class="sidebar">
           <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
+          
           <h4 class="sidebar-section-title">Initial Detection</h4>
           <button 
             class="sidebar-button train-button"
@@ -138,8 +188,18 @@ const handleRunInitialDetection = async () => {
           >
             <span class="button-label">{{ isApplying ? 'Running...' : 'Run Initial Detection' }}</span>
           </button>
-          <div v-if="isTraining || isApplying" class="status-indicator">
-            {{ isTraining ? 'Training model...' : 'Running initial detection...' }}
+          
+          <h4 class="sidebar-section-title">Segmentation</h4>
+          <button 
+            class="sidebar-button segment-button"
+            @click="handleSegmentAll"
+            :disabled="isSegmenting"
+          >
+            <span class="button-label">{{ isSegmenting ? 'Starting...' : 'Segment All Videos' }}</span>
+          </button>
+
+          <div v-if="isTraining || isApplying || isSegmenting" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : 'Starting segmentation batch...' }}
           </div>
         </aside>
       </div>
@@ -192,12 +252,13 @@ const handleRunInitialDetection = async () => {
 
 .sidebar {
   flex-shrink: 0;
-  width: 200px;
+  width: 250px;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   padding: 1rem;
   border-left: 1px solid #e0e0e0;
+  background-color: #fcfcfc;
 }
 
 .sidebar-button {
@@ -207,10 +268,13 @@ const handleRunInitialDetection = async () => {
   background-color: #f8f8f8;
   cursor: pointer;
   text-align: left;
+  font-weight: 500;
+  transition: all 0.2s;
 }
 
-.sidebar-button:hover {
+.sidebar-button:hover:not(:disabled) {
   background-color: #e8e8e8;
+  border-color: #999;
 }
 
 .sidebar-button:disabled {
@@ -219,10 +283,12 @@ const handleRunInitialDetection = async () => {
 }
 
 .sidebar-section-title {
-  margin: 1rem 0 0.5rem 0;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #666;
+  margin: 1.5rem 0 0.5rem 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .button-label {
@@ -230,44 +296,102 @@ const handleRunInitialDetection = async () => {
 }
 
 .status-indicator {
-  margin-top: 0.5rem;
-  padding: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.75rem;
   font-size: 0.85rem;
-  color: #666;
+  color: #856404;
+  background-color: #fff3cd;
+  border-radius: 4px;
   font-style: italic;
 }
 
 .loading-state,
 .empty-state {
-  padding: 2rem;
+  padding: 3rem;
   text-align: center;
-  color: #666;
+  color: #888;
 }
 
 .videos-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  overflow: auto;
+  gap: 0.75rem;
 }
 
 .video-item {
-  padding: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem;
   border: 1px solid #e0e0e0;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: all 0.2s;
+  background-color: white;
 }
 
 .video-item:hover {
-  background-color: #f5f5f5;
+  border-color: #aaa;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
 }
 
-.video-item:active {
-  background-color: #e8e8e8;
+.video-item.running {
+  border-left: 4px solid #ffc107;
 }
 
-.video-item p {
-  margin: 0.25rem 0;
+.video-item.completed {
+  border-left: 4px solid #28a745;
+}
+
+.video-item.failed {
+  border-left: 4px solid #dc3545;
+}
+
+.video-info {
+  flex: 1;
+}
+
+.video-name {
+  margin: 0;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.video-path {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.85rem;
+  color: #666;
+  font-family: monospace;
+}
+
+.video-status {
+  margin-left: 1.5rem;
+}
+
+.status-badge {
+  padding: 0.4rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-badge.pending {
+  background-color: #e9ecef;
+  color: #495057;
+}
+
+.status-badge.running {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.status-badge.completed {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.status-badge.failed {
+  background-color: #f8d7da;
+  color: #721c24;
 }
 </style>

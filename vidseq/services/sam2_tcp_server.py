@@ -154,6 +154,7 @@ class SAM2TCPServer:
         self.shutdown_timer: Optional[threading.Timer] = None
         self.shutdown_timeout = 10.0
         self.running = False
+        self._is_processing = False
         
         # SAM2 state
         self.predictor = None
@@ -308,8 +309,8 @@ class SAM2TCPServer:
                 continue
             
             try:
-                result = self._handle_command(cmd)
-                response_callback(result)
+                self._is_processing = True
+                self._handle_command(cmd, response_callback)
             except Exception as e:
                 print(f"[SAM2 Worker] Error processing command: {e}")
                 import traceback
@@ -320,9 +321,15 @@ class SAM2TCPServer:
                     "request_id": cmd.get("request_id"),
                 }
                 response_callback(error_result)
+            finally:
+                self._is_processing = False
+                # If no connections, schedule shutdown now that we're done processing
+                with self.connection_lock:
+                    if len(self.active_connections) == 0:
+                        self._schedule_shutdown()
     
-    def _handle_command(self, cmd: dict) -> dict:
-        """Handle a single command and return result."""
+    def _handle_command(self, cmd: dict, response_callback) -> None:
+        """Handle a single command and send result(s) via callback."""
         cmd_type = cmd.get("type")
         request_id = cmd.get("request_id")
         
@@ -357,7 +364,7 @@ class SAM2TCPServer:
                 result = {"type": "status", "status": "ready"}
                 if request_id is not None:
                     result["request_id"] = request_id
-                return result
+                response_callback(result)
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to load model: {e}")
                 import traceback
@@ -369,7 +376,7 @@ class SAM2TCPServer:
                 }
                 if request_id is not None:
                     result["request_id"] = request_id
-                return result
+                response_callback(result)
         
         elif cmd_type == "init_session":
             video_id = cmd["video_id"]
@@ -383,7 +390,7 @@ class SAM2TCPServer:
                 
                 if video_id in self.sessions:
                     inference_state, loader = self.sessions[video_id]
-                    return {
+                    response_callback({
                         "type": "init_session_result",
                         "request_id": request_id,
                         "status": "ok",
@@ -391,7 +398,8 @@ class SAM2TCPServer:
                         "num_frames": inference_state["num_frames"],
                         "height": inference_state["video_height"],
                         "width": inference_state["video_width"],
-                    }
+                    })
+                    return
                 
                 from vidseq.services.sam2streaming import LazyVideoFrameLoader
                 loader = LazyVideoFrameLoader(video_path, offload_to_cpu=False, device="cuda")
@@ -399,7 +407,7 @@ class SAM2TCPServer:
                 inference_state = _init_state_with_lazy_loader(self.predictor, loader)
                 self.sessions[video_id] = (inference_state, loader)
                 
-                return {
+                response_callback({
                     "type": "init_session_result",
                     "request_id": request_id,
                     "status": "ok",
@@ -407,23 +415,24 @@ class SAM2TCPServer:
                     "num_frames": inference_state["num_frames"],
                     "height": inference_state["video_height"],
                     "width": inference_state["video_width"],
-                }
+                })
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to init session: {e}")
                 import traceback
                 traceback.print_exc()
-                return {
+                response_callback({
                     "type": "init_session_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
-                }
+                })
         
         elif cmd_type == "add_point_prompt":
             video_id = cmd["video_id"]
             frame_idx = cmd["frame_idx"]
-            points = cmd["points"]
-            labels = cmd["labels"]
+            points = cmd.get("points")
+            labels = cmd.get("labels")
+            box = cmd.get("box")
             obj_id = cmd.get("obj_id", 1)
             
             try:
@@ -437,12 +446,21 @@ class SAM2TCPServer:
                 height = inference_state["video_height"]
                 width = inference_state["video_width"]
                 
-                points_arr = np.array(points, dtype=np.float32)
-                points_arr[:, 0] *= width
-                points_arr[:, 1] *= height
-                labels_arr = np.array(labels, dtype=np.int32)
-                
                 import torch
+                points_arr = None
+                labels_arr = None
+                box_arr = None
+                
+                if points is not None and labels is not None:
+                    points_arr = np.array(points, dtype=np.float32)
+                    points_arr[:, 0] *= width
+                    points_arr[:, 1] *= height
+                    labels_arr = np.array(labels, dtype=np.int32)
+                
+                if box is not None:
+                    # box format: [x1, y1, x2, y2]
+                    box_arr = np.array(box, dtype=np.float32)
+                
                 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                     _, out_obj_ids, video_res_masks = self.predictor.add_new_points_or_box(
                         inference_state=inference_state,
@@ -450,11 +468,12 @@ class SAM2TCPServer:
                         obj_id=obj_id,
                         points=points_arr,
                         labels=labels_arr,
-                        clear_old_points=False,
+                        box=box_arr,
+                        clear_old_points=False if box is None else True,
                     )
                     mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
                 
-                return {
+                response_callback({
                     "type": "add_point_prompt_result",
                     "request_id": request_id,
                     "status": "ok",
@@ -462,17 +481,17 @@ class SAM2TCPServer:
                     "mask_shape": mask.shape,
                     "mask_dtype": str(mask.dtype),
                     "obj_id": obj_id,
-                }
+                })
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to add point prompt: {e}")
                 import traceback
                 traceback.print_exc()
-                return {
+                response_callback({
                     "type": "add_point_prompt_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
-                }
+                })
         
         elif cmd_type == "generate_training_masks":
             video_id = cmd["video_id"]
@@ -491,112 +510,166 @@ class SAM2TCPServer:
                     raise RuntimeError(f"No session for video {video_id}")
                 
                 inference_state, loader = self.sessions[video_id]
-                # Use height/width from command (may differ from inference_state)
-                inference_height = inference_state["video_height"]
-                inference_width = inference_state["video_width"]
                 
-                import torch
+                frame_count, frame_indices = self._propagate_video(
+                    inference_state=inference_state,
+                    video_id=video_id,
+                    start_frame_idx=start_frame_idx,
+                    max_frames=max_frames,
+                    project_path=project_path,
+                    num_frames=num_frames,
+                    height=height,
+                    width=width,
+                )
                 
-                frame_indices = []
-                
-                # Open H5 file once before the loop
-                with open_h5(project_path, 'a') as h5_file:
-                    # Pre-create all datasets to avoid checks inside the loop
-                    mask_dataset_name = f"segmentation_masks/{video_id}"
-                    bbox_dataset_name = f"bounding_boxes/{video_id}"
-                    frame_type_dataset_name = f"frame_types/{video_id}"
-                    
-                    if mask_dataset_name not in h5_file:
-                        h5_file.create_dataset(
-                            mask_dataset_name,
-                            shape=(num_frames, height, width),
-                            dtype=np.uint8,
-                            fillvalue=0,
-                            chunks=(1, height, width),
-                            compression=None,
-                        )
-                    
-                    if bbox_dataset_name not in h5_file:
-                        h5_file.create_dataset(
-                            bbox_dataset_name,
-                            shape=(num_frames, 4),
-                            dtype=np.float32,
-                            fillvalue=0.0,
-                            chunks=(1, 4),
-                            compression=None,
-                        )
-                    
-                    if frame_type_dataset_name not in h5_file:
-                        h5_file.create_dataset(
-                            frame_type_dataset_name,
-                            shape=(num_frames,),
-                            dtype=h5py.string_dtype(encoding='utf-8'),
-                            fillvalue='',
-                            chunks=(num_frames,),
-                            compression=None,
-                        )
-                    
-                    with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
-                        iterator = self.predictor.propagate_in_video(
-                            inference_state=inference_state,
-                            start_frame_idx=start_frame_idx,
-                            max_frame_num_to_track=max_frames,
-                            reverse=False,
-                        )
-                        
-                        frame_count = 0
-                        
-                        for frame_idx, out_obj_ids, video_res_masks in iterator:
-                            # Extract mask directly to final dimensions to avoid redundant resize
-                            mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
-                            
-                            # Compute bbox directly from numpy (no torch conversion)
-                            mask_binary = mask > 0
-                            if np.any(mask_binary):
-                                rows = np.any(mask_binary, axis=1)
-                                cols = np.any(mask_binary, axis=0)
-                                if np.any(rows) and np.any(cols):
-                                    y_indices = np.where(rows)[0]
-                                    x_indices = np.where(cols)[0]
-                                    y1, y2 = y_indices[0], y_indices[-1]
-                                    x1, x2 = x_indices[0], x_indices[-1]
-                                    bbox_np = np.array([x1, y1, x2, y2], dtype=np.float32)
-                                else:
-                                    bbox_np = None
-                            else:
-                                bbox_np = None
-                            
-                            # Direct H5 writes (no function calls to avoid overhead)
-                            h5_file[mask_dataset_name][frame_idx] = mask
-                            
-                            if bbox_np is not None:
-                                h5_file[bbox_dataset_name][frame_idx] = bbox_np
-                            
-                            h5_file[frame_type_dataset_name][frame_idx] = 'train'
-                            
-                            frame_indices.append(frame_idx)
-                            frame_count += 1
-                    
-                    # Single flush at the end instead of per-frame
-                    h5_file.flush()
-                
-                return {
+                response_callback({
                     "type": "generate_training_masks_result",
                     "request_id": request_id,
                     "status": "ok",
                     "frames_processed": frame_count,
                     "frame_indices": frame_indices,
-                }
+                })
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to generate training masks: {e}")
                 import traceback
                 traceback.print_exc()
-                return {
+                response_callback({
                     "type": "generate_training_masks_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
-                }
+                })
+
+        elif cmd_type == "segment_videos_batch":
+            videos = cmd["videos"]
+            project_path = Path(cmd["project_path"])
+            log_path = Path(cmd["log_path"]) if cmd.get("log_path") else None
+            
+            try:
+                if self.predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                log_file = None
+                if log_path:
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_file = open(log_path, "a")
+                
+                def log(msg):
+                    print(f"[SAM2 Worker] {msg}")
+                    if log_file:
+                        log_file.write(f"{msg}\n")
+                        log_file.flush()
+                
+                log(f"Starting batch segmentation for {len(videos)} videos")
+                
+                processed_count = 0
+                for v_info in videos:
+                    video_id = v_info["video_id"]
+                    job_id = v_info["job_id"]
+                    video_path = Path(v_info["video_path"])
+                    bbox = v_info["bbox"]
+                    num_frames = v_info["num_frames"]
+                    height = v_info["height"]
+                    width = v_info["width"]
+                    
+                    log(f"Processing video {video_id} (Job #{job_id}): {video_path.name}")
+                    
+                    try:
+                        # Close existing session if any
+                        if video_id in self.sessions:
+                            inf_state, ldr = self.sessions.pop(video_id)
+                            ldr.close()
+                        
+                        # Init new session
+                        from vidseq.services.sam2streaming import LazyVideoFrameLoader
+                        loader = LazyVideoFrameLoader(video_path, offload_to_cpu=False, device="cuda")
+                        inference_state = _init_state_with_lazy_loader(self.predictor, loader)
+                        self.sessions[video_id] = (inference_state, loader)
+                        
+                        # Add bbox on frame 0
+                        import torch
+                        box_arr = np.array(bbox, dtype=np.float32)
+                        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                            self.predictor.add_new_points_or_box(
+                                inference_state=inference_state,
+                                frame_idx=0,
+                                obj_id=1,
+                                box=box_arr,
+                                clear_old_points=True,
+                            )
+                        
+                        # Propagate through all frames
+                        def progress_update(frame_idx):
+                            response_callback({
+                                "type": "batch_progress",
+                                "request_id": request_id,
+                                "job_id": job_id,
+                                "video_id": video_id,
+                                "current_frame": frame_idx,
+                                "total_frames": num_frames,
+                            })
+                        
+                        self._propagate_video(
+                            inference_state=inference_state,
+                            video_id=video_id,
+                            start_frame_idx=0,
+                            max_frames=num_frames,
+                            project_path=project_path,
+                            num_frames=num_frames,
+                            height=height,
+                            width=width,
+                            progress_callback=progress_update
+                        )
+                        
+                        # Close session to free memory
+                        if video_id in self.sessions:
+                            inf_state, ldr = self.sessions.pop(video_id)
+                            ldr.close()
+                            
+                        log(f"Successfully processed video {video_id}")
+                        response_callback({
+                            "type": "batch_video_complete",
+                            "request_id": request_id,
+                            "job_id": job_id,
+                            "video_id": video_id,
+                            "status": "completed"
+                        })
+                        processed_count += 1
+                        
+                    except Exception as ve:
+                        log(f"Error processing video {video_id}: {ve}")
+                        import traceback
+                        log(traceback.format_exc())
+                        response_callback({
+                            "type": "batch_video_complete",
+                            "request_id": request_id,
+                            "job_id": job_id,
+                            "video_id": video_id,
+                            "status": "failed",
+                            "error": str(ve)
+                        })
+                
+                log(f"Batch complete: {processed_count}/{len(videos)} videos processed")
+                if log_file:
+                    log_file.close()
+                    
+                response_callback({
+                    "type": "segment_videos_batch_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                    "processed_count": processed_count
+                })
+                
+            except Exception as e:
+                print(f"[SAM2 Worker] Batch segmentation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                response_callback({
+                    "type": "segment_videos_batch_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
         
         elif cmd_type == "reset_state":
             video_id = cmd["video_id"]
@@ -608,11 +681,12 @@ class SAM2TCPServer:
                     raise RuntimeError("Model not loaded")
                 
                 if video_id not in self.sessions:
-                    return {
+                    response_callback({
                         "type": "reset_state_result",
                         "request_id": request_id,
                         "status": "ok",
-                    }
+                    })
+                    return
                 
                 inference_state, loader = self.sessions[video_id]
                 import torch
@@ -620,21 +694,21 @@ class SAM2TCPServer:
                     self.predictor.reset_state(inference_state)
                 
                 print(f"[SAM2 Worker] State reset for video {video_id}")
-                return {
+                response_callback({
                     "type": "reset_state_result",
                     "request_id": request_id,
                     "status": "ok",
-                }
+                })
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to reset state: {e}")
                 import traceback
                 traceback.print_exc()
-                return {
+                response_callback({
                     "type": "reset_state_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
-                }
+                })
         
         elif cmd_type == "close_session":
             video_id = cmd["video_id"]
@@ -646,19 +720,19 @@ class SAM2TCPServer:
                     inference_state, loader = self.sessions.pop(video_id)
                     loader.close()
                 
-                return {
+                response_callback({
                     "type": "close_session_result",
                     "request_id": request_id,
                     "status": "ok",
-                }
+                })
             except Exception as e:
                 print(f"[SAM2 Worker] Failed to close session: {e}")
-                return {
+                response_callback({
                     "type": "close_session_result",
                     "request_id": request_id,
                     "status": "error",
                     "error": str(e),
-                }
+                })
         
         elif cmd_type == "shutdown":
             print("[SAM2 Worker] Shutting down...")
@@ -672,23 +746,117 @@ class SAM2TCPServer:
             result = {"type": "shutdown_result", "status": "ok"}
             if request_id is not None:
                 result["request_id"] = request_id
-            return result
+            response_callback(result)
         
         else:
             print(f"[SAM2 Worker] Unknown command type: {cmd_type}")
-            return {
+            response_callback({
                 "type": "error",
                 "error": f"Unknown command type: {cmd_type}",
                 "request_id": request_id,
-            }
+            })
     
+    def _propagate_video(
+        self,
+        inference_state,
+        video_id: int,
+        start_frame_idx: int,
+        max_frames: int,
+        project_path: Path,
+        num_frames: int,
+        height: int,
+        width: int,
+        progress_callback=None
+    ) -> tuple[int, list[int]]:
+        """Helper to run SAM2 propagation and save to H5."""
+        import torch
+        frame_indices = []
+        frame_count = 0
+        
+        with open_h5(project_path, 'a') as h5_file:
+            # Pre-create all datasets
+            mask_dataset_name = f"segmentation_masks/{video_id}"
+            bbox_dataset_name = f"bounding_boxes/{video_id}"
+            frame_type_dataset_name = f"frame_types/{video_id}"
+            
+            if mask_dataset_name not in h5_file:
+                h5_file.create_dataset(
+                    mask_dataset_name,
+                    shape=(num_frames, height, width),
+                    dtype=np.uint8,
+                    fillvalue=0,
+                    chunks=(1, height, width),
+                    compression=None,
+                )
+            
+            if bbox_dataset_name not in h5_file:
+                h5_file.create_dataset(
+                    bbox_dataset_name,
+                    shape=(num_frames, 4),
+                    dtype=np.float32,
+                    fillvalue=0.0,
+                    chunks=(1, 4),
+                    compression=None,
+                )
+            
+            if frame_type_dataset_name not in h5_file:
+                h5_file.create_dataset(
+                    frame_type_dataset_name,
+                    shape=(num_frames,),
+                    dtype=h5py.string_dtype(encoding='utf-8'),
+                    fillvalue='',
+                    chunks=(num_frames,),
+                    compression=None,
+                )
+            
+            with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+                iterator = self.predictor.propagate_in_video(
+                    inference_state=inference_state,
+                    start_frame_idx=start_frame_idx,
+                    max_frame_num_to_track=max_frames,
+                    reverse=False,
+                )
+                
+                for frame_idx, out_obj_ids, video_res_masks in iterator:
+                    mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
+                    
+                    mask_binary = mask > 0
+                    if np.any(mask_binary):
+                        rows = np.any(mask_binary, axis=1)
+                        cols = np.any(mask_binary, axis=0)
+                        if np.any(rows) and np.any(cols):
+                            y_indices = np.where(rows)[0]
+                            x_indices = np.where(cols)[0]
+                            y1, y2 = y_indices[0], y_indices[-1]
+                            x1, x2 = x_indices[0], x_indices[-1]
+                            bbox_np = np.array([x1, y1, x2, y2], dtype=np.float32)
+                        else:
+                            bbox_np = None
+                    else:
+                        bbox_np = None
+                    
+                    h5_file[mask_dataset_name][frame_idx] = mask
+                    if bbox_np is not None:
+                        h5_file[bbox_dataset_name][frame_idx] = bbox_np
+                    h5_file[frame_type_dataset_name][frame_idx] = 'train'
+                    
+                    frame_indices.append(frame_idx)
+                    frame_count += 1
+                    
+                    if progress_callback and frame_count % 10 == 0:
+                        progress_callback(frame_idx)
+            
+            h5_file.flush()
+            
+        return frame_count, frame_indices
+
     def _schedule_shutdown(self) -> None:
         """Schedule shutdown if no connections arrive within timeout."""
         def shutdown_if_still_empty():
             time.sleep(self.shutdown_timeout)
             with self.connection_lock:
-                if len(self.active_connections) == 0:
-                    print("[SAM2 Worker] No connections, shutting down...")
+                if len(self.active_connections) == 0 and not self._is_processing:
+                    print("[SAM2 Worker] No connections and not processing, shutting down...")
                     self.stop()  # Clean up resources
                     print("[SAM2 Worker] Exiting process...")
                     os._exit(0)  # Forcefully exit the process (works from any thread)
@@ -772,4 +940,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

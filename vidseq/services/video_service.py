@@ -90,3 +90,11 @@ async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:
         raise LookupError(f"Video {video_id} not found")
     return video
 
+
+async def get_all_videos(session: AsyncSession) -> list[Video]:
+    """Get all videos in the project."""
+    result = await session.execute(
+        select(Video).order_by(Video.id)
+    )
+    return list(result.scalars().all())
+

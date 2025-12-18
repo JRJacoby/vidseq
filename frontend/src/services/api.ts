@@ -456,6 +456,17 @@ export async function runInitialDetection(
     }
 }
 
+export async function segmentAllVideos(projectId: number): Promise<{ job_ids: number[] }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/segment-all-videos`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to segment all videos'))
+    }
+    return response.json()
+}
+
 export async function getYOLOModelStatus(
     projectId: number
 ): Promise<YOLOModelStatus> {

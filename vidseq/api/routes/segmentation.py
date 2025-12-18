@@ -19,6 +19,56 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.post("/projects/{project_id}/segment-all-videos")
+async def segment_all_videos_route(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Start batch segmentation for all videos in the project.
+    
+    Validates that all videos have a bounding box on frame 0.
+    Returns 400 if any videos are missing frame 0 bounding boxes.
+    """
+    videos = await video_service.get_all_videos(session)
+    if not videos:
+        raise HTTPException(status_code=400, detail="No videos found in project")
+    
+    missing_bboxes = []
+    bboxes = {}
+    
+    for video in videos:
+        bbox = mask_service.load_bbox(
+            project_path=project_path,
+            video_id=video.id,
+            frame_idx=0,
+            num_frames=video.num_frames,
+        )
+        if bbox is None:
+            missing_bboxes.append({"id": video.id, "name": video.name})
+        else:
+            bboxes[video.id] = bbox
+            
+    if missing_bboxes:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Some videos are missing bounding boxes on frame 0. Please run initial detection or manually add a bounding box for these videos.",
+                "missing_videos": missing_bboxes
+            }
+        )
+    
+    job_ids = await sam2_service.segment_all_videos(
+        project_id=project_id,
+        project_path=project_path,
+        videos=videos,
+        bboxes=bboxes,
+    )
+    
+    return {"job_ids": job_ids}
+
+
 @router.get("/segmentation/status")
 async def get_segmentation_status():
     """Get the current SAM2 model loading status."""
