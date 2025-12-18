@@ -217,24 +217,38 @@ const drawPlot = () => {
   
   if (props.confidenceScores.length === 0) return
   
+  // Calculate global min/max for auto-scaling
+  let minScore = 2.0 // Initialize higher than max possible (1.0)
+  let maxScore = -1.0 // Initialize lower than min possible (0.0)
+  
+  for (const item of props.confidenceScores) {
+    if (item.score >= 0) {
+      if (item.score < minScore) minScore = item.score
+      if (item.score > maxScore) maxScore = item.score
+    }
+  }
+  
+  // Default range if no valid scores or flat line
+  if (minScore > 1.0) { // No valid scores found
+    minScore = 0.0
+    maxScore = 1.0
+  } else if (Math.abs(maxScore - minScore) < 0.0001) {
+    // Avoid division by zero, center it
+    minScore = Math.max(0, minScore - 0.1)
+    maxScore = Math.min(1, maxScore + 0.1)
+  }
+  
+  const scoreRange = maxScore - minScore
+
   ctx.beginPath()
   ctx.strokeStyle = 'rgba(255, 235, 59, 0.8)' // Yellowish
   ctx.lineWidth = 2
   
   let hasStarted = false
   
-  // Optimization: Binary search for start index could be better, but linear scan is okay for < 100k
-  // Or just iterate all and clip
-  
   const duration = visibleDuration.value
   if (duration <= 0) return
 
-  // Filter visible points plus one on each side to ensure continuity
-  // Ideally utilize the sorted nature of confidenceScores
-  
-  // We can assume confidenceScores is sorted by frame_idx if backend provides it so
-  // But let's be safe. Actually, backend returns sorted.
-  
   for (const item of props.confidenceScores) {
     if (item.score < 0) continue // Skip invalid scores
     
@@ -243,8 +257,16 @@ const drawPlot = () => {
     // Calculate x
     const x = ((time - props.viewStart) / duration) * width
     
-    // Draw
-    const y = (1 - item.score) * height // 1.0 is top (0), 0.0 is bottom (height)
+    // Normalize score: min -> 0 (bottom), max -> 1 (top) relative to range
+    // But in canvas Y, 0 is top, height is bottom.
+    // So we want:
+    // score = min -> y = height
+    // score = max -> y = 0
+    // normalized = (val - min) / range => 0 to 1
+    // y = height * (1 - normalized)
+    
+    const normalizedScore = (item.score - minScore) / scoreRange
+    const y = height * (1 - normalizedScore)
     
     // Optimization: Skip drawing if way off screen
     if (x < -100 && !hasStarted) continue
