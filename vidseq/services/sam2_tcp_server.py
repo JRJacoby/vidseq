@@ -19,6 +19,75 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional
 
+import torch
+from sam2.sam2_video_predictor import SAM2VideoPredictor
+
+class CustomSAM2VideoPredictor(SAM2VideoPredictor):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.frame_ious = {}
+
+    def track_step(
+        self,
+        frame_idx,
+        is_init_cond_frame,
+        current_vision_feats,
+        current_vision_pos_embeds,
+        feat_sizes,
+        point_inputs,
+        mask_inputs,
+        output_dict,
+        num_frames,
+        track_in_reverse=False,
+        run_mem_encoder=True,
+        prev_sam_mask_logits=None,
+    ):
+        current_out, sam_outputs, _, _ = self._track_step(
+            frame_idx,
+            is_init_cond_frame,
+            current_vision_feats,
+            current_vision_pos_embeds,
+            feat_sizes,
+            point_inputs,
+            mask_inputs,
+            output_dict,
+            num_frames,
+            track_in_reverse,
+            prev_sam_mask_logits,
+        )
+
+        (
+            _,
+            _,
+            ious,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            object_score_logits,
+        ) = sam_outputs
+
+        current_out["pred_masks"] = low_res_masks
+        current_out["pred_masks_high_res"] = high_res_masks
+        current_out["obj_ptr"] = obj_ptr
+        if ious is not None and ious.numel() > 0:
+             # Store max IoU for this frame
+             self.frame_ious[frame_idx] = float(ious.max().item())
+        
+        if not self.training:
+            current_out["object_score_logits"] = object_score_logits
+
+        self._encode_memory_in_output(
+            current_vision_feats,
+            feat_sizes,
+            point_inputs,
+            run_mem_encoder,
+            high_res_masks,
+            object_score_logits,
+            current_out,
+        )
+
+        return current_out
+
 import h5py
 import numpy as np
 from sqlalchemy import create_engine, select, update
@@ -405,6 +474,7 @@ class SAM2TCPServer:
                     vos_optimized=False,
                     hydra_overrides_extra=[
                         "++model.add_all_frames_to_correct_as_cond=true",
+                        "++model._target_=vidseq.services.sam2_tcp_server.CustomSAM2VideoPredictor"
                     ],
                 )
                 self.predictor.to(dtype=torch.bfloat16)
@@ -1018,6 +1088,7 @@ class SAM2TCPServer:
         
         with open_h5(project_path, 'a') as h5_file:
             mask_dataset_name = f"segmentation_masks/{video_id}"
+            score_dataset_name = f"segmentation_scores/{video_id}"
             
             if mask_dataset_name not in h5_file:
                 h5_file.create_dataset(
@@ -1028,8 +1099,23 @@ class SAM2TCPServer:
                     chunks=(1, height, width),
                     compression=None,
                 )
+                
+            if score_dataset_name not in h5_file:
+                chunk_size = min(1000, num_frames)
+                h5_file.create_dataset(
+                    score_dataset_name,
+                    shape=(num_frames,),
+                    dtype=np.float32,
+                    fillvalue=-1.0,
+                    chunks=(chunk_size,),  # Chunk by 1000 frames or less
+                    compression='gzip',
+                )
             
             with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
+                # Clear previous IoU scores
+                if hasattr(self.predictor, 'frame_ious'):
+                    self.predictor.frame_ious = {}
+                    
                 iterator = self.predictor.propagate_in_video(
                     inference_state=inference_state,
                     start_frame_idx=start_frame_idx,
@@ -1041,6 +1127,14 @@ class SAM2TCPServer:
                     mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
                     
                     h5_file[mask_dataset_name][frame_idx] = mask
+                    
+                    
+                    # Extract confidence score (IoU)
+                    score = -1.0
+                    if hasattr(self.predictor, 'frame_ious'):
+                        score = self.predictor.frame_ious.get(frame_idx, -1.0)
+                    
+                    h5_file[score_dataset_name][frame_idx] = score
                     
                     frame_indices.append(frame_idx)
                     frame_count += 1

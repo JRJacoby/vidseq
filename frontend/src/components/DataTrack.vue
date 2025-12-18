@@ -12,6 +12,7 @@ const props = defineProps<{
   showMaskedFrames: boolean
   showTrainingFrames: boolean
   isMarkingMode: boolean
+  confidenceScores: { frame_idx: number; score: number }[]
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>()
 
 const trackRef = ref<HTMLElement | null>(null)
+const canvasRef = ref<HTMLCanvasElement | null>(null)
 const isDragging = ref(false)
 const dragStartFrame = ref<number | null>(null)
 const dragEndFrame = ref<number | null>(null)
@@ -201,16 +203,92 @@ const onMouseLeave = () => {
   isHovering.value = false
 }
 
+const drawPlot = () => {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  
+  const width = canvas.width
+  const height = canvas.height
+  
+  ctx.clearRect(0, 0, width, height)
+  
+  if (props.confidenceScores.length === 0) return
+  
+  ctx.beginPath()
+  ctx.strokeStyle = 'rgba(255, 235, 59, 0.8)' // Yellowish
+  ctx.lineWidth = 2
+  
+  let hasStarted = false
+  
+  // Optimization: Binary search for start index could be better, but linear scan is okay for < 100k
+  // Or just iterate all and clip
+  
+  const duration = visibleDuration.value
+  if (duration <= 0) return
+
+  // Filter visible points plus one on each side to ensure continuity
+  // Ideally utilize the sorted nature of confidenceScores
+  
+  // We can assume confidenceScores is sorted by frame_idx if backend provides it so
+  // But let's be safe. Actually, backend returns sorted.
+  
+  for (const item of props.confidenceScores) {
+    if (item.score < 0) continue // Skip invalid scores
+    
+    const time = frameToTime(item.frame_idx)
+    
+    // Calculate x
+    const x = ((time - props.viewStart) / duration) * width
+    
+    // Draw
+    const y = (1 - item.score) * height // 1.0 is top (0), 0.0 is bottom (height)
+    
+    // Optimization: Skip drawing if way off screen
+    if (x < -100 && !hasStarted) continue
+    if (x > width + 100) break
+    
+    if (!hasStarted) {
+      ctx.moveTo(x, y)
+      hasStarted = true
+    } else {
+      ctx.lineTo(x, y)
+    }
+  }
+  
+  ctx.stroke()
+}
+
+const resizeCanvas = () => {
+  const canvas = canvasRef.value
+  const track = trackRef.value
+  if (canvas && track) {
+    canvas.width = track.clientWidth
+    canvas.height = track.clientHeight
+    drawPlot()
+  }
+}
+
+watch(() => props.confidenceScores, drawPlot, { deep: true })
+watch([() => props.viewStart, () => props.viewEnd], drawPlot)
+// Also watch masked/training visibility if we want to change opacity or something? No.
+
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('resize', resizeCanvas)
+  // Initial draw
+  setTimeout(resizeCanvas, 10)
 })
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('resize', resizeCanvas)
 })
 </script>
 
@@ -234,6 +312,11 @@ onUnmounted(() => {
           :key="'masked-' + idx"
           class="range-overlay masked"
           :style="style"
+        />
+        
+        <canvas
+          ref="canvasRef"
+          class="confidence-plot"
         />
         
         <div 
@@ -299,6 +382,16 @@ onUnmounted(() => {
   top: 0;
   height: 100%;
   pointer-events: none;
+}
+
+.confidence-plot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5; /* Above masked regions, below drag/playhead */
 }
 
 .range-overlay.masked {

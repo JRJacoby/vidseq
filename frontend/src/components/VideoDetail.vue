@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, propagateMask, type Video } from '@/services/api'
+import { getVideo, getVideoStreamUrl, propagateMask, getScoresBatch, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -27,6 +27,7 @@ const showMaskedFrames = ref(true)
 const showTrainingFrames = ref(true)
 const isMarkingMode = ref(false)
 const maxFrames = ref(1000)
+const confidenceScores = ref<MaskScore[]>([])
 
 const viewStart = ref(0)
 const viewEnd = ref(0)
@@ -111,6 +112,21 @@ const {
   validateRange,
 } = useFrameRanges(projectId, videoId)
 
+const fetchScores = async () => {
+  if (!projectId.value || !videoId.value || !video.value) return
+  try {
+    // Fetch up to 100k frames. For longer videos, this should be paginated or sparse.
+    confidenceScores.value = await getScoresBatch(
+      projectId.value,
+      videoId.value,
+      0,
+      video.value.num_frames
+    )
+  } catch (e) {
+    console.error('Failed to fetch confidence scores:', e)
+  }
+}
+
 const isPropagating = ref(false)
 
 const handlePropagateMask = async () => {
@@ -127,6 +143,7 @@ const handlePropagateMask = async () => {
     clearMaskCache()
     await loadFrameData(currentFrameIdx.value)
     await refreshFrameRanges()
+    await fetchScores()
   } catch (e) {
     console.error('Failed to propagate mask:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate mask')
@@ -180,8 +197,10 @@ setMetadataCallback(() => {
   loadFrameData(0)
 })
 
-onMounted(() => {
-  loadVideo()
+onMounted(async () => {
+  await loadVideo()
+  await refreshFrameRanges()
+  await fetchScores()
 })
 </script>
 
@@ -251,6 +270,7 @@ onMounted(() => {
               :show-masked-frames="showMaskedFrames"
               :show-training-frames="showTrainingFrames"
               :is-marking-mode="isMarkingMode"
+              :confidence-scores="confidenceScores"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @view-change="handleViewChange"

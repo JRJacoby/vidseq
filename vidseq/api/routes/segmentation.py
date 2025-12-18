@@ -626,6 +626,48 @@ async def get_bboxes_batch(
 
 
 @router.get(
+    "/projects/{project_id}/videos/{video_id}/scores-batch",
+)
+async def get_scores_batch(
+    video_id: int,
+    start_frame: int,
+    count: int = 100,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get segmentation scores (IoU) for a batch of frames.
+    
+    Returns JSON array of {frame_idx, score} objects. Score is -1.0 if no valid score exists.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    scores = mask_service.load_scores_batch(
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        count=count,
+        num_frames=video.num_frames,
+    )
+    
+    result = []
+    for i, score in enumerate(scores):
+        frame_idx = start_frame + i
+        if frame_idx >= video.num_frames:
+            break
+            
+        result.append({
+            "frame_idx": frame_idx,
+            "score": float(score),
+        })
+    
+    return {"scores": result}
+
+
+@router.get(
     "/projects/{project_id}/videos/{video_id}/masks-batch",
 )
 async def get_masks_batch(

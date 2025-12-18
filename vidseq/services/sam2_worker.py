@@ -12,6 +12,69 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
+from sam2.sam2_video_predictor import SAM2VideoPredictor
+
+class CustomSAM2VideoPredictor(SAM2VideoPredictor):
+    def track_step(
+        self,
+        frame_idx,
+        is_init_cond_frame,
+        current_vision_feats,
+        current_vision_pos_embeds,
+        feat_sizes,
+        point_inputs,
+        mask_inputs,
+        output_dict,
+        num_frames,
+        track_in_reverse=False,
+        run_mem_encoder=True,
+        prev_sam_mask_logits=None,
+    ):
+        current_out, sam_outputs, _, _ = self._track_step(
+            frame_idx,
+            is_init_cond_frame,
+            current_vision_feats,
+            current_vision_pos_embeds,
+            feat_sizes,
+            point_inputs,
+            mask_inputs,
+            output_dict,
+            num_frames,
+            track_in_reverse,
+            prev_sam_mask_logits,
+        )
+
+        (
+            _,
+            _,
+            ious,
+            low_res_masks,
+            high_res_masks,
+            obj_ptr,
+            object_score_logits,
+        ) = sam_outputs
+
+        current_out["pred_masks"] = low_res_masks
+        current_out["pred_masks_high_res"] = high_res_masks
+        current_out["obj_ptr"] = obj_ptr
+        # Save IoU scores for confidence visualization
+        current_out["ious"] = ious
+        
+        if not self.training:
+            current_out["object_score_logits"] = object_score_logits
+
+        self._encode_memory_in_output(
+            current_vision_feats,
+            feat_sizes,
+            point_inputs,
+            run_mem_encoder,
+            high_res_masks,
+            object_score_logits,
+            current_out,
+        )
+
+        return current_out
 
 
 def _extract_mask(video_res_masks, obj_ids: list, height: int, width: int) -> np.ndarray:
@@ -124,6 +187,9 @@ def worker_loop(command_queue, result_queue):
                     ckpt_path=str(checkpoint_path),
                     device="cuda",
                     vos_optimized=False,
+                    hydra_overrides_extra=[
+                        "++model._target_=vidseq.services.sam2_worker.CustomSAM2VideoPredictor"
+                    ]
                 )
                 predictor.to(dtype=torch.bfloat16)
                 
@@ -288,11 +354,29 @@ def worker_loop(command_queue, result_queue):
                         if np.all(bbox_np == 0):
                             bbox_np = None
                         
+                        # Extract confidence score (IoU)
+                        score = -1.0
+                        # We only handle single object per call for now in UI flow, but loop is robust
+                        # Get the object index for the first returned object ID
+                        if len(out_obj_ids) > 0:
+                            obj_idx = predictor._obj_id_to_idx(inference_state, out_obj_ids[0])
+                            obj_out_dict = inference_state["output_dict_per_obj"][obj_idx]
+                            
+                            # Check both storage keys for the output
+                            frame_out = obj_out_dict["cond_frame_outputs"].get(frame_idx)
+                            if frame_out is None:
+                                frame_out = obj_out_dict["non_cond_frame_outputs"].get(frame_idx)
+                                
+                            if frame_out is not None and "ious" in frame_out:
+                                # ious is [1, M] or [1, 1], take max
+                                score = float(frame_out["ious"].max().item())
+
                         masks_data.append({
                             "frame_idx": frame_idx,
                             "mask_bytes": mask.tobytes(),
                             "mask_shape": mask.shape,
                             "bbox": bbox_np.tolist() if bbox_np is not None else None,
+                            "score": score,
                         })
                 
                 result_queue.put({

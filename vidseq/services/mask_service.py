@@ -987,3 +987,63 @@ def unmark_training_range(
                 h5_file[frame_type_dataset_name][frame_idx] = ''
         
         h5_file.flush()
+
+
+def load_scores_batch(
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    count: int,
+    num_frames: int,
+    h5_file: Optional[h5py.File] = None,
+) -> np.ndarray:
+    """
+    Load multiple segmentation scores efficiently using H5 slice indexing.
+    
+    Returns array of shape (actual_count,) where actual_count
+    may be less than count if start_frame + count exceeds num_frames.
+    """
+    dataset_name = f"segmentation_scores/{video_id}"
+    end_frame = min(start_frame + count, num_frames)
+    
+    if h5_file is not None:
+        if dataset_name not in h5_file:
+            # Create if doesn't exist (e.g. older project)
+            chunk_size = min(1000, num_frames)
+            h5_file.create_dataset(
+                dataset_name,
+                shape=(num_frames,),
+                dtype=np.float32,
+                fillvalue=-1.0,
+                chunks=(chunk_size,),
+                compression='gzip',
+            )
+            h5_file.flush()
+            return np.full((end_frame - start_frame,), -1.0, dtype=np.float32)
+        
+        return np.array(h5_file[dataset_name][start_frame:end_frame])
+    else:
+        # Try read mode first
+        try:
+            with open_h5(project_path, 'r') as h5_file:
+                if dataset_name in h5_file:
+                    return np.array(h5_file[dataset_name][start_frame:end_frame])
+        except (KeyError, OSError):
+            pass
+        
+        # Dataset doesn't exist, need write mode to create it
+        with open_h5(project_path, 'a') as h5_file:
+            if dataset_name not in h5_file:
+                chunk_size = min(1000, num_frames)
+                h5_file.create_dataset(
+                    dataset_name,
+                    shape=(num_frames,),
+                    dtype=np.float32,
+                    fillvalue=-1.0,
+                    chunks=(chunk_size,),
+                    compression='gzip',
+                )
+                h5_file.flush()
+                return np.full((end_frame - start_frame,), -1.0, dtype=np.float32)
+            
+            return np.array(h5_file[dataset_name][start_frame:end_frame])

@@ -37,11 +37,11 @@ export async function createProject(name: string, path: string): Promise<Project
         },
         body: JSON.stringify({ name, path }),
     })
-    
+
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to create project'))
     }
-    
+
     return response.json()
 }
 
@@ -49,7 +49,7 @@ export async function deleteProject(projectId: number): Promise<void> {
     const response = await fetch(`${API_BASE}/projects/${projectId}`, {
         method: 'DELETE',
     })
-    
+
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to delete project'))
     }
@@ -79,7 +79,7 @@ export async function addVideos(projectId: number, paths: string[]): Promise<voi
         },
         body: JSON.stringify({ paths }),
     })
-    
+
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to add videos'))
     }
@@ -188,6 +188,11 @@ export interface MaskBatchResponse {
     masks: MaskBatchItem[]
 }
 
+export interface MaskScore {
+    frame_idx: number
+    score: number // IoU score, -1.0 if not available
+}
+
 export async function getMasksBatch(
     projectId: number,
     videoId: number,
@@ -201,6 +206,22 @@ export async function getMasksBatch(
         throw new Error(await getErrorMessage(response, 'Failed to fetch mask batch'))
     }
     return response.json()
+}
+
+export async function getScoresBatch(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 1000
+): Promise<MaskScore[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/scores-batch?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch scores batch'))
+    }
+    const data = await response.json()
+    return data.scores
 }
 
 export interface Bbox {
