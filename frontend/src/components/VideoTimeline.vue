@@ -293,10 +293,24 @@ const onWheel = (event: WheelEvent) => {
 /* UI columns for TimelineSystem */
 
 
+.timeline-col-left {
+  height: 48px; /* Match .timeline-track height */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .timeline-col-center {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.timeline-col-right {
+  height: 48px; /* Match .timeline-track height */
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .timeline-track {
@@ -351,9 +365,38 @@ const onWheel = (event: WheelEvent) => {
   font-size: 11px;
   color: #aaa;
   font-family: monospace;
-  text-align: right;
-  padding-top: 4px;
-  line-height: 1.2;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.play-button {
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 50%;
+  background-color: #333;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  transition: all 0.15s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.play-button:hover {
+  background-color: #444;
+  transform: scale(1.05);
+}
+
+.play-icon {
+  margin-left: 4px;
+}
+
+.pause-icon {
+  font-size: 16px;
+  letter-spacing: 2px;
 }
 </style>
 

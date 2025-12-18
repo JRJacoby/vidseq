@@ -29,7 +29,7 @@
 
 :deep(.timeline-col-left) {
   flex-shrink: 0;
-  width: 40px;
+  width: 64px;
   display: flex;
   justify-content: center;
 }
@@ -42,5 +42,6 @@
 :deep(.timeline-col-right) {
   flex-shrink: 0;
   width: 90px;
+  display: flex;
 }
 </style>

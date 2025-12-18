@@ -267,11 +267,17 @@ onUnmounted(() => {
 /* UI columns for TimelineSystem */
 
 
+.timeline-col-left {
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .data-track-label {
   font-size: 10px;
   color: #888;
   text-transform: uppercase;
-  padding-top: 8px;
 }
 
 .data-track {
