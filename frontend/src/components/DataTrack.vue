@@ -249,6 +249,8 @@ const drawPlot = () => {
   const duration = visibleDuration.value
   if (duration <= 0) return
 
+  let lastFrameIdx = -2
+  
   for (const item of props.confidenceScores) {
     if (item.score < 0) continue // Skip invalid scores
     
@@ -257,27 +259,30 @@ const drawPlot = () => {
     // Calculate x
     const x = ((time - props.viewStart) / duration) * width
     
-    // Normalize score: min -> 0 (bottom), max -> 1 (top) relative to range
-    // But in canvas Y, 0 is top, height is bottom.
-    // So we want:
-    // score = min -> y = height
-    // score = max -> y = 0
-    // normalized = (val - min) / range => 0 to 1
-    // y = height * (1 - normalized)
-    
+    // Normalize score
     const normalizedScore = (item.score - minScore) / scoreRange
     const y = height * (1 - normalizedScore)
     
+    // Check for gaps
+    // If the gap is more than 1 frame, we should not connect the line
+    const isGap = (item.frame_idx - lastFrameIdx) > 1
+    
     // Optimization: Skip drawing if way off screen
-    if (x < -100 && !hasStarted) continue
+    if (x < -100 && !hasStarted) {
+      // Just update lastFrameIdx
+      lastFrameIdx = item.frame_idx
+      continue
+    }
     if (x > width + 100) break
     
-    if (!hasStarted) {
+    if (!hasStarted || isGap) {
       ctx.moveTo(x, y)
       hasStarted = true
     } else {
       ctx.lineTo(x, y)
     }
+    
+    lastFrameIdx = item.frame_idx
   }
   
   ctx.stroke()
