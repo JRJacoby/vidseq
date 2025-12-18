@@ -114,20 +114,21 @@ const findTrainingRangeAt = (frame: number): [number, number] | null => {
 }
 
 const onMouseDown = (event: MouseEvent) => {
+  const frame = getFrameFromEvent(event)
+  const clickedRange = findTrainingRangeAt(frame)
+  
+  if (clickedRange) {
+    selectedRange.value = clickedRange
+    return
+  }
+  
   if (!props.isMarkingMode) {
-    const frame = getFrameFromEvent(event)
-    const clickedRange = findTrainingRangeAt(frame)
-    if (clickedRange) {
-      selectedRange.value = clickedRange
-    } else {
-      selectedRange.value = null
-    }
+    selectedRange.value = null
     return
   }
   
   selectedRange.value = null
   isDragging.value = true
-  const frame = getFrameFromEvent(event)
   dragStartFrame.value = frame
   dragEndFrame.value = frame
 }
