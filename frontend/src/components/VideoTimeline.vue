@@ -32,6 +32,12 @@ watch(() => props.currentTime, (videoTime) => {
   }
 })
 
+watch(() => props.isPlaying, (playing) => {
+  if (playing) {
+    seekTarget.value = null
+  }
+})
+
 const internalViewStart = ref(0)
 const internalViewEnd = ref(0)
 const MIN_VISIBLE_DURATION = 1
