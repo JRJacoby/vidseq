@@ -253,6 +253,7 @@ onMounted(() => {
               :is-marking-mode="isMarkingMode"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
+              @view-change="handleViewChange"
             />
           </TimelineSystem>
         </div>

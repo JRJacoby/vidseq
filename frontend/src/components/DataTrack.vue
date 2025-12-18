@@ -42,6 +42,37 @@ const frameToTime = (frame: number): number => {
   return frame / props.fps
 }
 
+const MIN_VISIBLE_DURATION = 1
+
+const onWheel = (event: WheelEvent) => {
+  event.preventDefault()
+  if (!trackRef.value) return
+  
+  const rect = trackRef.value.getBoundingClientRect()
+  const mouseX = event.clientX - rect.left
+  const mousePercent = mouseX / rect.width
+  
+  const timeAtMouse = props.viewStart + mousePercent * visibleDuration.value
+  
+  const zoomFactor = event.deltaY > 0 ? 1.25 : 0.8
+  let newDuration = visibleDuration.value * zoomFactor
+  newDuration = Math.max(MIN_VISIBLE_DURATION, Math.min(props.duration, newDuration))
+  
+  let newStart = timeAtMouse - mousePercent * newDuration
+  let newEnd = timeAtMouse + (1 - mousePercent) * newDuration
+  
+  if (newStart < 0) {
+    newStart = 0
+    newEnd = newDuration
+  }
+  if (newEnd > props.duration) {
+    newEnd = props.duration
+    newStart = props.duration - newDuration
+  }
+  
+  emit('view-change', newStart, newEnd)
+}
+
 const percentToTime = (percent: number): number => {
   return props.viewStart + (percent / 100) * visibleDuration.value
 }
@@ -196,6 +227,7 @@ onUnmounted(() => {
         @mousedown="onMouseDown"
         @mouseenter="onMouseEnter"
         @mouseleave="onMouseLeave"
+        @wheel="onWheel"
       >
         <div 
           v-for="(style, idx) in maskedRangeStyles"
