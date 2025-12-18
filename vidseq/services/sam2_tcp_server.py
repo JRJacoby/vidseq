@@ -497,9 +497,6 @@ class SAM2TCPServer:
                 
                 import torch
                 
-                loop_start_time = time.perf_counter()
-                print(f"[SAM2 Worker] Starting generate_training_masks at {loop_start_time*1000:.2f}ms")
-                
                 frame_indices = []
                 
                 # Open H5 file once before the loop
@@ -540,9 +537,6 @@ class SAM2TCPServer:
                         )
                     
                     with torch.inference_mode(), torch.autocast('cuda', dtype=torch.bfloat16):
-                        propagate_start_time = time.perf_counter()
-                        print(f"[SAM2 Worker] Calling propagate_in_video at {propagate_start_time*1000:.2f}ms")
-                        
                         iterator = self.predictor.propagate_in_video(
                             inference_state=inference_state,
                             start_frame_idx=start_frame_idx,
@@ -550,21 +544,12 @@ class SAM2TCPServer:
                             reverse=False,
                         )
                         
-                        prev_iter_end_time = propagate_start_time
                         frame_count = 0
                         
                         for frame_idx, out_obj_ids, video_res_masks in iterator:
-                            iter_start_time = time.perf_counter()
-                            iterator_time = (iter_start_time - prev_iter_end_time) * 1000
-                            print(f"[SAM2 Worker] Loop iteration start (frame {frame_idx}) at {iter_start_time*1000:.2f}ms, iterator took {iterator_time:.2f}ms")
-                            
-                            extract_start = time.perf_counter()
                             # Extract mask directly to final dimensions to avoid redundant resize
                             mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
-                            extract_end = time.perf_counter()
-                            print(f"[SAM2 Worker]   _extract_mask took {(extract_end - extract_start)*1000:.2f}ms")
                             
-                            bbox_start = time.perf_counter()
                             # Compute bbox directly from numpy (no torch conversion)
                             mask_binary = mask > 0
                             if np.any(mask_binary):
@@ -580,8 +565,6 @@ class SAM2TCPServer:
                                     bbox_np = None
                             else:
                                 bbox_np = None
-                            bbox_end = time.perf_counter()
-                            print(f"[SAM2 Worker]   bbox computation took {(bbox_end - bbox_start)*1000:.2f}ms")
                             
                             # Direct H5 writes (no function calls to avoid overhead)
                             h5_file[mask_dataset_name][frame_idx] = mask
@@ -592,24 +575,10 @@ class SAM2TCPServer:
                             h5_file[frame_type_dataset_name][frame_idx] = 'train'
                             
                             frame_indices.append(frame_idx)
-                            
-                            iter_end_time = time.perf_counter()
-                            total_iter_time = (iter_end_time - iter_start_time) * 1000
-                            print(f"[SAM2 Worker] Loop iteration end (frame {frame_idx}) at {iter_end_time*1000:.2f}ms, post-processing time: {total_iter_time:.2f}ms")
-                            prev_iter_end_time = iter_end_time
                             frame_count += 1
-                        
-                        propagate_end_time = time.perf_counter()
-                        total_propagate_time = (propagate_end_time - propagate_start_time) * 1000
-                        avg_time_per_frame = total_propagate_time / frame_count if frame_count > 0 else 0
-                        print(f"[SAM2 Worker] propagate_in_video completed at {propagate_end_time*1000:.2f}ms")
-                        print(f"[SAM2 Worker] Total propagate time: {total_propagate_time:.2f}ms for {frame_count} frames, avg {avg_time_per_frame:.2f}ms/frame ({1000/avg_time_per_frame:.1f} fps)")
                     
                     # Single flush at the end instead of per-frame
                     h5_file.flush()
-                    
-                    loop_end_time = time.perf_counter()
-                    print(f"[SAM2 Worker] Inference loop completed at {loop_end_time*1000:.2f}ms, total loop time: {(loop_end_time - loop_start_time)*1000:.2f}ms")
                 
                 return {
                     "type": "generate_training_masks_result",
