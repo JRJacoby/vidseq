@@ -11,6 +11,7 @@ const props = defineProps<{
   trainingRanges: [number, number][]
   showMaskedFrames: boolean
   showTrainingFrames: boolean
+  showConfidencePlot: boolean
   isMarkingMode: boolean
   confidenceScores: { frame_idx: number; score: number }[]
 }>()
@@ -215,7 +216,7 @@ const drawPlot = () => {
   
   ctx.clearRect(0, 0, width, height)
   
-  if (props.confidenceScores.length === 0) return
+  if (!props.showConfidencePlot || props.confidenceScores.length === 0) return
   
   // Calculate global min/max for auto-scaling
   let minScore = 2.0 // Initialize higher than max possible (1.0)
@@ -300,6 +301,7 @@ const resizeCanvas = () => {
 
 watch(() => props.confidenceScores, drawPlot, { deep: true })
 watch([() => props.viewStart, () => props.viewEnd], drawPlot)
+watch(() => props.showConfidencePlot, drawPlot)
 // Also watch masked/training visibility if we want to change opacity or something? No.
 
 onMounted(() => {

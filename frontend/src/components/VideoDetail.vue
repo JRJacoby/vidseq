@@ -25,6 +25,7 @@ const showPrompts = ref(true)
 
 const showMaskedFrames = ref(true)
 const showTrainingFrames = ref(true)
+const showConfidencePlot = ref(true)
 const isMarkingMode = ref(false)
 const maxFrames = ref(1000)
 const confidenceScores = ref<MaskScore[]>([])
@@ -269,6 +270,7 @@ onMounted(async () => {
               :training-ranges="trainingRanges"
               :show-masked-frames="showMaskedFrames"
               :show-training-frames="showTrainingFrames"
+              :show-confidence-plot="showConfidencePlot"
               :is-marking-mode="isMarkingMode"
               :confidence-scores="confidenceScores"
               @mark-training="handleMarkTraining"
@@ -395,6 +397,14 @@ onMounted(async () => {
           >
             <span class="tool-icon">◼</span>
             <span class="tool-label">{{ showTrainingFrames ? 'Training Frames' : 'Training Frames Off' }}</span>
+          </button>
+          <button
+            class="tool-button toggle-button confidence-toggle"
+            :class="{ active: showConfidencePlot }"
+            @click="showConfidencePlot = !showConfidencePlot"
+          >
+            <span class="tool-icon">📈</span>
+            <span class="tool-label">{{ showConfidencePlot ? 'Confidence Plot' : 'Confidence Plot Off' }}</span>
           </button>
         </div>
         
@@ -754,6 +764,12 @@ onMounted(async () => {
   background-color: #dcfce7;
   border-color: #22c55e;
   color: #15803d;
+}
+
+.tool-button.confidence-toggle.active {
+  background-color: #fef9c3;
+  border-color: #f59e0b;
+  color: #b45309;
 }
 
 .action-bar-title {
