@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, type Video } from '@/services/api'
+import { getVideo, getVideoStreamUrl, propagateMask, type Video } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
+import { useFrameRanges } from '@/composables/useFrameRanges'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
+import DataTrack from './DataTrack.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +21,14 @@ const isLoading = ref(true)
 const error = ref<string | null>(null)
 const showMask = ref(true)
 const showPrompts = ref(true)
+
+const showMaskedFrames = ref(true)
+const showTrainingFrames = ref(true)
+const isMarkingMode = ref(false)
+const maxFrames = ref(1000)
+
+const viewStart = ref(0)
+const viewEnd = ref(0)
 
 const videoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
@@ -60,6 +70,11 @@ const {
   setMetadataCallback,
 } = useVideoPlayback()
 
+watch(duration, (d) => {
+  viewStart.value = 0
+  viewEnd.value = d
+})
+
 const onSeeked = () => {
 }
 
@@ -76,7 +91,6 @@ const {
   currentBbox,
   currentPrompts,
   isSegmenting,
-  isPropagating,
   loadFrameData,
   seekToFrame,
   togglePositivePointTool,
@@ -84,11 +98,41 @@ const {
   handlePointComplete,
   handleResetFrame,
   handleResetVideo,
-  handleGenerateTrainingMasks,
   clearMaskCache,
 } = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps)
 
+const {
+  maskedRanges,
+  trainingRanges,
+  refresh: refreshFrameRanges,
+  markTraining,
+  unmarkTraining,
+  validateRange,
+} = useFrameRanges(projectId, videoId)
 
+const isPropagating = ref(false)
+
+const handlePropagateMask = async () => {
+  if (!projectId.value || !videoId.value) return
+  
+  isPropagating.value = true
+  try {
+    await propagateMask(
+      projectId.value,
+      videoId.value,
+      currentFrameIdx.value,
+      maxFrames.value
+    )
+    clearMaskCache()
+    await loadFrameData(currentFrameIdx.value)
+    await refreshFrameRanges()
+  } catch (e) {
+    console.error('Failed to propagate mask:', e)
+    alert(e instanceof Error ? e.message : 'Failed to propagate mask')
+  } finally {
+    isPropagating.value = false
+  }
+}
 
 const handleSeek = (time: number) => {
   seek(time)
@@ -96,6 +140,39 @@ const handleSeek = (time: number) => {
     const targetFrame = Math.floor(time * video.value.fps)
     seekToFrame(targetFrame)
   }
+}
+
+const handleViewChange = (start: number, end: number) => {
+  viewStart.value = start
+  viewEnd.value = end
+}
+
+const handleMarkTraining = async (startFrame: number, endFrame: number) => {
+  const validation = await validateRange(startFrame, endFrame)
+  if (!validation.valid) {
+    const missingCount = validation.missingFrames?.length ?? 0
+    alert(`Cannot mark as training: ${missingCount} frame(s) are missing masks.\nMissing frames: ${validation.missingFrames?.slice(0, 10).join(', ')}${missingCount > 10 ? '...' : ''}`)
+    return
+  }
+  
+  const result = await markTraining(startFrame, endFrame)
+  if (!result.success) {
+    alert(`Failed to mark training: ${result.error}`)
+  }
+}
+
+const handleUnmarkTraining = async (startFrame: number, endFrame: number) => {
+  await unmarkTraining(startFrame, endFrame)
+}
+
+const handleResetFrameWithRefresh = async () => {
+  await handleResetFrame()
+  await refreshFrameRanges()
+}
+
+const handleResetVideoWithRefresh = async () => {
+  await handleResetVideo()
+  await refreshFrameRanges()
 }
 
 setMetadataCallback(() => {
@@ -155,8 +232,25 @@ onMounted(() => {
             :duration="duration"
             :is-playing="isPlaying"
             :fps="video!.fps"
+            :external-view-start="viewStart"
+            :external-view-end="viewEnd"
             @seek="handleSeek"
             @toggle-play="handleTogglePlay"
+            @view-change="handleViewChange"
+          />
+          <DataTrack
+            :duration="duration"
+            :fps="video!.fps"
+            :current-time="currentTime"
+            :view-start="viewStart"
+            :view-end="viewEnd"
+            :masked-ranges="maskedRanges"
+            :training-ranges="trainingRanges"
+            :show-masked-frames="showMaskedFrames"
+            :show-training-frames="showTrainingFrames"
+            :is-marking-mode="isMarkingMode"
+            @mark-training="handleMarkTraining"
+            @unmark-training="handleUnmarkTraining"
           />
         </div>
       </div>
@@ -164,7 +258,7 @@ onMounted(() => {
 
     <aside class="action-bar">
       <div class="action-bar-content">
-        <h4 class="action-bar-title">Tools</h4>
+        <h4 class="action-bar-title">Segmentation Tools</h4>
         <div class="tool-buttons">
           <button
             class="tool-button positive-point"
@@ -186,7 +280,7 @@ onMounted(() => {
           </button>
           <button
             class="tool-button reset-button"
-            @click="handleResetFrame"
+            @click="handleResetFrameWithRefresh"
             :disabled="isSegmenting || isPropagating"
           >
             <span class="tool-icon">↺</span>
@@ -194,22 +288,53 @@ onMounted(() => {
           </button>
           <button
             class="tool-button reset-video-button"
-            @click="handleResetVideo"
+            @click="handleResetVideoWithRefresh"
             :disabled="isSegmenting || isPropagating"
           >
             <span class="tool-icon">⟲</span>
             <span class="tool-label">Reset Video</span>
           </button>
+        </div>
+        
+        <h4 class="action-bar-title">Propagation</h4>
+        <div class="propagate-section">
+          <div class="max-frames-input">
+            <label for="maxFrames">Max Frames:</label>
+            <input
+              id="maxFrames"
+              type="number"
+              v-model.number="maxFrames"
+              min="1"
+              max="10000"
+              :disabled="isPropagating"
+            />
+          </div>
           <button
             class="tool-button propagate-button"
-            @click="handleGenerateTrainingMasks"
+            @click="handlePropagateMask"
             :disabled="isSegmenting || isPropagating || !segmentationIsReady"
           >
             <span class="tool-icon">▶▶</span>
-            <span class="tool-label">{{ isPropagating ? 'Generating...' : 'Generate Training Masks' }}</span>
+            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Mask' }}</span>
           </button>
         </div>
-        <h4 class="action-bar-title">Visibility</h4>
+        
+        <h4 class="action-bar-title">Training Data</h4>
+        <div class="tool-buttons">
+          <button
+            class="tool-button mark-training-button"
+            :class="{ active: isMarkingMode }"
+            @click="isMarkingMode = !isMarkingMode"
+          >
+            <span class="tool-icon">✓</span>
+            <span class="tool-label">{{ isMarkingMode ? 'Exit Marking Mode' : 'Mark Training Frames' }}</span>
+          </button>
+        </div>
+        <p v-if="isMarkingMode" class="marking-hint">
+          Drag on the data track to mark frames as training data. Press Delete to remove.
+        </p>
+        
+        <h4 class="action-bar-title">Video Visibility</h4>
         <div class="tool-buttons">
           <button
             class="tool-button toggle-button"
@@ -228,6 +353,27 @@ onMounted(() => {
             <span class="tool-label">{{ showPrompts ? 'Prompts On' : 'Prompts Off' }}</span>
           </button>
         </div>
+        
+        <h4 class="action-bar-title">Data Track</h4>
+        <div class="tool-buttons">
+          <button
+            class="tool-button toggle-button masked-toggle"
+            :class="{ active: showMaskedFrames }"
+            @click="showMaskedFrames = !showMaskedFrames"
+          >
+            <span class="tool-icon">◼</span>
+            <span class="tool-label">{{ showMaskedFrames ? 'Masked Frames' : 'Masked Frames Off' }}</span>
+          </button>
+          <button
+            class="tool-button toggle-button training-toggle"
+            :class="{ active: showTrainingFrames }"
+            @click="showTrainingFrames = !showTrainingFrames"
+          >
+            <span class="tool-icon">◼</span>
+            <span class="tool-label">{{ showTrainingFrames ? 'Training Frames' : 'Training Frames Off' }}</span>
+          </button>
+        </div>
+        
         <div v-if="isSegmenting" class="segmenting-indicator">
           Segmenting...
         </div>
@@ -312,7 +458,7 @@ onMounted(() => {
 .video-container {
   position: relative;
   max-width: 100%;
-  max-height: calc(100% - 104px);
+  max-height: calc(100% - 140px);
   flex-shrink: 1;
   flex: 1;
   min-height: 0;
@@ -516,5 +662,81 @@ onMounted(() => {
 .segmentation-status.error {
   background-color: #f8d7da;
   color: #721c24;
+}
+
+.propagate-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.max-frames-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.max-frames-input label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.max-frames-input input {
+  width: 80px;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.max-frames-input input:disabled {
+  background-color: #f5f5f5;
+  color: #999;
+}
+
+.tool-button.mark-training-button {
+  background-color: #fafafa;
+  border-color: #ccc;
+}
+
+.tool-button.mark-training-button.active {
+  background-color: #dcfce7;
+  border-color: #22c55e;
+  color: #15803d;
+}
+
+.tool-button.mark-training-button:not(:disabled):hover {
+  background-color: #dcfce7;
+  border-color: #22c55e;
+  color: #15803d;
+}
+
+.marking-hint {
+  margin: 0.5rem 0 0 0;
+  padding: 0.5rem;
+  background-color: #dcfce7;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: #15803d;
+}
+
+.tool-button.masked-toggle.active {
+  background-color: #dbeafe;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
+.tool-button.training-toggle.active {
+  background-color: #dcfce7;
+  border-color: #22c55e;
+  color: #15803d;
+}
+
+.action-bar-title {
+  margin: 1rem 0 0.5rem 0;
+}
+
+.action-bar-title:first-child {
+  margin-top: 0;
 }
 </style>

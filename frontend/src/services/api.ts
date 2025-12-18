@@ -60,6 +60,7 @@ export interface Video {
     name: string
     path: string
     fps: number
+    segmentation_status: 'in_progress' | 'segmented' | null
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {
@@ -477,4 +478,97 @@ export async function getYOLOModelStatus(
         throw new Error(await getErrorMessage(response, 'Failed to get YOLO model status'))
     }
     return response.json()
+}
+
+export interface PropagateResponse {
+    frames_processed: number
+}
+
+export async function propagateMask(
+    projectId: number,
+    videoId: number,
+    startFrameIdx: number,
+    maxFrames: number = 1000
+): Promise<PropagateResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-mask`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to propagate mask'))
+    }
+    return response.json()
+}
+
+export interface FrameRangesResponse {
+    masked_ranges: [number, number][]
+    training_ranges: [number, number][]
+}
+
+export async function getFrameRanges(
+    projectId: number,
+    videoId: number
+): Promise<FrameRangesResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame-ranges`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch frame ranges'))
+    }
+    return response.json()
+}
+
+export interface ValidateTrainingRangeResponse {
+    valid: boolean
+    missing_frames?: number[]
+}
+
+export async function validateTrainingRange(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    endFrame: number
+): Promise<ValidateTrainingRangeResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/validate-training-range?start_frame=${startFrame}&end_frame=${endFrame}`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to validate training range'))
+    }
+    return response.json()
+}
+
+export async function markTrainingRange(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    endFrame: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/mark-training?start_frame=${startFrame}&end_frame=${endFrame}`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to mark training range'))
+    }
+}
+
+export async function unmarkTrainingRange(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    endFrame: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/mark-training?start_frame=${startFrame}&end_frame=${endFrame}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to unmark training range'))
+    }
 }

@@ -6,11 +6,14 @@ const props = defineProps<{
   duration: number
   isPlaying: boolean
   fps: number
+  externalViewStart?: number
+  externalViewEnd?: number
 }>()
 
 const emit = defineEmits<{
   seek: [time: number]
   'toggle-play': []
+  'view-change': [viewStart: number, viewEnd: number]
 }>()
 
 const isDragging = ref(false)
@@ -19,24 +22,37 @@ const isPanning = ref(false)
 const panStartX = ref(0)
 const panStartViewStart = ref(0)
 const timelineRef = ref<HTMLElement | null>(null)
-const seekTarget = ref<number | null>(null)  // Timeline's own target for smooth display
+const seekTarget = ref<number | null>(null)
 
 const frameDuration = computed(() => 1 / props.fps)
 
-// Clear seekTarget when video catches up
 watch(() => props.currentTime, (videoTime) => {
   if (seekTarget.value !== null && Math.abs(videoTime - seekTarget.value) < 0.01) {
     seekTarget.value = null
   }
 })
 
-const viewStart = ref(0)
-const viewEnd = ref(0)
+const internalViewStart = ref(0)
+const internalViewEnd = ref(0)
 const MIN_VISIBLE_DURATION = 1
 
+const viewStart = computed(() => props.externalViewStart ?? internalViewStart.value)
+const viewEnd = computed(() => props.externalViewEnd ?? internalViewEnd.value)
+
+const setView = (start: number, end: number) => {
+  if (props.externalViewStart !== undefined) {
+    emit('view-change', start, end)
+  } else {
+    internalViewStart.value = start
+    internalViewEnd.value = end
+  }
+}
+
 watch(() => props.duration, (d) => {
-  viewStart.value = 0
-  viewEnd.value = d
+  if (props.externalViewStart === undefined) {
+    internalViewStart.value = 0
+    internalViewEnd.value = d
+  }
 }, { immediate: true })
 
 const visibleDuration = computed(() => viewEnd.value - viewStart.value)
@@ -124,8 +140,7 @@ const onMouseMove = (event: MouseEvent) => {
       newStart = props.duration - visibleDuration.value
     }
     
-    viewStart.value = newStart
-    viewEnd.value = newEnd
+    setView(newStart, newEnd)
   }
 }
 
@@ -215,8 +230,7 @@ const onWheel = (event: WheelEvent) => {
     newStart = props.duration - newDuration
   }
   
-  viewStart.value = newStart
-  viewEnd.value = newEnd
+  setView(newStart, newEnd)
 }
 </script>
 

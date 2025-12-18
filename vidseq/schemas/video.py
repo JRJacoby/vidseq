@@ -8,6 +8,7 @@ class VideoResponse(BaseModel):
     name: str
     path: str
     fps: float
+    segmentation_status: str | None = None
 
     class Config:
         from_attributes = True

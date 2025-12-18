@@ -7,7 +7,6 @@ import {
     runSegmentation,
     resetFrame,
     resetVideo,
-    generateTrainingMasks,
     getPromptsForFrame,
     type StoredPrompt,
     type Bbox,
@@ -21,7 +20,6 @@ export interface UseSegmentationReturn {
     currentBbox: Ref<Bbox | null>
     currentPrompts: Ref<StoredPrompt[]>
     isSegmenting: Ref<boolean>
-    isPropagating: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
@@ -29,7 +27,6 @@ export interface UseSegmentationReturn {
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
-    handleGenerateTrainingMasks: () => Promise<void>
     clearMaskCache: (startFrame?: number, endFrame?: number) => void
 }
 
@@ -48,7 +45,6 @@ export function useSegmentation(
     const currentMask = ref<ImageBitmap | null>(null)
     const currentBbox = ref<Bbox | null>(null)
     const isSegmenting = ref(false)
-    const isPropagating = ref(false)
     const intendedFrameIdx = ref(0)
 
     const prompts = ref<Map<number, StoredPrompt[]>>(new Map())
@@ -154,10 +150,10 @@ export function useSegmentation(
             console.log(`[loadFrameData] Frame ${frameIdx}: cachedMask=${cachedMask !== undefined}, cachedBbox=${cachedBbox !== undefined}, intendedFrameIdx=${intendedFrameIdx.value}`)
         }
         
-        if (cachedMask !== undefined && cachedBbox !== undefined) {
+        if (cachedMask !== undefined) {
             if (frameIdx === intendedFrameIdx.value) {
                 currentMask.value = cachedMask
-                currentBbox.value = cachedBbox
+                currentBbox.value = cachedBbox ?? null
                 if (frameIdx < 10) {
                     console.log(`[loadFrameData] Set from cache - Frame ${frameIdx}: bbox=`, cachedBbox)
                 }
@@ -178,7 +174,11 @@ export function useSegmentation(
                 return
             }
 
-            currentMask.value = await createImageBitmap(maskBlob)
+            const bitmap = await createImageBitmap(maskBlob)
+            maskCache.set(frameIdx, bitmap)
+            bboxCache.set(frameIdx, bbox)
+            
+            currentMask.value = bitmap
             currentBbox.value = bbox
             if (frameIdx < 10) {
                 console.log(`[loadFrameData] Loaded from API - Frame ${frameIdx}: bbox=`, bbox)
@@ -215,9 +215,15 @@ export function useSegmentation(
                 { x: point.x, y: point.y }
             )
 
-            currentMask.value = await createImageBitmap(maskBlob)
+            const bitmap = await createImageBitmap(maskBlob)
+            currentMask.value = bitmap
             
-            // Refresh prompts for current frame after adding a point
+            const bbox = await getBbox(projectId.value, videoId.value, currentFrameIdx.value)
+            currentBbox.value = bbox
+            
+            maskCache.set(currentFrameIdx.value, bitmap)
+            bboxCache.set(currentFrameIdx.value, bbox)
+            
             await fetchPromptsForFrame(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to add point:', e)
@@ -254,29 +260,6 @@ export function useSegmentation(
             currentBbox.value = null
         } catch (e) {
             console.error('Failed to reset video:', e)
-        }
-    }
-
-    const handleGenerateTrainingMasks = async () => {
-        if (!projectId.value || !videoId.value) return
-
-        isPropagating.value = true
-
-        try {
-            await generateTrainingMasks(
-                projectId.value,
-                videoId.value,
-                currentFrameIdx.value,
-                100
-            )
-            maskCache.clear()
-            bboxCache.clear()
-            prefetchedUpTo = -1
-            await loadFrameData(currentFrameIdx.value)
-        } catch (e) {
-            console.error('Failed to generate training masks:', e)
-        } finally {
-            isPropagating.value = false
         }
     }
 
@@ -393,7 +376,6 @@ export function useSegmentation(
         currentBbox,
         currentPrompts,
         isSegmenting,
-        isPropagating,
         loadFrameData,
         seekToFrame,
         togglePositivePointTool,
@@ -401,7 +383,6 @@ export function useSegmentation(
         handlePointComplete,
         handleResetFrame,
         handleResetVideo,
-        handleGenerateTrainingMasks,
         clearMaskCache,
     }
 }

@@ -5,11 +5,9 @@ import { getProject, getVideos, addVideos, segmentAllVideos, type Video, type Pr
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
-import { useJobs } from '@/composables/useJobs'
 
 const router = useRouter()
 const projectStore = useProjectStore()
-const { jobs } = useJobs()
 
 const project = ref<Project | null>(null)
 const videos = ref<Video[]>([])
@@ -19,30 +17,16 @@ const isSegmenting = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
-const segmentationJobs = computed(() => {
-  return jobs.value.filter(j => j.type === 'video_segmentation' && j.project_id === projectId.value)
-})
-
-const getVideoJob = (videoId: number) => {
-  return segmentationJobs.value.find(j => j.details.video_id === videoId)
+const getStatusDisplay = (video: Video) => {
+  if (video.segmentation_status === 'in_progress') return 'In Progress'
+  if (video.segmentation_status === 'segmented') return 'Segmented'
+  return null
 }
 
-const getJobStatusDisplay = (videoId: number) => {
-  const job = getVideoJob(videoId)
-  if (!job) return null
-  
-  if (job.status === 'running') {
-    const current = job.details.current_frame || 0
-    const total = job.details.total_frames || 0
-    const percent = total > 0 ? Math.round((current / total) * 100) : 0
-    return `Segmenting: ${current}/${total} (${percent}%)`
-  }
-  
-  if (job.status === 'failed') {
-    return `Failed: ${job.details.error || 'Unknown error'}`
-  }
-  
-  return job.status.charAt(0).toUpperCase() + job.status.slice(1)
+const getStatusClass = (video: Video) => {
+  if (video.segmentation_status === 'in_progress') return 'in-progress'
+  if (video.segmentation_status === 'segmented') return 'segmented'
+  return null
 }
 
 const {
@@ -129,6 +113,7 @@ const handleSegmentAll = async () => {
   isSegmenting.value = true
   try {
     await segmentAllVideos(projectId.value)
+    await loadVideos()
   } catch (e: any) {
     console.error('Failed to segment all videos:', e)
     alert(e.message || 'Failed to start segmentation')
@@ -155,16 +140,16 @@ const handleSegmentAll = async () => {
               v-for="video in videos" 
               :key="video.id" 
               class="video-item"
-              :class="getVideoJob(video.id)?.status"
+              :class="getStatusClass(video)"
               @dblclick="handleVideoDoubleClick(video.id)"
             >
               <div class="video-info">
                 <p class="video-name">{{ video.name }}</p>
                 <p class="video-path">{{ video.path }}</p>
               </div>
-              <div v-if="getVideoJob(video.id)" class="video-status">
-                <span class="status-badge" :class="getVideoJob(video.id)?.status">
-                  {{ getJobStatusDisplay(video.id) }}
+              <div v-if="getStatusDisplay(video)" class="video-status">
+                <span class="status-badge" :class="getStatusClass(video)">
+                  {{ getStatusDisplay(video) }}
                 </span>
               </div>
             </div>
@@ -335,16 +320,12 @@ const handleSegmentAll = async () => {
   box-shadow: 0 2px 8px rgba(0,0,0,0.05);
 }
 
-.video-item.running {
+.video-item.in-progress {
   border-left: 4px solid #ffc107;
 }
 
-.video-item.completed {
+.video-item.segmented {
   border-left: 4px solid #28a745;
-}
-
-.video-item.failed {
-  border-left: 4px solid #dc3545;
 }
 
 .video-info {
@@ -375,23 +356,13 @@ const handleSegmentAll = async () => {
   font-weight: 600;
 }
 
-.status-badge.pending {
-  background-color: #e9ecef;
-  color: #495057;
-}
-
-.status-badge.running {
+.status-badge.in-progress {
   background-color: #fff3cd;
   color: #856404;
 }
 
-.status-badge.completed {
+.status-badge.segmented {
   background-color: #d4edda;
   color: #155724;
-}
-
-.status-badge.failed {
-  background-color: #f8d7da;
-  color: #721c24;
 }
 </style>

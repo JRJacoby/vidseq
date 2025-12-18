@@ -21,7 +21,13 @@ from typing import Any, Optional
 
 import h5py
 import numpy as np
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import Session
 
+from vidseq.models.registry import Job
+from vidseq.models.video import Video
+from vidseq.models.utils import utc_now
+from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.sam2_config import (
     cleanup_port_files,
     find_free_port,
@@ -164,13 +170,60 @@ class SAM2TCPServer:
         self.config_name = "configs/sam2.1/sam2.1_hiera_t.yaml"
         self.checkpoint_path = Path(__file__).parent.parent.parent / "sam2_models" / "sam2.1_hiera_tiny.pt"
     
+    def _recover_stale_in_progress_states(self) -> None:
+        """Reset any 'in_progress' videos from previous crashed runs."""
+        try:
+            db_manager = DatabaseManager.get_instance()
+            
+            # Get all project databases from registry
+            registry_engine = db_manager.get_registry_engine()
+            with Session(registry_engine) as session:
+                from vidseq.models.registry import Project
+                projects = session.execute(select(Project)).scalars().all()
+                
+                recovered_count = 0
+                for project in projects:
+                    project_path = Path(project.path)
+                    if not project_path.exists():
+                        continue
+                    
+                    try:
+                        project_engine = db_manager.get_project_engine(project_path)
+                        with Session(project_engine) as proj_session:
+                            # Find all videos with segmentation_status='in_progress'
+                            result = proj_session.execute(
+                                select(Video).where(Video.segmentation_status == 'in_progress')
+                            )
+                            in_progress_videos = result.scalars().all()
+                            
+                            if in_progress_videos:
+                                # Reset them to None
+                                for video in in_progress_videos:
+                                    proj_session.execute(
+                                        update(Video)
+                                        .where(Video.id == video.id)
+                                        .values(segmentation_status=None)
+                                    )
+                                    recovered_count += 1
+                                
+                                proj_session.commit()
+                                print(f"[SAM2 Worker] Recovered {len(in_progress_videos)} stale 'in_progress' videos in project {project.name}")
+                    except Exception as e:
+                        print(f"[SAM2 Worker] Warning: Failed to recover project {project.name}: {e}")
+                        continue
+                
+                if recovered_count > 0:
+                    print(f"[SAM2 Worker] Total recovered videos: {recovered_count}")
+        except Exception as e:
+            print(f"[SAM2 Worker] Warning: Failed to recover stale states: {e}")
+    
     def start(self) -> None:
         """Start the TCP server."""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind(("localhost", self.port))
         self.server_socket.listen(5)
-        self.server_socket.settimeout(1.0)  # Set timeout so accept() can be interrupted
+        self.server_socket.settimeout(1.0)
         self.running = True
         
         print(f"[SAM2 Worker] TCP server started on localhost:{self.port}")
@@ -178,6 +231,9 @@ class SAM2TCPServer:
         # Write port and PID files
         write_port_file(self.port)
         write_pid_file(os.getpid())
+        
+        # Recover stale 'in_progress' states from previous crashes
+        self._recover_stale_in_progress_states()
         
         # Start command processing thread
         processing_thread = threading.Thread(target=self._process_commands, daemon=True)
@@ -542,39 +598,103 @@ class SAM2TCPServer:
 
         elif cmd_type == "segment_videos_batch":
             videos = cmd["videos"]
+            project_id = cmd["project_id"]
             project_path = Path(cmd["project_path"])
-            log_path = Path(cmd["log_path"]) if cmd.get("log_path") else None
+            request_id = cmd["request_id"]
             
             try:
                 if self.predictor is None:
                     raise RuntimeError("Model not loaded")
                 
-                log_file = None
-                if log_path:
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    log_file = open(log_path, "a")
+                # Create jobs for all videos in registry DB
+                db_manager = DatabaseManager.get_instance()
+                registry_engine = db_manager.get_registry_engine()
+                project_engine = db_manager.get_project_engine(project_path)
                 
-                def log(msg):
-                    print(f"[SAM2 Worker] {msg}")
-                    if log_file:
-                        log_file.write(f"{msg}\n")
-                        log_file.flush()
+                job_ids = []
+                video_configs = []
                 
-                log(f"Starting batch segmentation for {len(videos)} videos")
+                with Session(registry_engine) as registry_session:
+                    for v_info in videos:
+                        video_id = v_info["video_id"]
+                        log_path = project_path / "logs" / f"segmentation_video_{video_id}.log"
+                        log_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        job = Job(
+                            type="video_segmentation",
+                            status="pending",
+                            project_id=project_id,
+                            details={
+                                "video_id": video_id,
+                                "current_frame": 0,
+                                "total_frames": v_info["num_frames"],
+                            },
+                            log_path=str(log_path),
+                        )
+                        registry_session.add(job)
+                        registry_session.flush()
+                        
+                        job_ids.append(job.id)
+                        video_configs.append({
+                            "job_id": job.id,
+                            "video_id": video_id,
+                            "video_path": v_info["video_path"],
+                            "bbox": v_info["bbox"],
+                            "num_frames": v_info["num_frames"],
+                            "height": v_info["height"],
+                            "width": v_info["width"],
+                        })
+                    
+                    registry_session.commit()
                 
+                # Send initial response with job IDs
+                response_callback({
+                    "type": "segment_videos_batch_started",
+                    "request_id": request_id,
+                    "job_ids": job_ids,
+                })
+                
+                # Process each video
                 processed_count = 0
-                for v_info in videos:
-                    video_id = v_info["video_id"]
-                    job_id = v_info["job_id"]
-                    video_path = Path(v_info["video_path"])
-                    bbox = v_info["bbox"]
-                    num_frames = v_info["num_frames"]
-                    height = v_info["height"]
-                    width = v_info["width"]
+                for v_config in video_configs:
+                    video_id = v_config["video_id"]
+                    job_id = v_config["job_id"]
+                    video_path = Path(v_config["video_path"])
+                    bbox = v_config["bbox"]
+                    num_frames = v_config["num_frames"]
+                    height = v_config["height"]
+                    width = v_config["width"]
+                    log_path = project_path / "logs" / f"segmentation_video_{video_id}.log"
                     
-                    log(f"Processing video {video_id} (Job #{job_id}): {video_path.name}")
-                    
+                    log_file = None
                     try:
+                        log_file = open(log_path, "a")
+                        
+                        def log(msg):
+                            print(f"[SAM2 Worker] {msg}")
+                            if log_file:
+                                log_file.write(f"{msg}\n")
+                                log_file.flush()
+                        
+                        log(f"Processing video {video_id} (Job #{job_id}): {video_path.name}")
+                        
+                        # Update Job.status = 'running' and Video.segmentation_status = 'in_progress'
+                        with Session(registry_engine) as session:
+                            session.execute(
+                                update(Job)
+                                .where(Job.id == job_id)
+                                .values(status="running", updated_at=utc_now())
+                            )
+                            session.commit()
+                        
+                        with Session(project_engine) as session:
+                            session.execute(
+                                update(Video)
+                                .where(Video.id == video_id)
+                                .values(segmentation_status='in_progress')
+                            )
+                            session.commit()
+                        
                         # Close existing session if any
                         if video_id in self.sessions:
                             inf_state, ldr = self.sessions.pop(video_id)
@@ -600,6 +720,22 @@ class SAM2TCPServer:
                         
                         # Propagate through all frames
                         def progress_update(frame_idx):
+                            # Update job details with current frame
+                            with Session(registry_engine) as session:
+                                session.execute(
+                                    update(Job)
+                                    .where(Job.id == job_id)
+                                    .values(
+                                        details={
+                                            "video_id": video_id,
+                                            "current_frame": frame_idx,
+                                            "total_frames": num_frames,
+                                        },
+                                        updated_at=utc_now()
+                                    )
+                                )
+                                session.commit()
+                            
                             response_callback({
                                 "type": "batch_progress",
                                 "request_id": request_id,
@@ -625,6 +761,31 @@ class SAM2TCPServer:
                         if video_id in self.sessions:
                             inf_state, ldr = self.sessions.pop(video_id)
                             ldr.close()
+                        
+                        # Update Video.segmentation_status = 'segmented' and Job.status = 'completed'
+                        with Session(project_engine) as session:
+                            session.execute(
+                                update(Video)
+                                .where(Video.id == video_id)
+                                .values(segmentation_status='segmented')
+                            )
+                            session.commit()
+                        
+                        with Session(registry_engine) as session:
+                            session.execute(
+                                update(Job)
+                                .where(Job.id == job_id)
+                                .values(
+                                    status="completed",
+                                    details={
+                                        "video_id": video_id,
+                                        "current_frame": num_frames,
+                                        "total_frames": num_frames,
+                                    },
+                                    updated_at=utc_now()
+                                )
+                            )
+                            session.commit()
                             
                         log(f"Successfully processed video {video_id}")
                         response_callback({
@@ -637,27 +798,61 @@ class SAM2TCPServer:
                         processed_count += 1
                         
                     except Exception as ve:
-                        log(f"Error processing video {video_id}: {ve}")
+                        error_msg = str(ve)
+                        if log_file:
+                            log_file.write(f"Error processing video {video_id}: {ve}\n")
+                            import traceback
+                            log_file.write(traceback.format_exc())
+                            log_file.flush()
+                        
+                        print(f"[SAM2 Worker] Error processing video {video_id}: {ve}")
                         import traceback
-                        log(traceback.format_exc())
+                        traceback.print_exc()
+                        
+                        # Update Video.segmentation_status = None and Job.status = 'failed'
+                        with Session(project_engine) as session:
+                            session.execute(
+                                update(Video)
+                                .where(Video.id == video_id)
+                                .values(segmentation_status=None)
+                            )
+                            session.commit()
+                        
+                        with Session(registry_engine) as session:
+                            session.execute(
+                                update(Job)
+                                .where(Job.id == job_id)
+                                .values(
+                                    status="failed",
+                                    details={
+                                        "video_id": video_id,
+                                        "error": error_msg,
+                                    },
+                                    updated_at=utc_now()
+                                )
+                            )
+                            session.commit()
+                        
                         response_callback({
                             "type": "batch_video_complete",
                             "request_id": request_id,
                             "job_id": job_id,
                             "video_id": video_id,
                             "status": "failed",
-                            "error": str(ve)
+                            "error": error_msg
                         })
+                    finally:
+                        if log_file:
+                            log_file.close()
                 
-                log(f"Batch complete: {processed_count}/{len(videos)} videos processed")
-                if log_file:
-                    log_file.close()
+                print(f"[SAM2 Worker] Batch complete: {processed_count}/{len(video_configs)} videos processed")
                     
                 response_callback({
                     "type": "segment_videos_batch_result",
                     "request_id": request_id,
                     "status": "ok",
-                    "processed_count": processed_count
+                    "processed_count": processed_count,
+                    "job_ids": job_ids,
                 })
                 
             except Exception as e:
@@ -774,10 +969,7 @@ class SAM2TCPServer:
         frame_count = 0
         
         with open_h5(project_path, 'a') as h5_file:
-            # Pre-create all datasets
             mask_dataset_name = f"segmentation_masks/{video_id}"
-            bbox_dataset_name = f"bounding_boxes/{video_id}"
-            frame_type_dataset_name = f"frame_types/{video_id}"
             
             if mask_dataset_name not in h5_file:
                 h5_file.create_dataset(
@@ -786,26 +978,6 @@ class SAM2TCPServer:
                     dtype=np.uint8,
                     fillvalue=0,
                     chunks=(1, height, width),
-                    compression=None,
-                )
-            
-            if bbox_dataset_name not in h5_file:
-                h5_file.create_dataset(
-                    bbox_dataset_name,
-                    shape=(num_frames, 4),
-                    dtype=np.float32,
-                    fillvalue=0.0,
-                    chunks=(1, 4),
-                    compression=None,
-                )
-            
-            if frame_type_dataset_name not in h5_file:
-                h5_file.create_dataset(
-                    frame_type_dataset_name,
-                    shape=(num_frames,),
-                    dtype=h5py.string_dtype(encoding='utf-8'),
-                    fillvalue='',
-                    chunks=(num_frames,),
                     compression=None,
                 )
             
@@ -820,25 +992,7 @@ class SAM2TCPServer:
                 for frame_idx, out_obj_ids, video_res_masks in iterator:
                     mask = _extract_mask(video_res_masks, out_obj_ids, height, width)
                     
-                    mask_binary = mask > 0
-                    if np.any(mask_binary):
-                        rows = np.any(mask_binary, axis=1)
-                        cols = np.any(mask_binary, axis=0)
-                        if np.any(rows) and np.any(cols):
-                            y_indices = np.where(rows)[0]
-                            x_indices = np.where(cols)[0]
-                            y1, y2 = y_indices[0], y_indices[-1]
-                            x1, x2 = x_indices[0], x_indices[-1]
-                            bbox_np = np.array([x1, y1, x2, y2], dtype=np.float32)
-                        else:
-                            bbox_np = None
-                    else:
-                        bbox_np = None
-                    
                     h5_file[mask_dataset_name][frame_idx] = mask
-                    if bbox_np is not None:
-                        h5_file[bbox_dataset_name][frame_idx] = bbox_np
-                    h5_file[frame_type_dataset_name][frame_idx] = 'train'
                     
                     frame_indices.append(frame_idx)
                     frame_count += 1

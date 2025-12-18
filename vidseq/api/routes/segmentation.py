@@ -197,13 +197,6 @@ async def run_segmentation(
         height=video.height,
         width=video.width,
     )
-    mask_service.mark_frame_type(
-        project_path=project_path,
-        video_id=video_id,
-        frame_idx=segment_request.frame_idx,
-        frame_type='train',
-        num_frames=video.num_frames,
-    )
     
     await conditioning_service.add_conditioning_frame(
         session=session,
@@ -324,21 +317,21 @@ async def get_conditioning_frames(
 
 
 @router.post(
-    "/projects/{project_id}/videos/{video_id}/generate-training-masks",
+    "/projects/{project_id}/videos/{video_id}/propagate-mask",
     response_model=PropagateResponse,
 )
-async def generate_training_masks(
+async def propagate_mask(
     video_id: int,
     request: PropagateRequest,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Generate training masks by propagating tracking forward from the given frame.
+    Propagate segmentation mask forward from the given frame.
     
     Requires an active SAM2 session with a tracked object (add a point prompt first).
-    Saves masks and bounding boxes to HDF5 as it processes each frame.
-    Marks frames as 'train' type for YOLO training.
+    Saves only masks to HDF5. Does NOT mark frames as training or compute bounding boxes.
+    Use mark-training endpoint to explicitly mark frames for YOLO training.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
@@ -356,13 +349,160 @@ async def generate_training_masks(
             width=video.width,
         )
     except RuntimeError as e:
-        logger.error(f"Generate training masks failed: {e}", exc_info=True)
+        logger.error(f"Propagate mask failed: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in generate training masks: {e}", exc_info=True)
+        logger.error(f"Unexpected error in propagate mask: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
     return PropagateResponse(frames_processed=frames_processed)
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/frame-ranges",
+)
+async def get_frame_ranges(
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get masked and training frame ranges for data track visualization.
+    
+    Returns contiguous ranges as [start, end] pairs (inclusive).
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    masked_ranges = mask_service.get_masked_frame_ranges(
+        project_path=project_path,
+        video_id=video.id,
+        num_frames=video.num_frames,
+    )
+    
+    training_ranges = mask_service.get_training_frame_ranges(
+        project_path=project_path,
+        video_id=video.id,
+        num_frames=video.num_frames,
+    )
+    
+    return {
+        "masked_ranges": [[r[0], r[1]] for r in masked_ranges],
+        "training_ranges": [[r[0], r[1]] for r in training_ranges],
+    }
+
+
+@router.post(
+    "/projects/{project_id}/videos/{video_id}/validate-training-range",
+)
+async def validate_training_range(
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Check if all frames in range have masks.
+    
+    Returns {"valid": true} if all frames have masks,
+    or {"valid": false, "missing_frames": [...]} if some are missing.
+    """
+    try:
+        await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    missing_frames = mask_service.validate_frames_have_masks(
+        project_path=project_path,
+        video_id=video_id,
+        start_frame=start_frame,
+        end_frame=end_frame,
+    )
+    
+    if missing_frames:
+        return {"valid": False, "missing_frames": missing_frames}
+    return {"valid": True}
+
+
+@router.post(
+    "/projects/{project_id}/videos/{video_id}/mark-training",
+)
+async def mark_training(
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Mark frame range as training (computes bboxes from masks).
+    
+    All frames in range must have masks. Use validate-training-range first.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    missing_frames = mask_service.validate_frames_have_masks(
+        project_path=project_path,
+        video_id=video_id,
+        start_frame=start_frame,
+        end_frame=end_frame,
+    )
+    
+    if missing_frames:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Some frames are missing masks",
+                "missing_frames": missing_frames,
+            }
+        )
+    
+    mask_service.mark_training_range(
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
+    )
+    
+    return {"message": f"Marked frames {start_frame}-{end_frame} as training"}
+
+
+@router.delete(
+    "/projects/{project_id}/videos/{video_id}/mark-training",
+)
+async def unmark_training(
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Remove training labels and bboxes for frame range.
+    """
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+    mask_service.unmark_training_range(
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        num_frames=video.num_frames,
+    )
+    
+    return {"message": f"Unmarked frames {start_frame}-{end_frame}"}
 
 
 @router.get(

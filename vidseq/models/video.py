@@ -15,3 +15,4 @@ class Video(Base):
     height: Mapped[int] = mapped_column(Integer)
     width: Mapped[int] = mapped_column(Integer)
     num_frames: Mapped[int] = mapped_column(Integer)
+    segmentation_status: Mapped[str | None] = mapped_column(String, nullable=True, default=None)

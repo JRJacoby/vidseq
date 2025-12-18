@@ -478,173 +478,55 @@ class SAM2Service:
         Returns:
             List of job IDs created
         """
-        import asyncio
-        from vidseq.models.registry import Job
-        from vidseq.services.database_manager import DatabaseManager
-        from vidseq.models.utils import utc_now
+        import uuid
         
-        db_manager = DatabaseManager.get_instance()
-        session_factory = db_manager.get_registry_session_factory()
-        
-        job_ids = []
+        # Prepare video configurations
         video_configs = []
-        
-        async def create_jobs():
-            async with session_factory() as session:
-                for video in videos:
-                    bbox = bboxes.get(video.id)
-                    if bbox is None:
-                        continue
-                        
-                    log_path = project_path / "logs" / f"segmentation_video_{video.id}.log"
-                    job = Job(
-                        type="video_segmentation",
-                        status="pending",
-                        project_id=project_id,
-                        details={
-                            "video_id": video.id,
-                            "video_name": video.name,
-                            "current_frame": 0,
-                            "total_frames": video.num_frames,
-                        },
-                        log_path=str(log_path),
-                    )
-                    session.add(job)
-                    await session.flush()  # To get job.id
-                    
-                    job_ids.append(job.id)
-                    video_configs.append({
-                        "job_id": job.id,
-                        "video_id": video.id,
-                        "video_path": video.path,
-                        "bbox": bbox.tolist(),
-                        "num_frames": video.num_frames,
-                        "height": video.height,
-                        "width": video.width,
-                    })
-                
-                await session.commit()
-        
-        # Run job creation
-        try:
-            await create_jobs()
-        except Exception as e:
-            raise
+        for video in videos:
+            bbox = bboxes.get(video.id)
+            if bbox is None:
+                continue
+            
+            video_configs.append({
+                "video_id": video.id,
+                "video_path": video.path,
+                "bbox": bbox.tolist(),
+                "num_frames": video.num_frames,
+                "height": video.height,
+                "width": video.width,
+            })
         
         if not video_configs:
             return []
-            
-        # Start background thread to process batch and handle streaming responses
-        def run_batch():
-            try:
-                # Lazily load model if not ready
-                if self._status == SAM2Status.NOT_LOADED:
-                    self.start_loading_in_background()
-                
-                # Wait if still loading
-                timeout = 600.0
-                start_time = time.time()
-                while self._status == SAM2Status.LOADING_MODEL and time.time() - start_time < timeout:
-                    time.sleep(1.0)
-                
-                self._ensure_worker_ready()
-                
-                batch_log_path = project_path / "logs" / "batch_segmentation.log"
-                cmd = {
-                    "type": "segment_videos_batch",
-                    "videos": video_configs,
-                    "project_path": str(project_path),
-                    "log_path": str(batch_log_path),
-                    "request_id": str(uuid.uuid4()),
-                }
-                
-                for response in self._tcp_client.send_command_streaming(cmd, timeout=3600.0):
-                    resp_type = response.get("type")
-                    
-                    if resp_type == "batch_progress":
-                        job_id = response["job_id"]
-                        current_frame = response["current_frame"]
-                        total_frames = response["total_frames"]
-                        
-                        async def update_progress():
-                            async with session_factory() as session:
-                                from sqlalchemy import update
-                                await session.execute(
-                                    update(Job)
-                                    .where(Job.id == job_id)
-                                    .values(
-                                        status="running",
-                                        details={
-                                            **response, # Includes video_id, etc.
-                                            "status": "running"
-                                        },
-                                        updated_at=utc_now()
-                                    )
-                                )
-                                await session.commit()
-                        
-                        try:
-                            # Inside background thread, we need a new loop or asyncio.run
-                            asyncio.run(update_progress())
-                        except Exception as e:
-                            pass
-                        
-                    elif resp_type == "batch_video_complete":
-                        job_id = response["job_id"]
-                        status = response["status"]
-                        error = response.get("error")
-                        
-                        async def update_complete():
-                            async with session_factory() as session:
-                                from sqlalchemy import update
-                                await session.execute(
-                                    update(Job)
-                                    .where(Job.id == job_id)
-                                    .values(
-                                        status=status,
-                                        details={
-                                            "status": status,
-                                            "error": error,
-                                            "video_id": response["video_id"]
-                                        },
-                                        updated_at=utc_now()
-                                    )
-                                )
-                                await session.commit()
-                        
-                        try:
-                            asyncio.run(update_complete())
-                        except Exception as e:
-                            pass
-                        
-            except Exception as e:
-                print(f"[SAM2 Service] Batch processing thread failed: {e}")
-                import traceback
-                traceback.print_exc()
-                
-                # Mark all remaining pending/running jobs as failed
-                async def mark_failed():
-                    async with session_factory() as session:
-                        from sqlalchemy import update
-                        await session.execute(
-                            update(Job)
-                            .where(Job.id.in_(job_ids))
-                            .where(Job.status.in_(["pending", "running"]))
-                            .values(
-                                status="failed",
-                                details={"error": f"Batch thread failed: {str(e)}"},
-                                updated_at=utc_now()
-                            )
-                        )
-                        await session.commit()
-                try:
-                    asyncio.run(mark_failed())
-                except Exception as ex:
-                    pass
-
-        threading.Thread(target=run_batch, daemon=True).start()
         
-        return job_ids
+        # Ensure model is loaded
+        if self._status == SAM2Status.NOT_LOADED:
+            self.start_loading_in_background()
+        
+        # Wait if still loading
+        timeout = 600.0
+        start_time = time.time()
+        while self._status == SAM2Status.LOADING_MODEL and time.time() - start_time < timeout:
+            time.sleep(1.0)
+        
+        self._ensure_worker_ready()
+        
+        # Send command to worker (which now handles job creation and all DB updates)
+        cmd = {
+            "type": "segment_videos_batch",
+            "project_id": project_id,
+            "project_path": str(project_path),
+            "videos": video_configs,
+            "request_id": str(uuid.uuid4()),
+        }
+        
+        result = self._tcp_client.send_command(cmd, timeout=10.0)
+        
+        # Extract job IDs from response
+        if result.get("type") == "segment_videos_batch_started":
+            return result.get("job_ids", [])
+        
+        return []
     
     def get_prompts_for_frame(self, frame_idx: int) -> list[dict]:
         """Get all prompts for a specific frame."""
