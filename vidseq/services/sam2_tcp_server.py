@@ -403,6 +403,9 @@ class SAM2TCPServer:
                     ckpt_path=str(self.checkpoint_path),
                     device="cuda",
                     vos_optimized=False,
+                    hydra_overrides_extra=[
+                        "++model.add_all_frames_to_correct_as_cond=true",
+                    ],
                 )
                 self.predictor.to(dtype=torch.bfloat16)
                 
@@ -891,6 +894,51 @@ class SAM2TCPServer:
                 print(f"[SAM2 Worker] State reset for video {video_id}")
                 response_callback({
                     "type": "reset_state_result",
+                    "request_id": request_id,
+                    "status": "ok",
+                })
+            
+            except Exception as e:
+                print(f"[SAM2 Worker] Error resetting state: {e}")
+                response_callback({
+                    "type": "reset_state_result",
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": str(e),
+                })
+        
+        elif cmd_type == "clear_frame_prompts":
+            video_id = cmd["video_id"]
+            frame_idx = cmd["frame_idx"]
+            obj_id = cmd.get("obj_id", 1)
+            
+            print(f"[SAM2 Worker] Clearing prompts for video {video_id}, frame {frame_idx}, obj {obj_id}...")
+            
+            try:
+                if self.predictor is None:
+                    raise RuntimeError("Model not loaded")
+                
+                if video_id not in self.sessions:
+                    response_callback({
+                        "type": "clear_frame_prompts_result",
+                        "request_id": request_id,
+                        "status": "ok",
+                    })
+                    return
+                
+                inference_state, loader = self.sessions[video_id]
+                import torch
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    self.predictor.clear_all_prompts_in_frame(
+                        inference_state=inference_state,
+                        frame_idx=frame_idx,
+                        obj_id=obj_id,
+                        need_output=False,
+                    )
+                
+                print(f"[SAM2 Worker] Cleared prompts for video {video_id}, frame {frame_idx}")
+                response_callback({
+                    "type": "clear_frame_prompts_result",
                     "request_id": request_id,
                     "status": "ok",
                 })

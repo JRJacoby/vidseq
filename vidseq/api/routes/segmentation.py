@@ -218,8 +218,7 @@ async def reset_frame(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset a frame: clear the mask, bounding box, and remove conditioning frame record.
-    Does not reset SAM2 tracking state.
+    Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM2 prompts.
     """
     try:
         await video_service.get_video_by_id(session, video_id)
@@ -232,6 +231,7 @@ async def reset_frame(
         raise HTTPException(status_code=404, detail=str(e))
     
     sam2_service.clear_prompts_for_frame(frame_idx)
+    sam2_service.clear_frame_prompts(video_id, frame_idx)
     
     segmentation_service.clear_mask(
         project_path=project_path,

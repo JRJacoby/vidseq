@@ -408,6 +408,37 @@ class SAM2Service:
         self._prompts = {}
         return True
     
+    def clear_frame_prompts(self, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
+        """
+        Clear all prompts for a specific frame.
+        
+        Removes point and mask inputs for the given frame from SAM2's inference state.
+        This is useful when resetting a conditioning frame.
+        
+        Args:
+            video_id: ID of the video
+            frame_idx: Frame index to clear
+            obj_id: Object ID (default: 1)
+            
+        Returns:
+            True if successful
+        """
+        session = self.get_session(video_id)
+        if session is None:
+            return True
+        
+        result = self._send_and_wait({
+            "type": "clear_frame_prompts",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "obj_id": obj_id,
+        }, timeout=30.0)
+        
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to clear frame prompts"))
+        
+        return True
+    
     def generate_training_masks(
         self,
         video_id: int,
@@ -604,6 +635,11 @@ def add_point_prompt(
 def reset_state(video_id: int) -> bool:
     """Reset the tracking state for a video."""
     return SAM2Service.get_instance().reset_state(video_id)
+
+
+def clear_frame_prompts(video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
+    """Clear all prompts for a specific frame."""
+    return SAM2Service.get_instance().clear_frame_prompts(video_id, frame_idx, obj_id)
 
 
 def generate_training_masks(
