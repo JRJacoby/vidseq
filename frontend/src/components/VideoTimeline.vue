@@ -87,9 +87,12 @@ const NICE_INTERVALS = [
   43200, 86400
 ]
 
-const getNiceInterval = (duration: number, targetTicks: number = 8) => {
+const getNiceInterval = (duration: number, targetTicks: number = 8): number => {
   const rawInterval = duration / targetTicks
-  return NICE_INTERVALS.find(i => i >= rawInterval) ?? NICE_INTERVALS.at(-1)!
+  for (const i of NICE_INTERVALS) {
+    if (i >= rawInterval) return i
+  }
+  return NICE_INTERVALS[NICE_INTERVALS.length - 1] as number
 }
 
 const ticks = computed(() => {
@@ -241,13 +244,15 @@ const onWheel = (event: WheelEvent) => {
 </script>
 
 <template>
-  <div class="timeline-container">
-    <button class="play-button" @click="togglePlay">
-      <span v-if="isPlaying" class="pause-icon">❚❚</span>
-      <span v-else class="play-icon">▶</span>
-    </button>
+  <div class="timeline-row">
+    <div class="timeline-col-left">
+      <button class="play-button" @click="togglePlay">
+        <span v-if="isPlaying" class="pause-icon">❚❚</span>
+        <span v-else class="play-icon">▶</span>
+      </button>
+    </div>
     
-    <div class="timeline-wrapper">
+    <div class="timeline-col-center">
       <div 
         ref="timelineRef" 
         class="timeline-track" 
@@ -275,56 +280,20 @@ const onWheel = (event: WheelEvent) => {
       </div>
     </div>
     
-    <div class="time-display">
-      {{ formatTime(seekTarget !== null ? seekTarget : currentTime) }} / {{ formatTime(duration) }}
+    <div class="timeline-col-right">
+      <div class="time-display">
+        {{ formatTime(seekTarget !== null ? seekTarget : currentTime) }}<br>
+        {{ formatTime(duration) }}
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.timeline-container {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 16px;
-  background-color: #1a1a1a;
-  border-radius: 6px;
-  width: 100%;
-  box-sizing: border-box;
-}
+/* UI columns for TimelineSystem */
 
-.play-button {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border: none;
-  border-radius: 50%;
-  background-color: #333;
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  transition: background-color 0.15s;
-}
 
-.play-button:hover {
-  background-color: #444;
-}
-
-.play-icon {
-  margin-left: 2px;
-}
-
-.pause-icon {
-  font-size: 12px;
-  letter-spacing: 2px;
-}
-
-.timeline-wrapper {
-  flex: 1;
-  min-width: 0;
+.timeline-col-center {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -379,13 +348,12 @@ const onWheel = (event: WheelEvent) => {
 }
 
 .time-display {
-  flex-shrink: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: #aaa;
   font-family: monospace;
-  min-width: 90px;
   text-align: right;
   padding-top: 4px;
+  line-height: 1.2;
 }
 </style>
 

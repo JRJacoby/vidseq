@@ -9,6 +9,7 @@ import { useFrameRanges } from '@/composables/useFrameRanges'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 import DataTrack from './DataTrack.vue'
+import TimelineSystem from './TimelineSystem.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -227,31 +228,33 @@ onMounted(() => {
               @point-complete="handlePointComplete"
             />
           </div>
-          <VideoTimeline
-            :current-time="currentTime"
-            :duration="duration"
-            :is-playing="isPlaying"
-            :fps="video!.fps"
-            :external-view-start="viewStart"
-            :external-view-end="viewEnd"
-            @seek="handleSeek"
-            @toggle-play="handleTogglePlay"
-            @view-change="handleViewChange"
-          />
-          <DataTrack
-            :duration="duration"
-            :fps="video!.fps"
-            :current-time="currentTime"
-            :view-start="viewStart"
-            :view-end="viewEnd"
-            :masked-ranges="maskedRanges"
-            :training-ranges="trainingRanges"
-            :show-masked-frames="showMaskedFrames"
-            :show-training-frames="showTrainingFrames"
-            :is-marking-mode="isMarkingMode"
-            @mark-training="handleMarkTraining"
-            @unmark-training="handleUnmarkTraining"
-          />
+          <TimelineSystem>
+            <VideoTimeline
+              :current-time="currentTime"
+              :duration="duration"
+              :is-playing="isPlaying"
+              :fps="video!.fps"
+              :external-view-start="viewStart"
+              :external-view-end="viewEnd"
+              @seek="handleSeek"
+              @toggle-play="handleTogglePlay"
+              @view-change="handleViewChange"
+            />
+            <DataTrack
+              :duration="duration"
+              :fps="video!.fps"
+              :current-time="currentTime"
+              :view-start="viewStart"
+              :view-end="viewEnd"
+              :masked-ranges="maskedRanges"
+              :training-ranges="trainingRanges"
+              :show-masked-frames="showMaskedFrames"
+              :show-training-frames="showTrainingFrames"
+              :is-marking-mode="isMarkingMode"
+              @mark-training="handleMarkTraining"
+              @unmark-training="handleUnmarkTraining"
+            />
+          </TimelineSystem>
         </div>
       </div>
     </div>
@@ -458,7 +461,7 @@ onMounted(() => {
 .video-container {
   position: relative;
   max-width: 100%;
-  max-height: calc(100% - 140px);
+  max-height: calc(100% - 240px);
   flex-shrink: 1;
   flex: 1;
   min-height: 0;

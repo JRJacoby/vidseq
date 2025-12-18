@@ -184,72 +184,68 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="data-track-container">
-    <div class="data-track-label">Data</div>
-    <div 
-      ref="trackRef"
-      class="data-track"
-      :class="{ 'marking-mode': isMarkingMode }"
-      @mousedown="onMouseDown"
-      @mouseenter="onMouseEnter"
-      @mouseleave="onMouseLeave"
-    >
+  <div class="timeline-row">
+    <div class="timeline-col-left">
+      <div class="data-track-label">Data</div>
+    </div>
+    <div class="timeline-col-center">
       <div 
-        v-for="(style, idx) in maskedRangeStyles"
-        :key="'masked-' + idx"
-        class="range-overlay masked"
-        :style="style"
-      />
-      
-      <div 
-        v-for="item in trainingRangeStyles"
-        :key="'training-' + item.range[0]"
-        class="range-overlay training"
-        :class="{ selected: selectedRange && selectedRange[0] === item.range[0] && selectedRange[1] === item.range[1] }"
-        :style="item.style"
-      />
-      
-      <div 
-        v-if="dragRangeStyle"
-        class="range-overlay drag-selection"
-        :style="dragRangeStyle"
-      />
-      
-      <div 
-        v-if="displayProgress >= 0 && displayProgress <= 100" 
-        class="data-track-playhead" 
-        :style="{ left: displayProgress + '%' }"
-      />
+        ref="trackRef"
+        class="data-track"
+        :class="{ 'marking-mode': isMarkingMode }"
+        @mousedown="onMouseDown"
+        @mouseenter="onMouseEnter"
+        @mouseleave="onMouseLeave"
+      >
+        <div 
+          v-for="(style, idx) in maskedRangeStyles"
+          :key="'masked-' + idx"
+          class="range-overlay masked"
+          :style="style"
+        />
+        
+        <div 
+          v-for="item in trainingRangeStyles"
+          :key="'training-' + item.range[0]"
+          class="range-overlay training"
+          :class="{ selected: selectedRange && selectedRange[0] === item.range[0] && selectedRange[1] === item.range[1] }"
+          :style="item.style"
+        />
+        
+        <div 
+          v-if="dragRangeStyle"
+          class="range-overlay drag-selection"
+          :style="dragRangeStyle"
+        />
+        
+        <div 
+          v-if="displayProgress >= 0 && displayProgress <= 100" 
+          class="data-track-playhead" 
+          :style="{ left: displayProgress + '%' }"
+        />
+      </div>
+    </div>
+    <div class="timeline-col-right">
+      <!-- Spacer to align with time display -->
     </div>
   </div>
 </template>
 
 <style scoped>
-.data-track-container {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px 8px 16px;
-  background-color: #1a1a1a;
-  border-radius: 0 0 6px 6px;
-  width: 100%;
-  box-sizing: border-box;
-  margin-top: -4px;
-}
+/* UI columns for TimelineSystem */
+
 
 .data-track-label {
-  flex-shrink: 0;
-  width: 40px;
   font-size: 10px;
   color: #888;
-  text-align: center;
   text-transform: uppercase;
+  padding-top: 8px;
 }
 
 .data-track {
   flex: 1;
   position: relative;
-  height: 24px;
+  height: 120px;
   background-color: #2a2a2a;
   border-radius: 4px;
   cursor: pointer;
