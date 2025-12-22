@@ -16,3 +16,8 @@ class Video(Base):
     width: Mapped[int] = mapped_column(Integer)
     num_frames: Mapped[int] = mapped_column(Integer)
     segmentation_status: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    
+    # Confidence statistics (nullable as they are computed only after segmentation)
+    min_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    p50_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    p95_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)

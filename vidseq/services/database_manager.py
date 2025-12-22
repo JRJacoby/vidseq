@@ -150,3 +150,14 @@ class DatabaseManager:
         self._project_engines.clear()
         self._project_session_factories.clear()
 
+    def get_registry_engine(self):
+        """Get a synchronous registry engine for the worker process."""
+        from sqlalchemy import create_engine
+        return create_engine(f"sqlite:///{REGISTRY_DB_PATH}")
+
+    def get_project_engine(self, project_folder: Path):
+        """Get a synchronous project engine for the worker process."""
+        from sqlalchemy import create_engine
+        db_path = project_folder / "vidseq.db"
+        return create_engine(f"sqlite:///{db_path}")
+

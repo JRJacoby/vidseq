@@ -61,6 +61,9 @@ export interface Video {
     path: string
     fps: number
     segmentation_status: 'in_progress' | 'segmented' | null
+    min_confidence?: number
+    p50_confidence?: number
+    p95_confidence?: number
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {

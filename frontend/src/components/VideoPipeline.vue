@@ -121,6 +121,50 @@ const handleSegmentAll = async () => {
     isSegmenting.value = false
   }
 }
+
+// Sorting logic
+type SortOption = 'name' | 'min_confidence' | 'p50_confidence' | 'p95_confidence'
+const sortBy = ref<SortOption>('name')
+const sortOrder = ref<'asc' | 'desc'>('asc')
+
+const toggleSortOrder = () => {
+  sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+}
+
+const sortedVideos = computed(() => {
+  return [...videos.value].sort((a, b) => {
+    let result = 0
+    
+    if (sortBy.value === 'name') {
+      result = a.name.localeCompare(b.name)
+    } else {
+      // Sort by confidence stats
+      // Handle missing stats: push to bottom regardless of sort order (effectively)
+      // or treat as -1. Let's treat undefined as -infinity for asc, +infinity for desc?
+      // Better: always put unsegmented/no-stats videos at the bottom.
+      
+      const valA = a[sortBy.value]
+      const valB = b[sortBy.value]
+      
+      if (valA === undefined && valB === undefined) return 0
+      if (valA === undefined) return 1 // A goes to bottom
+      if (valB === undefined) return -1 // B goes to bottom
+      
+      result = valA - valB
+    }
+    
+    return sortOrder.value === 'asc' ? result : -result
+  })
+})
+
+const hasStats = (video: Video) => {
+  return video.min_confidence !== undefined && video.min_confidence !== null
+}
+
+const formatScore = (score: number | undefined) => {
+  if (score === undefined || score === null) return 'N/A'
+  return (score * 100).toFixed(1) + '%'
+}
 </script>
 
 <template>
@@ -135,26 +179,52 @@ const handleSegmentAll = async () => {
           <div v-else-if="videos.length === 0" class="empty-state">
             Add videos to get started.
           </div>
-          <div v-else class="videos-list">
-            <div 
-              v-for="video in videos" 
-              :key="video.id" 
-              class="video-item"
-              :class="getStatusClass(video)"
-              @dblclick="handleVideoDoubleClick(video.id)"
-            >
-              <div class="video-info">
-                <p class="video-name">{{ video.name }}</p>
-                <p class="video-path">{{ video.path }}</p>
+            <div v-else class="videos-list-container">
+              <div class="sort-controls">
+                <span class="sort-label">Sort by:</span>
+                <select v-model="sortBy" class="sort-select">
+                  <option value="name">Name</option>
+                  <option value="min_confidence">Min Confidence</option>
+                  <option value="p50_confidence">Median Confidence</option>
+                  <option value="p95_confidence">95% Confidence</option>
+                </select>
+                <button class="sort-order-btn" @click="toggleSortOrder" title="Toggle Sort Order">
+                  {{ sortOrder === 'asc' ? '↑' : '↓' }}
+                </button>
               </div>
-              <div v-if="getStatusDisplay(video)" class="video-status">
-                <span class="status-badge" :class="getStatusClass(video)">
-                  {{ getStatusDisplay(video) }}
-                </span>
+
+              <div class="videos-list">
+                <div 
+                  v-for="video in sortedVideos" 
+                  :key="video.id" 
+                  class="video-item"
+                  :class="getStatusClass(video)"
+                  @dblclick="handleVideoDoubleClick(video.id)"
+                >
+                  <div class="video-info">
+                    <p class="video-name">{{ video.name }}</p>
+                    <p class="video-path">{{ video.path }}</p>
+                    <div v-if="hasStats(video)" class="video-stats">
+                      <span class="stat-item" title="Minimum Confidence">
+                        Min: <strong>{{ formatScore(video.min_confidence) }}</strong>
+                      </span>
+                      <span class="stat-item" title="Median Confidence">
+                        Med: <strong>{{ formatScore(video.p50_confidence) }}</strong>
+                      </span>
+                      <span class="stat-item" title="95th Percentile Confidence">
+                        P95: <strong>{{ formatScore(video.p95_confidence) }}</strong>
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="getStatusDisplay(video)" class="video-status">
+                    <span class="status-badge" :class="getStatusClass(video)">
+                      {{ getStatusDisplay(video) }}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
         <aside class="sidebar">
           <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
           
@@ -364,5 +434,69 @@ const handleSegmentAll = async () => {
 .status-badge.segmented {
   background-color: #d4edda;
   color: #155724;
+}
+
+/* Sorting Controls */
+.videos-list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+
+.sort-label {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.sort-select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background-color: white;
+  cursor: pointer;
+}
+
+.sort-order-btn {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: #f8f8f8;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.sort-order-btn:hover {
+  background-color: #e8e8e8;
+}
+
+/* Video Stats */
+.video-stats {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+.stat-item {
+  background-color: #f0f4f8;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  border: 1px solid #e1e4e8;
+}
+
+.stat-item strong {
+  color: #0366d6;
 }
 </style>

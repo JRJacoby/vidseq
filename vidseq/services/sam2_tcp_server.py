@@ -640,7 +640,7 @@ class SAM2TCPServer:
                 
                 inference_state, loader = self.sessions[video_id]
                 
-                frame_count, frame_indices = self._propagate_video(
+                frame_count, frame_indices, _ = self._propagate_video(
                     inference_state=inference_state,
                     video_id=video_id,
                     start_frame_idx=start_frame_idx,
@@ -818,7 +818,7 @@ class SAM2TCPServer:
                                 "total_frames": num_frames,
                             })
                         
-                        self._propagate_video(
+                        _, _, stats = self._propagate_video(
                             inference_state=inference_state,
                             video_id=video_id,
                             start_frame_idx=0,
@@ -836,11 +836,19 @@ class SAM2TCPServer:
                             ldr.close()
                         
                         # Update Video.segmentation_status = 'segmented' and Job.status = 'completed'
+                        # Also save confidence stats
+                        update_values = {
+                            "segmentation_status": "segmented",
+                            "min_confidence": stats.get("min"),
+                            "p50_confidence": stats.get("p50"),
+                            "p95_confidence": stats.get("p95"),
+                        }
+                        
                         with Session(project_engine) as session:
                             session.execute(
                                 update(Video)
                                 .where(Video.id == video_id)
-                                .values(segmentation_status='segmented')
+                                .values(**update_values)
                             )
                             session.commit()
                         
@@ -1080,7 +1088,7 @@ class SAM2TCPServer:
         height: int,
         width: int,
         progress_callback=None
-    ) -> tuple[int, list[int]]:
+    ) -> tuple[int, list[int], dict]:
         """Helper to run SAM2 propagation and save to H5."""
         import torch
         frame_indices = []
@@ -1144,7 +1152,20 @@ class SAM2TCPServer:
             
             h5_file.flush()
             
-        return frame_count, frame_indices
+        # Calculate stats from collected scores (ignoring -1.0)
+        # Note: frame_ious only contains scores for frames where an object was tracked
+        stats = {}
+        if hasattr(self.predictor, 'frame_ious') and self.predictor.frame_ious:
+            scores = list(self.predictor.frame_ious.values())
+            if scores:
+                scores_arr = np.array(scores, dtype=np.float32)
+                stats = {
+                    "min": float(np.min(scores_arr)),
+                    "p50": float(np.median(scores_arr)),
+                    "p95": float(np.percentile(scores_arr, 95)),
+                }
+            
+        return frame_count, frame_indices, stats
 
     def _schedule_shutdown(self) -> None:
         """Schedule shutdown if no connections arrive within timeout."""
