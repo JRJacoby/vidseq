@@ -79,9 +79,6 @@ watch(duration, (d) => {
   viewEnd.value = d
 })
 
-const onSeeked = () => {
-}
-
 const currentFrameIdx = computed(() => {
   if (!video.value) return 0
   return Math.floor(currentTime.value * video.value.fps)
@@ -249,7 +246,6 @@ onMounted(async () => {
               @loadedmetadata="onLoadedMetadata"
               @play="onPlay"
               @pause="onPause"
-              @seeked="onSeeked"
             >
               Your browser does not support the video tag.
             </video>

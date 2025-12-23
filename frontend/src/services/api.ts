@@ -448,6 +448,14 @@ export async function getPromptsForFrame(
     }))
 }
 
+interface BackendPrompt {
+    type: string
+    x: number
+    y: number
+}
+
+type PromptsDict = Record<string, BackendPrompt[]>
+
 export async function getAllPrompts(
     projectId: number,
     videoId: number
@@ -458,14 +466,14 @@ export async function getAllPrompts(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
     }
-    const promptsDict = await response.json()
+    const promptsDict: PromptsDict = await response.json()
     // Convert dict to Map and map backend format to frontend StoredPrompt format
     const result = new Map<number, StoredPrompt[]>()
     for (const [frameIdxStr, prompts] of Object.entries(promptsDict)) {
         const frameIdx = parseInt(frameIdxStr, 10)
         result.set(
             frameIdx,
-            (prompts as any[]).map((p: { type: string; x: number; y: number }) => ({
+            prompts.map((p) => ({
                 type: p.type as 'positive_point' | 'negative_point',
                 details: { x: p.x, y: p.y },
                 createdAt: new Date().toISOString(),

@@ -64,7 +64,7 @@ function render() {
     const data = imageData.data
     
     for (let i = 0; i < data.length; i += 4) {
-      const maskValue = data[i]
+      const maskValue = data[i]!
       if (maskValue > 0) {
         data[i] = 102       // R
         data[i + 1] = 179   // G

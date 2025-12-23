@@ -130,7 +130,7 @@ export function useSegmentation(
             }
             
             if (maskResponse.masks.length > 0) {
-                prefetchedUpTo = maskResponse.masks[maskResponse.masks.length - 1].frame_idx
+                prefetchedUpTo = maskResponse.masks[maskResponse.masks.length - 1]!.frame_idx
             }
         } catch (e) {
             console.error('Failed to prefetch masks:', e)
