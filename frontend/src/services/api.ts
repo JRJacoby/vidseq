@@ -275,9 +275,6 @@ export async function getBbox(
         throw new Error(await getErrorMessage(response, 'Failed to fetch bbox'))
     }
     const data = await response.json()
-    if (frameIdx < 10) {
-        console.log(`[getBbox API] Frame ${frameIdx}:`, data)
-    }
     return data === null ? null : data as Bbox
 }
 
@@ -303,9 +300,6 @@ export async function getBboxesBatch(
         throw new Error(await getErrorMessage(response, 'Failed to fetch bboxes batch'))
     }
     const data = await response.json()
-    if (startFrame < 10) {
-        console.log(`[getBboxesBatch API] Start frame ${startFrame}, count ${count}:`, data.bboxes.slice(0, 10))
-    }
     return data
 }
 

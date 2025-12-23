@@ -126,9 +126,6 @@ export function useSegmentation(
                         y2: item.bbox[3],
                     } : null
                     bboxCache.set(item.frame_idx, bboxValue)
-                    if (item.frame_idx < 10) {
-                        console.log(`[Prefetch] Cached bbox for frame ${item.frame_idx}:`, bboxValue)
-                    }
                 }
             }
             
@@ -147,18 +144,11 @@ export function useSegmentation(
 
         const cachedMask = maskCache.get(frameIdx)
         const cachedBbox = bboxCache.get(frameIdx)
-        
-        if (frameIdx < 10) {
-            console.log(`[loadFrameData] Frame ${frameIdx}: cachedMask=${cachedMask !== undefined}, cachedBbox=${cachedBbox !== undefined}, intendedFrameIdx=${intendedFrameIdx.value}`)
-        }
-        
+
         if (cachedMask !== undefined) {
             if (frameIdx === intendedFrameIdx.value) {
                 currentMask.value = cachedMask
                 currentBbox.value = cachedBbox ?? null
-                if (frameIdx < 10) {
-                    console.log(`[loadFrameData] Set from cache - Frame ${frameIdx}: bbox=`, cachedBbox)
-                }
             }
             return
         }
@@ -170,21 +160,15 @@ export function useSegmentation(
             ])
 
             if (frameIdx !== intendedFrameIdx.value) {
-                if (frameIdx < 10) {
-                    console.log(`[loadFrameData] Frame ${frameIdx} changed, skipping (intended=${intendedFrameIdx.value})`)
-                }
                 return
             }
 
             const bitmap = await createImageBitmap(maskBlob)
             maskCache.set(frameIdx, bitmap)
             bboxCache.set(frameIdx, bbox)
-            
+
             currentMask.value = bitmap
             currentBbox.value = bbox
-            if (frameIdx < 10) {
-                console.log(`[loadFrameData] Loaded from API - Frame ${frameIdx}: bbox=`, bbox)
-            }
         } catch (e) {
             console.error('Failed to load frame data:', e)
         }
@@ -291,9 +275,9 @@ export function useSegmentation(
 
     const syncMaskToVideo = () => {
         if (!isPlaying.value || !videoRef.value) return
-        
+
         const frameIdx = Math.floor(videoRef.value.currentTime * fps.value)
-        
+
         if (frameIdx !== lastDisplayedFrame) {
             const cachedMask = maskCache.get(frameIdx)
             const cachedBbox = bboxCache.get(frameIdx)
@@ -301,19 +285,14 @@ export function useSegmentation(
                 currentMask.value = cachedMask
                 currentBbox.value = cachedBbox
                 lastDisplayedFrame = frameIdx
-                if (frameIdx < 10) {
-                    console.log(`[syncMaskToVideo] Frame ${frameIdx}: bbox=`, cachedBbox)
-                }
-            } else if (frameIdx < 10) {
-                console.log(`[syncMaskToVideo] Frame ${frameIdx}: missing cache (mask=${cachedMask !== undefined}, bbox=${cachedBbox !== undefined})`)
             }
-            
+
             const framesAhead = prefetchedUpTo - frameIdx
             if (framesAhead < PREFETCH_THRESHOLD) {
                 prefetchMasks(prefetchedUpTo + 1)
             }
         }
-        
+
         animationFrameId = requestAnimationFrame(syncMaskToVideo)
     }
 
