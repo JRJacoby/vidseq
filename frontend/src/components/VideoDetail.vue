@@ -209,6 +209,7 @@ const handleResetFrameWithRefresh = async () => {
 const handleResetVideoWithRefresh = async () => {
   await handleResetVideo()
   await refreshFrameRanges()
+  confidenceScores.value = []
 }
 
 setMetadataCallback(() => {
