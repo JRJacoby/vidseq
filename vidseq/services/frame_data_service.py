@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from vidseq.models.frame_data import FrameData
+from vidseq.services.utils import frames_to_ranges
 
 
 # =============================================================================
@@ -322,35 +323,7 @@ async def get_training_frame_ranges(
         List of (start_frame, end_frame) tuples for contiguous training ranges
     """
     training_frames = await get_training_frames(session, video_id)
-    return _frames_to_ranges(training_frames)
-
-
-def _frames_to_ranges(frames: list[int]) -> list[tuple[int, int]]:
-    """Convert a sorted list of frame indices to contiguous ranges.
-
-    Args:
-        frames: Sorted list of frame indices
-
-    Returns:
-        List of (start, end) tuples for contiguous ranges (inclusive)
-    """
-    if not frames:
-        return []
-
-    ranges = []
-    start = frames[0]
-    end = frames[0]
-
-    for frame in frames[1:]:
-        if frame == end + 1:
-            end = frame
-        else:
-            ranges.append((start, end))
-            start = frame
-            end = frame
-
-    ranges.append((start, end))
-    return ranges
+    return frames_to_ranges(training_frames)
 
 
 async def mark_training_range(
@@ -367,16 +340,19 @@ async def mark_training_range(
         start_frame: First frame of the range (inclusive)
         end_frame: Last frame of the range (inclusive)
     """
-    for frame_idx in range(start_frame, end_frame + 1):
-        stmt = sqlite_insert(FrameData).values(
-            video_id=video_id,
-            frame_idx=frame_idx,
-            frame_type="train",
-        ).on_conflict_do_update(
-            index_elements=["video_id", "frame_idx"],
-            set_={"frame_type": "train"}
-        )
-        await session.execute(stmt)
+    if start_frame > end_frame:
+        return
+
+    values = [
+        {"video_id": video_id, "frame_idx": frame_idx, "frame_type": "train"}
+        for frame_idx in range(start_frame, end_frame + 1)
+    ]
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"frame_type": stmt.excluded.frame_type}
+    )
+    await session.execute(stmt)
     await session.commit()
 
 
@@ -533,6 +509,209 @@ async def load_scores_in_range(
         .order_by(FrameData.frame_idx)
     )
     return [{"frame_idx": r[0], "score": r[1]} for r in result.all()]
+
+
+# =============================================================================
+# MASK PRESENCE OPERATIONS
+# =============================================================================
+
+
+async def set_has_mask(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+    has_mask: bool,
+) -> None:
+    """Set the has_mask flag for a specific frame (upsert).
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+        has_mask: True if frame has a mask, False otherwise
+    """
+    stmt = sqlite_insert(FrameData).values(
+        video_id=video_id,
+        frame_idx=frame_idx,
+        has_mask=1 if has_mask else 0,
+    ).on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_mask": 1 if has_mask else 0}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+def set_has_mask_sync(
+    session: Session,
+    video_id: int,
+    frame_idx: int,
+    has_mask: bool,
+) -> None:
+    """Synchronous version of set_has_mask for worker processes.
+
+    Args:
+        session: Sync database session
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+        has_mask: True if frame has a mask, False otherwise
+    """
+    stmt = sqlite_insert(FrameData).values(
+        video_id=video_id,
+        frame_idx=frame_idx,
+        has_mask=1 if has_mask else 0,
+    ).on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_mask": 1 if has_mask else 0}
+    )
+    session.execute(stmt)
+    session.commit()
+
+
+def set_has_mask_batch_sync(
+    session: Session,
+    video_id: int,
+    frame_indices: list[int],
+    has_mask: bool = True,
+) -> None:
+    """Batch update has_mask flag for multiple frames (sync version).
+
+    Optimized for propagation hot path where many frames are processed.
+
+    Args:
+        session: Sync database session
+        video_id: ID of the video
+        frame_indices: List of frame indices
+        has_mask: Value to set (default True)
+    """
+    if not frame_indices:
+        return
+
+    values = [
+        {"video_id": video_id, "frame_idx": frame_idx, "has_mask": 1 if has_mask else 0}
+        for frame_idx in frame_indices
+    ]
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_mask": stmt.excluded.has_mask}
+    )
+    session.execute(stmt)
+    session.commit()
+
+
+async def get_masked_frames(
+    session: AsyncSession,
+    video_id: int,
+) -> list[int]:
+    """Get all frame indices that have masks.
+
+    Uses indexed query - O(log n + k) where k = number of masked frames.
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+
+    Returns:
+        List of frame indices that have masks, sorted ascending
+    """
+    result = await session.execute(
+        select(FrameData.frame_idx)
+        .where(FrameData.video_id == video_id, FrameData.has_mask == 1)
+        .order_by(FrameData.frame_idx)
+    )
+    return [row[0] for row in result.all()]
+
+
+async def get_masked_frame_ranges(
+    session: AsyncSession,
+    video_id: int,
+) -> list[tuple[int, int]]:
+    """Get contiguous ranges of frames that have masks.
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+
+    Returns:
+        List of (start_frame, end_frame) tuples for contiguous masked ranges
+    """
+    masked_frames = await get_masked_frames(session, video_id)
+    return frames_to_ranges(masked_frames)
+
+
+async def get_missing_masks_in_range(
+    session: AsyncSession,
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+) -> list[int]:
+    """Get frame indices in range that are missing masks.
+
+    Returns frames where has_mask is NULL or 0.
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+        start_frame: Start frame index (inclusive)
+        end_frame: End frame index (inclusive)
+
+    Returns:
+        List of frame indices that are missing masks, sorted ascending
+    """
+    # Get frames that DO have masks in range
+    result = await session.execute(
+        select(FrameData.frame_idx)
+        .where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx >= start_frame,
+            FrameData.frame_idx <= end_frame,
+            FrameData.has_mask == 1,
+        )
+    )
+    masked_in_range = set(row[0] for row in result.all())
+
+    # Return frames NOT in the masked set
+    all_in_range = set(range(start_frame, end_frame + 1))
+    return sorted(all_in_range - masked_in_range)
+
+
+async def clear_has_mask(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> None:
+    """Clear the has_mask flag for a frame (set to 0).
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+    """
+    await session.execute(
+        update(FrameData)
+        .where(FrameData.video_id == video_id, FrameData.frame_idx == frame_idx)
+        .values(has_mask=0)
+    )
+    await session.commit()
+
+
+async def clear_all_has_mask(
+    session: AsyncSession,
+    video_id: int,
+) -> None:
+    """Clear all has_mask flags for a video (set to 0).
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+    """
+    await session.execute(
+        update(FrameData)
+        .where(FrameData.video_id == video_id)
+        .values(has_mask=0)
+    )
+    await session.commit()
 
 
 # =============================================================================

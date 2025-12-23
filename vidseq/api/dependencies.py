@@ -7,7 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.models.registry import Project
+from vidseq.models.video import Video
 from vidseq.services.database_manager import DatabaseManager
+from vidseq.services import video_service
 
 
 async def get_registry_session():
@@ -57,4 +59,15 @@ async def get_project_session(
     factory = db.get_project_session_factory(project_folder)
     async with factory() as session:
         yield session
+
+
+async def get_video(
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> Video:
+    """Get video by ID from path parameter, raise 404 if not found."""
+    try:
+        return await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 

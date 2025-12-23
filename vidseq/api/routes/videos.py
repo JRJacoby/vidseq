@@ -10,12 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from PIL import Image
 
-from vidseq.api.dependencies import get_project_session
+from vidseq.api.dependencies import get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
 from vidseq.services.video_service import (
     VideoMetadataError,
-    get_video_by_id,
     get_video_metadata,
 )
 
@@ -73,28 +72,17 @@ async def add_videos(
 
 
 @router.get("/projects/{project_id}/videos/{video_id}")
-async def get_video(
-    video_id: int,
-    session: AsyncSession = Depends(get_project_session),
+async def get_video_route(
+    video: Video = Depends(get_video),
 ) -> VideoResponse:
-    try:
-        video = await get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
     return video
 
 
 @router.get("/projects/{project_id}/videos/{video_id}/stream")
 async def stream_video(
-    video_id: int,
     request: Request,
-    session: AsyncSession = Depends(get_project_session),
+    video: Video = Depends(get_video),
 ):
-    try:
-        video = await get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
     video_path = Path(video.path)
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {video.path}")
@@ -142,25 +130,19 @@ async def stream_video(
 
 @router.get("/projects/{project_id}/videos/{video_id}/frame/{frame_idx}")
 async def get_frame(
-    video_id: int,
     frame_idx: int,
-    session: AsyncSession = Depends(get_project_session),
+    video: Video = Depends(get_video),
 ):
     """
     Extract a specific frame from a video and return it as a JPEG image.
-    
+
     Args:
         video_id: ID of the video
         frame_idx: Frame index to extract (0-based)
-        
+
     Returns:
         JPEG image bytes
     """
-    try:
-        video = await get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
     if frame_idx < 0 or frame_idx >= video.num_frames:
         raise HTTPException(status_code=400, detail=f"Frame index {frame_idx} out of range [0, {video.num_frames})")
     

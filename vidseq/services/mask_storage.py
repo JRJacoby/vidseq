@@ -280,88 +280,6 @@ def clear_all_masks(project_path: Path, video_id: int) -> None:
         h5_path.unlink()
 
 
-def get_masked_frame_ranges(
-    project_path: Path,
-    video_id: int,
-    num_frames: int,
-) -> list[tuple[int, int]]:
-    """Get contiguous ranges of frames that have non-zero masks.
-
-    A frame is considered "masked" if its mask contains any non-zero pixels.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        num_frames: Total number of frames in the video
-
-    Returns:
-        List of (start_frame, end_frame) tuples (inclusive) for contiguous
-        masked frame ranges.
-    """
-    h5_path = _get_video_h5_path(project_path, video_id)
-    if not h5_path.exists():
-        return []
-
-    masked_frames = []
-
-    try:
-        with open_video_h5(project_path, video_id, "r") as f:
-            if "masks" not in f:
-                return []
-
-            ds = f["masks"]
-            for frame_idx in range(num_frames):
-                mask = ds[frame_idx]
-                if np.any(mask > 0):
-                    masked_frames.append(frame_idx)
-    except (OSError, FileNotFoundError):
-        return []
-
-    return _frames_to_ranges(masked_frames)
-
-
-def validate_frames_have_masks(
-    project_path: Path,
-    video_id: int,
-    start_frame: int,
-    end_frame: int,
-) -> list[int]:
-    """Check which frames in a range are missing masks.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        start_frame: Start frame index (inclusive)
-        end_frame: End frame index (inclusive)
-
-    Returns:
-        List of frame indices that are missing masks (have all zeros).
-        Empty list means all frames in range have valid masks.
-    """
-    h5_path = _get_video_h5_path(project_path, video_id)
-    all_frames = list(range(start_frame, end_frame + 1))
-
-    if not h5_path.exists():
-        return all_frames
-
-    missing_frames = []
-
-    try:
-        with open_video_h5(project_path, video_id, "r") as f:
-            if "masks" not in f:
-                return all_frames
-
-            ds = f["masks"]
-            for frame_idx in range(start_frame, end_frame + 1):
-                mask = ds[frame_idx]
-                if not np.any(mask > 0):
-                    missing_frames.append(frame_idx)
-    except (OSError, FileNotFoundError):
-        return all_frames
-
-    return missing_frames
-
-
 def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
     """Compute bounding box [x1, y1, x2, y2] from a binary mask.
 
@@ -387,34 +305,6 @@ def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
     x1, x2 = x_indices[0], x_indices[-1]
 
     return np.array([x1, y1, x2, y2], dtype=np.float32)
-
-
-def _frames_to_ranges(frames: list[int]) -> list[tuple[int, int]]:
-    """Convert a sorted list of frame indices to contiguous ranges.
-
-    Args:
-        frames: Sorted list of frame indices
-
-    Returns:
-        List of (start, end) tuples for contiguous ranges (inclusive)
-    """
-    if not frames:
-        return []
-
-    ranges = []
-    start = frames[0]
-    end = frames[0]
-
-    for frame in frames[1:]:
-        if frame == end + 1:
-            end = frame
-        else:
-            ranges.append((start, end))
-            start = frame
-            end = frame
-
-    ranges.append((start, end))
-    return ranges
 
 
 def video_has_masks(project_path: Path, video_id: int) -> bool:

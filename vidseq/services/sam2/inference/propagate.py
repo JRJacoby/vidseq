@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from vidseq.services import frame_data_service, mask_storage
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.sam2_utils import extract_mask
+from vidseq.services.sam2.utils import extract_mask
 
 
 def propagate_video(
@@ -57,6 +57,8 @@ def propagate_video(
     # Score buffer for batch writes to SQLite
     BATCH_SIZE = 100
     score_buffer: list[tuple[int, float]] = []
+    # has_mask buffer for batch writes
+    has_mask_buffer: list[int] = []
 
     # Get sync database session for score writes
     db_manager = DatabaseManager.get_instance()
@@ -90,16 +92,21 @@ def propagate_video(
                 if hasattr(predictor, "frame_ious"):
                     score = predictor.frame_ious.get(frame_idx, -1.0)
 
-                # Buffer score for batch write
+                # Buffer score and has_mask for batch write
                 score_buffer.append((frame_idx, score))
+                has_mask_buffer.append(frame_idx)
 
-                # Flush scores to SQLite periodically
+                # Flush to SQLite periodically
                 if len(score_buffer) >= BATCH_SIZE:
                     with Session(project_engine) as db_session:
                         frame_data_service.save_scores_batch_sync(
                             db_session, video_id, score_buffer
                         )
+                        frame_data_service.set_has_mask_batch_sync(
+                            db_session, video_id, has_mask_buffer
+                        )
                     score_buffer.clear()
+                    has_mask_buffer.clear()
 
                 frame_indices.append(frame_idx)
                 frame_count += 1
@@ -110,10 +117,11 @@ def propagate_video(
 
         h5_file.flush()
 
-    # Final flush of remaining scores
+    # Final flush of remaining scores and has_mask
     if score_buffer:
         with Session(project_engine) as db_session:
             frame_data_service.save_scores_batch_sync(db_session, video_id, score_buffer)
+            frame_data_service.set_has_mask_batch_sync(db_session, video_id, has_mask_buffer)
 
     # Calculate stats from collected scores (ignoring -1.0)
     stats = _compute_score_stats(predictor)
