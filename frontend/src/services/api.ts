@@ -627,3 +627,52 @@ export async function unmarkTrainingRange(
         throw new Error(await getErrorMessage(response, 'Failed to unmark training range'))
     }
 }
+
+// Cropped Video API
+
+export async function extractCroppedVideos(projectId: number): Promise<{ job_ids: number[] }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/extract-cropped-videos`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to extract cropped videos'))
+    }
+    return response.json()
+}
+
+export interface CroppedVideoExistsResponse {
+    exists: boolean
+    path?: string
+}
+
+export async function getCroppedVideoExists(
+    projectId: number,
+    videoId: number
+): Promise<CroppedVideoExistsResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/cropped-video/exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check cropped video existence'))
+    }
+    return response.json()
+}
+
+export function getCroppedVideoStreamUrl(projectId: number, videoId: number): string {
+    return `${API_BASE}/projects/${projectId}/videos/${videoId}/cropped-video/stream`
+}
+
+export async function getCroppedVideoFrame(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/cropped-video/frame/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch cropped video frame'))
+    }
+    return response.blob()
+}

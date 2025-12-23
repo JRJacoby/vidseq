@@ -42,7 +42,7 @@ def handle_load_model(
         vos_optimized=False,
         hydra_overrides_extra=[
             "++model.add_all_frames_to_correct_as_cond=true",
-            "++model._target_=vidseq.services.sam2_predictor.CustomSAM2VideoPredictor",
+            "++model._target_=vidseq.services.sam2.inference.predictor.CustomSAM2VideoPredictor",
         ],
     )
     predictor.to(dtype=torch.bfloat16)

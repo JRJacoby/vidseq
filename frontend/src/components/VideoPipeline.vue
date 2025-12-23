@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getProject, getVideos, addVideos, segmentAllVideos, type Video, type Project } from '@/services/api'
+import { getProject, getVideos, addVideos, segmentAllVideos, extractCroppedVideos, getCroppedVideoExists, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
@@ -14,6 +14,8 @@ const videos = ref<Video[]>([])
 const isLoading = ref(false)
 const showFilePicker = ref(false)
 const isSegmenting = ref(false)
+const isExtracting = ref(false)
+const croppedVideoExists = ref<Record<number, boolean>>({})
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -59,9 +61,10 @@ const loadVideos = async () => {
   }
 }
 
-onMounted(() => {
-  loadProject()
-  loadVideos()
+onMounted(async () => {
+  await loadProject()
+  await loadVideos()
+  await loadCroppedVideoStatus()
 })
 
 const handleAddVideos = () => {
@@ -119,6 +122,41 @@ const handleSegmentAll = async () => {
     alert(e.message || 'Failed to start segmentation')
   } finally {
     isSegmenting.value = false
+  }
+}
+
+const loadCroppedVideoStatus = async () => {
+  if (!projectStore.currentProjectId) return
+  const status: Record<number, boolean> = {}
+  for (const video of videos.value) {
+    try {
+      const result = await getCroppedVideoExists(projectStore.currentProjectId, video.id)
+      status[video.id] = result.exists
+    } catch {
+      status[video.id] = false
+    }
+  }
+  croppedVideoExists.value = status
+}
+
+const handleExtractCroppedVideos = async () => {
+  if (!projectId.value || isExtracting.value) return
+  isExtracting.value = true
+  try {
+    await extractCroppedVideos(projectId.value)
+    // Refresh status after starting extraction
+    setTimeout(() => loadCroppedVideoStatus(), 1000)
+  } catch (e: any) {
+    console.error('Failed to extract cropped videos:', e)
+    alert(e.message || 'Failed to start cropped video extraction')
+  } finally {
+    isExtracting.value = false
+  }
+}
+
+const handleViewCropped = (videoId: number) => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/video/${videoId}/cropped`)
   }
 }
 
@@ -216,8 +254,15 @@ const formatScore = (score: number | undefined) => {
                       </span>
                     </div>
                   </div>
-                  <div v-if="getStatusDisplay(video)" class="video-status">
-                    <span class="status-badge" :class="getStatusClass(video)">
+                  <div class="video-actions">
+                    <button
+                      v-if="croppedVideoExists[video.id]"
+                      class="view-cropped-button"
+                      @click.stop="handleViewCropped(video.id)"
+                    >
+                      View Cropped
+                    </button>
+                    <span v-if="getStatusDisplay(video)" class="status-badge" :class="getStatusClass(video)">
                       {{ getStatusDisplay(video) }}
                     </span>
                   </div>
@@ -245,7 +290,7 @@ const formatScore = (score: number | undefined) => {
           </button>
           
           <h4 class="sidebar-section-title">Segmentation</h4>
-          <button 
+          <button
             class="sidebar-button segment-button"
             @click="handleSegmentAll"
             :disabled="isSegmenting"
@@ -253,8 +298,17 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isSegmenting ? 'Starting...' : 'Segment All Videos' }}</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : 'Starting segmentation batch...' }}
+          <h4 class="sidebar-section-title">Cropped Videos</h4>
+          <button
+            class="sidebar-button extract-button"
+            @click="handleExtractCroppedVideos"
+            :disabled="isExtracting"
+          >
+            <span class="button-label">{{ isExtracting ? 'Starting...' : 'Extract Cropped Videos' }}</span>
+          </button>
+
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : 'Starting cropped video extraction...' }}
           </div>
         </aside>
       </div>
@@ -415,8 +469,28 @@ const formatScore = (score: number | undefined) => {
   font-family: monospace;
 }
 
-.video-status {
+.video-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   margin-left: 1.5rem;
+}
+
+.view-cropped-button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #0366d6;
+  border-radius: 4px;
+  background-color: #f1f8ff;
+  color: #0366d6;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-cropped-button:hover {
+  background-color: #0366d6;
+  color: white;
 }
 
 .status-badge {

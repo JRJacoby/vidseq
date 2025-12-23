@@ -4,6 +4,7 @@ import ProjectView from '../views/ProjectView.vue'
 import VideoPipeline from '../components/VideoPipeline.vue'
 import JobsList from '../components/JobsList.vue'
 import VideoDetail from '../components/VideoDetail.vue'
+import CroppedVideoDetail from '../components/CroppedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
 
 const router = createRouter({
@@ -37,6 +38,11 @@ const router = createRouter({
           path: 'video/:videoId',
           name: 'video',
           component: VideoDetail
+        },
+        {
+          path: 'video/:videoId/cropped',
+          name: 'croppedVideo',
+          component: CroppedVideoDetail
         }
       ]
     }

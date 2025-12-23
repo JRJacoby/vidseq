@@ -21,6 +21,7 @@ dependencies = [
     "segmentation-models-pytorch>=0.3.0",
     "tqdm>=4.66.0",
     "ultralytics>=8.3.235",
+    "imageio-ffmpeg>=0.5.1",
 ]
 
 [build-system]

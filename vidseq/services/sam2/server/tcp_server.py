@@ -40,6 +40,7 @@ from vidseq.services.sam2.config import (
     write_pid_file,
     write_port_file,
 )
+from vidseq.services.model_manager import ensure_model, SAM2_TINY_MODEL
 
 
 class SAM2TCPServer:
@@ -68,9 +69,7 @@ class SAM2TCPServer:
 
         # Config paths
         self.config_name = "configs/sam2.1/sam2.1_hiera_t.yaml"
-        self.checkpoint_path = (
-            Path(__file__).parent.parent.parent / "sam2_models" / "sam2.1_hiera_tiny.pt"
-        )
+        self.checkpoint_path: Optional[Path] = None  # Set in start() after ensuring model exists
 
     def _recover_stale_in_progress_states(self) -> None:
         """Reset any 'in_progress' videos from previous crashed runs."""
@@ -123,6 +122,11 @@ class SAM2TCPServer:
 
     def start(self) -> None:
         """Start the TCP server."""
+        # Ensure model checkpoint is downloaded before starting
+        print("[SAM2 Worker] Ensuring model checkpoint is available...")
+        self.checkpoint_path = ensure_model(SAM2_TINY_MODEL)
+        print(f"[SAM2 Worker] Model checkpoint: {self.checkpoint_path}")
+
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind(("localhost", self.port))
