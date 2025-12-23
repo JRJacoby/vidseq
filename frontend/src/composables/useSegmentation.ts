@@ -72,7 +72,10 @@ export function useSegmentation(
 
     let debounceTimeout: number | null = null
     
-    const maskCache = new LruCache<number, ImageBitmap>(MASK_CACHE_MAX_SIZE)
+    const maskCache = new LruCache<number, ImageBitmap>(
+        MASK_CACHE_MAX_SIZE,
+        (bitmap) => bitmap.close()
+    )
     const bboxCache = new LruCache<number, Bbox | null>(MASK_CACHE_MAX_SIZE)
     let isPrefetching = false
     let prefetchedUpTo = -1

@@ -4,8 +4,11 @@
  */
 export class LruCache<K, V> {
   private cache = new Map<K, V>()
+  private onEvict?: (value: V) => void
 
-  constructor(private maxSize: number) {}
+  constructor(private maxSize: number, onEvict?: (value: V) => void) {
+    this.onEvict = onEvict
+  }
 
   get(key: K): V | undefined {
     const value = this.cache.get(key)
@@ -24,6 +27,10 @@ export class LruCache<K, V> {
       // Evict oldest (first key)
       const oldest = this.cache.keys().next().value
       if (oldest !== undefined) {
+        const evicted = this.cache.get(oldest)
+        if (evicted !== undefined && this.onEvict) {
+          this.onEvict(evicted)
+        }
         this.cache.delete(oldest)
       }
     }
@@ -35,10 +42,19 @@ export class LruCache<K, V> {
   }
 
   delete(key: K): boolean {
+    const value = this.cache.get(key)
+    if (value !== undefined && this.onEvict) {
+      this.onEvict(value)
+    }
     return this.cache.delete(key)
   }
 
   clear(): void {
+    if (this.onEvict) {
+      for (const value of this.cache.values()) {
+        this.onEvict(value)
+      }
+    }
     this.cache.clear()
   }
 

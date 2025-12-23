@@ -79,7 +79,7 @@ class DatabaseManager:
         
         self._registry_engine = create_async_engine(
             f"sqlite+aiosqlite:///{REGISTRY_DB_PATH}",
-            echo=True,
+            echo=False,
         )
         
         self._registry_session_factory = sessionmaker(
@@ -106,7 +106,7 @@ class DatabaseManager:
         
         engine = create_async_engine(
             f"sqlite+aiosqlite:///{db_path}",
-            echo=True,
+            echo=False,
         )
         
         self._project_engines[key] = engine

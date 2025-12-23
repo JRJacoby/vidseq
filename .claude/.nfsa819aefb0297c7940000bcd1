@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(cat:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python:*)",
+      "WebSearch",
+      "Bash(npm run type-check:*)",
+      "Bash(uv run:*)",
+      "Bash(npm run dev:*)",
+      "Bash(lsof:*)",
+      "Bash(git -C /n/groups/datta/john/projects/vidseq log --oneline -20)",
+      "Bash(find:*)",
+      "Bash(vidseq/services/sam2/__init__.py )",
+      "Bash(vidseq/services/sam2/service.py )",
+      "Bash(vidseq/services/sam2/client.py )",
+      "Bash(vidseq/services/sam2/config.py )",
+      "Bash(vidseq/services/sam2/utils.py )",
+      "Bash(vidseq/services/sam2/server/__init__.py )",
+      "Bash(vidseq/services/sam2/server/tcp_server.py )",
+      "Bash(vidseq/services/sam2/server/commands.py )",
+      "Bash(vidseq/services/sam2/inference/__init__.py )",
+      "Bash(vidseq/services/sam2/inference/propagate.py )",
+      "Bash(vidseq/services/sam2/inference/predictor.py )",
+      "Bash(vidseq/services/sam2/inference/streaming.py )",
+      "Bash(vidseq/services/sam2_service.py )",
+      "Bash(vidseq/services/__init__.py )"
+    ]
+  }
+}
