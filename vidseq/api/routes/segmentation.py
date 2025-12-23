@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session
 from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
-from vidseq.services import conditioning_service, mask_service, sam2_service, segmentation_service, video_service
+from vidseq.services import (
+    conditioning_service,
+    frame_data_service,
+    mask_storage,
+    sam2_service,
+    segmentation_service,
+    video_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,29 +34,24 @@ async def segment_all_videos_route(
 ):
     """
     Start batch segmentation for all videos in the project.
-    
+
     Validates that all videos have a bounding box on frame 0.
     Returns 400 if any videos are missing frame 0 bounding boxes.
     """
     videos = await video_service.get_all_videos(session)
     if not videos:
         raise HTTPException(status_code=400, detail="No videos found in project")
-    
+
     missing_bboxes = []
     bboxes = {}
-    
+
     for video in videos:
-        bbox = mask_service.load_bbox(
-            project_path=project_path,
-            video_id=video.id,
-            frame_idx=0,
-            num_frames=video.num_frames,
-        )
+        bbox = await frame_data_service.load_bbox(session, video.id, 0)
         if bbox is None:
             missing_bboxes.append({"id": video.id, "name": video.name})
         else:
             bboxes[video.id] = bbox
-            
+
     if missing_bboxes:
         raise HTTPException(
             status_code=400,
@@ -58,14 +60,14 @@ async def segment_all_videos_route(
                 "missing_videos": missing_bboxes
             }
         )
-    
+
     job_ids = await sam2_service.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
         bboxes=bboxes,
     )
-    
+
     return {"job_ids": job_ids}
 
 
@@ -186,9 +188,8 @@ async def run_segmentation(
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-    from vidseq.services import mask_service
-    mask_service.save_mask(
+
+    mask_storage.save_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=segment_request.frame_idx,
@@ -197,13 +198,13 @@ async def run_segmentation(
         height=video.height,
         width=video.width,
     )
-    
+
     await conditioning_service.add_conditioning_frame(
         session=session,
         video_id=video_id,
         frame_idx=segment_request.frame_idx,
     )
-    
+
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
 
@@ -224,41 +225,26 @@ async def reset_frame(
         await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    try:
-        video = await video_service.get_video_by_id(session, video_id)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    
+
     sam2_service.clear_prompts_for_frame(frame_idx)
     sam2_service.clear_frame_prompts(video_id, frame_idx)
-    
+
+    # Clear mask from per-video HDF5
     segmentation_service.clear_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=frame_idx,
     )
-    
-    from vidseq.services import mask_service
-    mask_service.clear_bbox(
-        project_path=project_path,
-        video_id=video_id,
-        frame_idx=frame_idx,
-    )
-    mask_service.mark_frame_type(
-        project_path=project_path,
-        video_id=video_id,
-        frame_idx=frame_idx,
-        frame_type='',
-        num_frames=video.num_frames,
-    )
-    
+
+    # Clear bbox, frame_type, and score from SQLite
+    await frame_data_service.clear_frame_data(session, video_id, frame_idx)
+
     await conditioning_service.remove_conditioning_frame(
         session=session,
         video_id=video_id,
         frame_idx=frame_idx,
     )
-    
+
     return {"message": "Frame reset"}
 
 
@@ -277,25 +263,21 @@ async def reset_video(
         await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    segmentation_service.clear_video(
+
+    # Clear masks from HDF5 and frame data from SQLite
+    await segmentation_service.clear_video(
         project_path=project_path,
         video_id=video_id,
+        session=session,
     )
-    
+
     deleted_count = await conditioning_service.clear_conditioning_frames(
         session=session,
         video_id=video_id,
     )
-    
-    from vidseq.services import mask_service
-    mask_service.clear_all_frame_types(
-        project_path=project_path,
-        video_id=video_id,
-    )
-    
+
     sam2_service.reset_state(video_id)
-    
+
     return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
 
 
@@ -368,26 +350,26 @@ async def get_frame_ranges(
 ):
     """
     Get masked and training frame ranges for data track visualization.
-    
+
     Returns contiguous ranges as [start, end] pairs (inclusive).
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    masked_ranges = mask_service.get_masked_frame_ranges(
+
+    # Get masked ranges from HDF5
+    masked_ranges = mask_storage.get_masked_frame_ranges(
         project_path=project_path,
         video_id=video.id,
         num_frames=video.num_frames,
     )
-    
-    training_ranges = mask_service.get_training_frame_ranges(
-        project_path=project_path,
-        video_id=video.id,
-        num_frames=video.num_frames,
+
+    # Get training ranges from SQLite
+    training_ranges = await frame_data_service.get_training_frame_ranges(
+        session, video.id
     )
-    
+
     return {
         "masked_ranges": [[r[0], r[1]] for r in masked_ranges],
         "training_ranges": [[r[0], r[1]] for r in training_ranges],
@@ -406,7 +388,7 @@ async def validate_training_range(
 ):
     """
     Check if all frames in range have masks.
-    
+
     Returns {"valid": true} if all frames have masks,
     or {"valid": false, "missing_frames": [...]} if some are missing.
     """
@@ -414,14 +396,14 @@ async def validate_training_range(
         await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    missing_frames = mask_service.validate_frames_have_masks(
+
+    missing_frames = mask_storage.validate_frames_have_masks(
         project_path=project_path,
         video_id=video_id,
         start_frame=start_frame,
         end_frame=end_frame,
     )
-    
+
     if missing_frames:
         return {"valid": False, "missing_frames": missing_frames}
     return {"valid": True}
@@ -439,21 +421,21 @@ async def mark_training(
 ):
     """
     Mark frame range as training (computes bboxes from masks).
-    
+
     All frames in range must have masks. Use validate-training-range first.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    missing_frames = mask_service.validate_frames_have_masks(
+
+    missing_frames = mask_storage.validate_frames_have_masks(
         project_path=project_path,
         video_id=video_id,
         start_frame=start_frame,
         end_frame=end_frame,
     )
-    
+
     if missing_frames:
         raise HTTPException(
             status_code=400,
@@ -462,17 +444,26 @@ async def mark_training(
                 "missing_frames": missing_frames,
             }
         )
-    
-    mask_service.mark_training_range(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        num_frames=video.num_frames,
-        height=video.height,
-        width=video.width,
-    )
-    
+
+    # Load masks and compute bboxes, then save to SQLite
+    with mask_storage.open_video_h5(project_path, video.id, "r") as h5_file:
+        for frame_idx in range(start_frame, end_frame + 1):
+            mask = mask_storage.load_mask(
+                project_path=project_path,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                num_frames=video.num_frames,
+                height=video.height,
+                width=video.width,
+                h5_file=h5_file,
+            )
+            bbox = mask_storage.compute_bbox_from_mask(mask)
+            if bbox is not None:
+                await frame_data_service.save_bbox(session, video.id, frame_idx, bbox)
+
+    # Mark frames as training
+    await frame_data_service.mark_training_range(session, video.id, start_frame, end_frame)
+
     return {"message": f"Marked frames {start_frame}-{end_frame} as training"}
 
 
@@ -484,7 +475,6 @@ async def unmark_training(
     start_frame: int,
     end_frame: int,
     session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
 ):
     """
     Remove training labels and bboxes for frame range.
@@ -493,15 +483,11 @@ async def unmark_training(
         video = await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    mask_service.unmark_training_range(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        end_frame=end_frame,
-        num_frames=video.num_frames,
+
+    await frame_data_service.unmark_training_range(
+        session, video.id, start_frame, end_frame
     )
-    
+
     return {"message": f"Unmarked frames {start_frame}-{end_frame}"}
 
 
@@ -536,37 +522,25 @@ async def get_mask(
     "/projects/{project_id}/videos/{video_id}/bbox/{frame_idx}",
 )
 async def get_bbox(
-    project_id: int,
     video_id: int,
     frame_idx: int,
     session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
 ):
     """
     Get the bounding box for a specific frame.
-    
+
     Returns JSON with bbox coordinates or null if no bbox exists.
     """
     try:
-        video = await video_service.get_video_by_id(session, video_id)
+        await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    bbox = mask_service.load_bbox(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-        num_frames=video.num_frames,
-    )
-    
-    if frame_idx < 10:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[get_bbox] Frame {frame_idx}: bbox={bbox}")
-    
+
+    bbox = await frame_data_service.load_bbox(session, video_id, frame_idx)
+
     if bbox is None:
         return None
-    
+
     return {
         "x1": float(bbox[0]),
         "y1": float(bbox[1]),
@@ -583,37 +557,28 @@ async def get_bboxes_batch(
     start_frame: int,
     count: int = 100,
     session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
 ):
     """
     Get bounding boxes for a batch of frames.
-    
+
     Returns JSON array of {frame_idx, bbox} objects where bbox is [x1, y1, x2, y2] or null.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    bboxes = mask_service.load_bboxes_batch(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        count=count,
-        num_frames=video.num_frames,
+
+    # Clamp count to not exceed video length
+    actual_count = min(count, video.num_frames - start_frame)
+    if actual_count <= 0:
+        return {"bboxes": []}
+
+    bboxes = await frame_data_service.load_bboxes_batch(
+        session, video_id, start_frame, actual_count
     )
-    
+
     result = []
-    for i, bbox in enumerate(bboxes):
-        frame_idx = start_frame + i
-        if frame_idx >= video.num_frames:
-            break
-        
-        if frame_idx < 10:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"[get_bboxes_batch] Frame {frame_idx}: raw bbox={bbox}, all_zero={np.all(bbox == 0) if bbox is not None else 'N/A'}")
-        
+    for frame_idx, bbox in bboxes:
         if bbox is None or np.all(bbox == 0):
             result.append({"frame_idx": frame_idx, "bbox": None})
         else:
@@ -621,7 +586,7 @@ async def get_bboxes_batch(
                 "frame_idx": frame_idx,
                 "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])],
             })
-    
+
     return {"bboxes": result}
 
 
@@ -633,38 +598,78 @@ async def get_scores_batch(
     start_frame: int,
     count: int = 100,
     session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
 ):
     """
     Get segmentation scores (IoU) for a batch of frames.
-    
+
     Returns JSON array of {frame_idx, score} objects. Score is -1.0 if no valid score exists.
     """
     try:
         video = await video_service.get_video_by_id(session, video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    
-    scores = mask_service.load_scores_batch(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        count=count,
-        num_frames=video.num_frames,
+
+    # Clamp count to not exceed video length
+    actual_count = min(count, video.num_frames - start_frame)
+    if actual_count <= 0:
+        return {"scores": []}
+
+    scores = await frame_data_service.load_scores_batch(
+        session, video_id, start_frame, actual_count
     )
-    
-    result = []
-    for i, score in enumerate(scores):
-        frame_idx = start_frame + i
-        if frame_idx >= video.num_frames:
-            break
-            
-        result.append({
-            "frame_idx": frame_idx,
-            "score": float(score),
-        })
-    
-    return {"scores": result}
+
+    return {"scores": scores}
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/scores-downsampled",
+)
+async def get_scores_downsampled(
+    video_id: int,
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Get LTTB-downsampled confidence scores for visualization.
+
+    Filters at SQL level to only load scores in the requested frame range,
+    then applies LTTB (Largest-Triangle-Three-Buckets) downsampling to reduce
+    the number of points while preserving visual shape.
+
+    Args:
+        video_id: ID of the video
+        max_samples: Maximum number of points to return (default 800)
+        start_frame: Start frame index (inclusive, default 0)
+        end_frame: End frame index (inclusive, default None = last frame)
+
+    Returns:
+        JSON with downsampled scores array and total count of valid scores.
+    """
+    from vidseq.services import frame_data_service, lttb
+
+    try:
+        video = await video_service.get_video_by_id(session, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Default end_frame to last frame
+    if end_frame is None:
+        end_frame = video.num_frames - 1
+
+    # Load only valid scores (> -1) in the requested range from SQLite
+    scores = await frame_data_service.load_scores_in_range(
+        session, video_id, start_frame, end_frame
+    )
+
+    # Apply LTTB downsampling
+    downsampled = lttb.downsample_scores(scores, max_samples)
+
+    return {
+        "scores": downsampled,
+        "total_count": len(scores),
+    }
 
 
 @router.get(

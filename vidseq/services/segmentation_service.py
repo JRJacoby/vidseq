@@ -6,9 +6,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.models.video import Video
-from vidseq.services import mask_service, sam2_service
+from vidseq.services import mask_storage
 
 
 def mask_to_png(mask: np.ndarray) -> bytes:
@@ -26,16 +27,16 @@ def get_mask_png(
 ) -> bytes:
     """
     Load and return mask as PNG bytes.
-    
+
     Args:
         project_path: Path to the project folder
         video: Video model instance
         frame_idx: Frame index
-        
+
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    mask = mask_service.load_mask(
+    mask = mask_storage.load_mask(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
@@ -43,7 +44,7 @@ def get_mask_png(
         height=video.height,
         width=video.width,
     )
-    
+
     return mask_to_png(mask)
 
 
@@ -55,17 +56,17 @@ def get_masks_batch_json(
 ) -> list[dict]:
     """
     Load multiple masks and return as list of dicts with base64-encoded PNGs.
-    
+
     Args:
         project_path: Path to the project folder
         video: Video model instance
         start_frame: Starting frame index
         count: Number of frames to load
-        
+
     Returns:
         List of {"frame_idx": int, "png_base64": str}
     """
-    masks = mask_service.load_masks_batch(
+    masks = mask_storage.load_masks_batch(
         project_path=project_path,
         video_id=video.id,
         start_frame=start_frame,
@@ -74,7 +75,7 @@ def get_masks_batch_json(
         height=video.height,
         width=video.width,
     )
-    
+
     result = []
     for i, mask in enumerate(masks):
         png_bytes = mask_to_png(mask)
@@ -83,7 +84,7 @@ def get_masks_batch_json(
             "frame_idx": start_frame + i,
             "png_base64": png_base64,
         })
-    
+
     return result
 
 
@@ -94,45 +95,45 @@ def clear_mask(
 ) -> None:
     """
     Clear (zero out) a mask for a specific frame.
-    
+
     Does not reset SAM2 tracking state.
-    
+
     Args:
         project_path: Path to the project folder
         video_id: Video ID
         frame_idx: Frame index
     """
-    mask_service.clear_mask(
+    mask_storage.clear_mask(
         project_path=project_path,
         video_id=video_id,
         frame_idx=frame_idx,
     )
 
 
-def clear_video(
+async def clear_video(
     project_path: Path,
     video_id: int,
+    session: AsyncSession,
 ) -> None:
     """
-    Clear all masks and bounding boxes for a video.
-    
+    Clear all masks and frame data for a video.
+
     SAM2 tracking state reset is handled separately via sam2_service.reset_state().
-    
+
     Args:
         project_path: Path to the project folder
         video_id: Video ID
+        session: Database session for clearing frame data
     """
-    mask_service.clear_all_masks(
+    from vidseq.services import frame_data_service
+
+    # Clear masks from per-video HDF5
+    mask_storage.clear_all_masks(
         project_path=project_path,
         video_id=video_id,
     )
-    mask_service.clear_all_bboxes(
-        project_path=project_path,
-        video_id=video_id,
-    )
-    mask_service.clear_all_frame_types(
-        project_path=project_path,
-        video_id=video_id,
-    )
+
+    # Clear bboxes, frame_types, and scores from SQLite
+    await frame_data_service.clear_all_frame_data(session, video_id)
 
 

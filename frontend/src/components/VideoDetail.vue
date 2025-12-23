@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, propagateMask, getScoresBatch, type Video, type MaskScore } from '@/services/api'
+import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -113,26 +114,41 @@ const {
   validateRange,
 } = useFrameRanges(projectId, videoId)
 
-const fetchScores = async () => {
+const fetchScoresForView = async () => {
   if (!projectId.value || !videoId.value || !video.value) return
   try {
-    // Fetch up to 100k frames. For longer videos, this should be paginated or sparse.
-    confidenceScores.value = await getScoresBatch(
+    // Convert view time range to frame indices
+    const startFrame = Math.floor(viewStart.value * video.value.fps)
+    const endFrame = Math.ceil(viewEnd.value * video.value.fps)
+
+    // Fetch LTTB-downsampled scores for the current view range
+    // Returns max ~800 points optimized for the visible canvas width
+    const response = await getScoresDownsampled(
       projectId.value,
       videoId.value,
-      0,
-      video.value.num_frames
+      800,  // max samples for canvas width
+      startFrame,
+      endFrame
     )
+    confidenceScores.value = response.scores
   } catch (e) {
     console.error('Failed to fetch confidence scores:', e)
   }
 }
 
+// Debounced version for view changes (150ms delay)
+const fetchScores = useDebounceFn(fetchScoresForView, 150)
+
+// Re-fetch scores when view range changes
+watch([viewStart, viewEnd], () => {
+  fetchScores()
+}, { flush: 'post' })
+
 const isPropagating = ref(false)
 
 const handlePropagateMask = async () => {
   if (!projectId.value || !videoId.value) return
-  
+
   isPropagating.value = true
   try {
     await propagateMask(
@@ -144,7 +160,8 @@ const handlePropagateMask = async () => {
     clearMaskCache()
     await loadFrameData(currentFrameIdx.value)
     await refreshFrameRanges()
-    await fetchScores()
+    // Refresh scores immediately (no debounce)
+    await fetchScoresForView()
   } catch (e) {
     console.error('Failed to propagate mask:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate mask')
@@ -201,7 +218,8 @@ setMetadataCallback(() => {
 onMounted(async () => {
   await loadVideo()
   await refreshFrameRanges()
-  await fetchScores()
+  // Initial fetch without debounce
+  await fetchScoresForView()
 })
 </script>
 

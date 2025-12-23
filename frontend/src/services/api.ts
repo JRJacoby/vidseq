@@ -227,6 +227,35 @@ export async function getScoresBatch(
     return data.scores
 }
 
+export interface ScoresDownsampledResponse {
+    scores: MaskScore[]
+    total_count: number
+}
+
+export async function getScoresDownsampled(
+    projectId: number,
+    videoId: number,
+    maxSamples: number = 800,
+    startFrame?: number,
+    endFrame?: number
+): Promise<ScoresDownsampledResponse> {
+    const params = new URLSearchParams({ max_samples: maxSamples.toString() })
+    if (startFrame !== undefined) {
+        params.set('start_frame', startFrame.toString())
+    }
+    if (endFrame !== undefined) {
+        params.set('end_frame', endFrame.toString())
+    }
+
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/scores-downsampled?${params}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch downsampled scores'))
+    }
+    return response.json()
+}
+
 export interface Bbox {
     x1: number
     y1: number
