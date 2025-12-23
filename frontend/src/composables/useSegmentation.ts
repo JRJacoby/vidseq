@@ -11,6 +11,7 @@ import {
     type StoredPrompt,
     type Bbox,
 } from '@/services/api'
+import { LruCache } from '@/utils/LruCache'
 
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
@@ -32,6 +33,7 @@ export interface UseSegmentationReturn {
 
 const PREFETCH_BATCH_SIZE = 100
 const PREFETCH_THRESHOLD = 100
+const MASK_CACHE_MAX_SIZE = 10000  // ~1GB assuming ~100KB per mask
 
 export function useSegmentation(
     projectId: Ref<number | null>,
@@ -70,8 +72,8 @@ export function useSegmentation(
 
     let debounceTimeout: number | null = null
     
-    const maskCache = new Map<number, ImageBitmap>()
-    const bboxCache = new Map<number, Bbox | null>()
+    const maskCache = new LruCache<number, ImageBitmap>(MASK_CACHE_MAX_SIZE)
+    const bboxCache = new LruCache<number, Bbox | null>(MASK_CACHE_MAX_SIZE)
     let isPrefetching = false
     let prefetchedUpTo = -1
     let animationFrameId: number | null = null
