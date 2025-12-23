@@ -676,3 +676,4 @@ export async function getCroppedVideoFrame(
     }
     return response.blob()
 }
+

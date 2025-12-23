@@ -24,6 +24,12 @@ const navigateToFirstFrames = () => {
   }
 }
 
+const navigateToAlignment = () => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/alignment`)
+  }
+}
+
 const isActiveRoute = (routeName: string) => {
   return route.name === routeName
 }
@@ -40,13 +46,21 @@ const isActiveRoute = (routeName: string) => {
       >
         Video Pipeline
       </button>
-      <button 
+      <button
         class="navbar-button"
         :class="{ 'navbar-button-active': isActiveRoute('firstFrames') }"
         @click="navigateToFirstFrames"
         :disabled="!projectStore.currentProjectId"
       >
         First Frames
+      </button>
+      <button
+        class="navbar-button"
+        :class="{ 'navbar-button-active': isActiveRoute('alignment') }"
+        @click="navigateToAlignment"
+        :disabled="!projectStore.currentProjectId"
+      >
+        Egocentric Alignment
       </button>
     </div>
     <div class="navbar-bottom">
