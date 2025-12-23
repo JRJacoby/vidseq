@@ -6,6 +6,8 @@ test_projects/
 test_videos/
 dev_scripts/
 ARCHITECTURE_REVIEW.md
+CLAUDE.md
+.claude/
 
 # Dependencies
 node_modules/
