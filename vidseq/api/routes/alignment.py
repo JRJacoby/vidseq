@@ -256,18 +256,31 @@ async def train_alignment_model(
         logger.warning(f"POST /alignment/train: training already in progress")
         raise HTTPException(status_code=400, detail="Training already in progress")
 
-    label_count = await service.get_label_count(session)
-    logger.info(f"POST /alignment/train: label_count={label_count}")
+    # Fetch all labels
+    labels = await service.get_all_labels(session)
+    logger.info(f"POST /alignment/train: label_count={len(labels)}")
 
-    if label_count == 0:
+    if len(labels) == 0:
         logger.warning(f"POST /alignment/train: no labels available for training")
         raise HTTPException(
             status_code=400, detail="No labels available for training"
         )
 
+    # Build video_name_map: video_id -> video.name
+    video_ids = list({l.video_id for l in labels})
+    result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
+    videos = list(result.scalars().all())
+    video_name_map = {v.id: v.name for v in videos}
+    logger.info(f"POST /alignment/train: video_name_map has {len(video_name_map)} videos")
+
     # Training is synchronous (blocking) as per user requirement
     logger.info(f"POST /alignment/train: starting training...")
-    success = service.train_model_sync(project_path, epochs=epochs)
+    success = service.train_model_sync(
+        project_path,
+        labels=labels,
+        video_name_map=video_name_map,
+        epochs=epochs,
+    )
 
     if not success:
         logger.error(f"POST /alignment/train: training failed")
@@ -297,7 +310,7 @@ async def get_alignment_prediction(
         logger.warning(f"GET /alignment/predict: model not trained yet")
         raise HTTPException(status_code=404, detail="Model not trained yet")
 
-    # Get video dimensions
+    # Get video info
     result = await session.execute(select(Video).where(Video.id == video_id))
     video = result.scalar_one_or_none()
     if video is None:
@@ -306,8 +319,7 @@ async def get_alignment_prediction(
 
     logger.debug(f"GET /alignment/predict: found video name={video.name}")
 
-    # For cropped videos, dimensions come from the crop size
-    # We'll use a standard size for now (could be improved to get actual crop size)
+    # Load frame from cropped video
     from vidseq.services.cropped_video_service import get_cropped_video_path
     import cv2
 
@@ -318,16 +330,23 @@ async def get_alignment_prediction(
             status_code=404, detail=f"Cropped video not found for video {video_id}"
         )
 
-    # Get actual dimensions from cropped video
+    # Read the specific frame
     cap = cv2.VideoCapture(str(cropped_path))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
     cap.release()
 
-    logger.info(f"GET /alignment/predict: cropped video size={width}x{height}")
+    if not ret:
+        logger.warning(f"GET /alignment/predict: failed to read frame {frame_idx}")
+        raise HTTPException(
+            status_code=404, detail=f"Failed to read frame {frame_idx} from video {video_id}"
+        )
+
+    height, width = frame.shape[:2]
+    logger.info(f"GET /alignment/predict: loaded frame size={width}x{height}")
 
     # Generate prediction heatmap
-    png_bytes = service.predict_to_png(project_path, height, width)
+    png_bytes = service.predict_to_png(project_path, frame)
 
     logger.info(f"GET /alignment/predict: returning PNG, size={len(png_bytes)} bytes")
 

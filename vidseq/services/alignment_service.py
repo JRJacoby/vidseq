@@ -1,10 +1,10 @@
 """Alignment Service for egocentric alignment training and inference.
 
-Provides mock training and inference for keypoint detection (front/rear of animal).
+Provides training and inference for keypoint detection (front/rear of animal)
+using a U-Net model with ResNet18 encoder.
 """
 
 import io
-import json
 import logging
 import random
 import threading
@@ -13,13 +13,21 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import segmentation_models_pytorch as smp
+import torch
+import torch.nn as nn
 from PIL import Image
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from torch.utils.data import Dataset, DataLoader
 
 from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
+from vidseq.services.cropped_video_service import get_cropped_video_path
+
+# Constants
+ALIGNMENT_INPUT_SIZE = 128  # Fixed input size for model
 
 # Configure logger for alignment service
 logger = logging.getLogger("vidseq.alignment")
@@ -106,6 +114,75 @@ def heatmap_to_png(heatmap: np.ndarray) -> bytes:
     return png_bytes
 
 
+class AlignmentDataset(Dataset):
+    """PyTorch Dataset for alignment model training.
+
+    Loads frames from cropped videos and generates gaussian heatmap targets.
+    """
+
+    def __init__(
+        self,
+        labels: list,
+        project_path: Path,
+        video_name_map: dict[int, str],
+    ):
+        """Initialize the dataset.
+
+        Args:
+            labels: List of AlignmentLabel objects (or dicts with same fields)
+            project_path: Path to project folder
+            video_name_map: Dict mapping video_id -> video.name for file lookup
+        """
+        self.labels = labels
+        self.project_path = project_path
+        self.video_name_map = video_name_map
+        self.size = ALIGNMENT_INPUT_SIZE
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        label = self.labels[idx]
+
+        # Get video name for file lookup
+        video_name = self.video_name_map[label.video_id]
+        cropped_path = get_cropped_video_path(self.project_path, video_name)
+
+        # Load frame from video
+        cap = cv2.VideoCapture(str(cropped_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, label.frame_idx)
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret:
+            raise RuntimeError(f"Failed to read frame {label.frame_idx} from {cropped_path}")
+
+        # Convert BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Resize to fixed size
+        frame = cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
+
+        # Normalize to [0, 1] and convert to (C, H, W) tensor
+        frame_tensor = torch.from_numpy(frame).float() / 255.0
+        frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+
+        # Generate target heatmaps at the fixed size
+        front_heatmap = generate_gaussian_heatmap(
+            label.front_x, label.front_y, self.size, self.size
+        )
+        rear_heatmap = generate_gaussian_heatmap(
+            label.rear_x, label.rear_y, self.size, self.size
+        )
+
+        # Stack into (2, H, W) tensor
+        target = torch.from_numpy(
+            np.stack([front_heatmap, rear_heatmap], axis=0)
+        ).float()
+
+        return frame_tensor, target
+
+
 class AlignmentService:
     """Singleton service for alignment model training and inference."""
 
@@ -127,6 +204,11 @@ class AlignmentService:
 
         self._is_training = False
         self._is_applying = False
+
+        # Model caching
+        self._model: Optional[nn.Module] = None
+        self._model_path: Optional[Path] = None
+        self._device: Optional[torch.device] = None
 
         self._initialized = True
         logger.info("AlignmentService initialized: is_training=False, is_applying=False")
@@ -155,8 +237,8 @@ class AlignmentService:
         return self._is_applying
 
     def get_model_path(self, project_path: Path) -> Path:
-        """Get path to the alignment model state file."""
-        path = project_path / "alignment_model.json"
+        """Get path to the alignment model weights file."""
+        path = project_path / "alignment_model.pt"
         logger.debug(f"get_model_path: {path}")
         return path
 
@@ -167,11 +249,17 @@ class AlignmentService:
         return exists
 
     def delete_model(self, project_path: Path) -> bool:
-        """Delete the alignment model file.
+        """Delete the alignment model file and clear cache.
 
         Returns:
             True if model was deleted, False if it didn't exist
         """
+        # Clear cached model
+        self._model = None
+        self._model_path = None
+        self._device = None
+        logger.info("delete_model: cleared model cache")
+
         model_path = self.get_model_path(project_path)
         logger.info(f"delete_model: attempting to delete {model_path}")
         if model_path.exists():
@@ -360,109 +448,237 @@ class AlignmentService:
     def train_model_sync(
         self,
         project_path: Path,
+        labels: list,
+        video_name_map: dict[int, str],
         epochs: int = 10,
+        batch_size: int = 8,
+        lr: float = 1e-4,
     ) -> bool:
-        """Mock training: just saves a model state file.
-
-        In the real implementation, this would train a neural network.
-        For now, it just marks the model as trained.
+        """Train the alignment model using labeled data.
 
         Args:
             project_path: Path to project folder
-            epochs: Number of training epochs (for future use)
+            labels: List of AlignmentLabel objects
+            video_name_map: Dict mapping video_id -> video.name
+            epochs: Number of training epochs
+            batch_size: Training batch size
+            lr: Learning rate
 
         Returns:
             True if successful
         """
-        logger.info(f"train_model_sync: starting training with epochs={epochs}, project={project_path.name}")
+        logger.info(
+            f"train_model_sync: starting training with epochs={epochs}, "
+            f"batch_size={batch_size}, lr={lr}, num_labels={len(labels)}"
+        )
         self._is_training = True
+
         try:
-            # Mock training - just save a state file
-            model_state = {
-                "trained": True,
-                "epochs": epochs,
-                "version": "mock_v1",
-            }
+            # Setup device
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            logger.info(f"train_model_sync: using device={device}")
 
+            # Create model
+            model = smp.Unet(
+                encoder_name="resnet18",
+                encoder_weights="imagenet",
+                in_channels=3,
+                classes=2,
+            )
+            model = model.to(device)
+            logger.info("train_model_sync: created U-Net model with ResNet18 encoder")
+
+            # Create dataset and dataloader
+            dataset = AlignmentDataset(labels, project_path, video_name_map)
+            dataloader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=0,  # Keep simple for now
+            )
+            logger.info(f"train_model_sync: created dataloader with {len(dataset)} samples")
+
+            # Setup optimizer and loss
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            criterion = nn.MSELoss()
+
+            # Training loop
+            model.train()
+            for epoch in range(epochs):
+                epoch_loss = 0.0
+                num_batches = 0
+
+                for batch_idx, (frames, targets) in enumerate(dataloader):
+                    frames = frames.to(device)
+                    targets = targets.to(device)
+
+                    # Forward pass
+                    optimizer.zero_grad()
+                    outputs = model(frames)
+
+                    # Apply sigmoid to get probabilities
+                    outputs = torch.sigmoid(outputs)
+
+                    # Compute loss
+                    loss = criterion(outputs, targets)
+
+                    # Backward pass
+                    loss.backward()
+                    optimizer.step()
+
+                    epoch_loss += loss.item()
+                    num_batches += 1
+
+                avg_loss = epoch_loss / max(num_batches, 1)
+                logger.info(f"train_model_sync: epoch {epoch + 1}/{epochs}, loss={avg_loss:.6f}")
+
+            # Save model weights
             model_path = self.get_model_path(project_path)
-            logger.info(f"train_model_sync: saving model state to {model_path}")
+            torch.save(model.state_dict(), model_path)
+            logger.info(f"train_model_sync: saved model weights to {model_path}")
 
-            with open(model_path, "w") as f:
-                json.dump(model_state, f, indent=2)
+            # Clear cached model so next predict loads the new weights
+            self._model = None
+            self._model_path = None
 
-            logger.info(f"train_model_sync: mock training complete, model_state={model_state}")
+            logger.info("train_model_sync: training complete")
             return True
+
         except Exception as e:
             logger.error(f"train_model_sync: training failed with error: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
+
         finally:
             self._is_training = False
             logger.debug("train_model_sync: is_training set to False")
 
+    def _load_model(self, project_path: Path) -> nn.Module:
+        """Load the model from disk, using cache if available.
+
+        Args:
+            project_path: Path to project folder
+
+        Returns:
+            Loaded model in eval mode
+
+        Raises:
+            FileNotFoundError: If model weights file doesn't exist
+        """
+        model_path = self.get_model_path(project_path)
+
+        # Check if we need to reload
+        if self._model is not None and self._model_path == model_path:
+            logger.debug(f"_load_model: using cached model from {model_path}")
+            return self._model
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model weights not found: {model_path}")
+
+        logger.info(f"_load_model: loading model from {model_path}")
+
+        # Setup device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info(f"_load_model: using device={device}")
+
+        # Create model architecture
+        model = smp.Unet(
+            encoder_name="resnet18",
+            encoder_weights=None,  # We'll load our own weights
+            in_channels=3,
+            classes=2,
+        )
+
+        # Load weights
+        state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(state_dict)
+        model = model.to(device)
+        model.eval()
+
+        # Cache for future use
+        self._model = model
+        self._model_path = model_path
+        self._device = device
+
+        logger.info(f"_load_model: model loaded and cached")
+        return model
+
     def predict_sync(
         self,
         project_path: Path,
-        height: int,
-        width: int,
+        frame: np.ndarray,
     ) -> np.ndarray:
-        """Mock prediction: returns random gaussian heatmaps.
-
-        In the real implementation, this would run the trained model.
-        For now, returns random predictions.
+        """Run inference on a frame to predict front/rear keypoint heatmaps.
 
         Args:
-            project_path: Path to project folder (unused for mock)
-            height: Output height
-            width: Output width
+            project_path: Path to project folder
+            frame: Input frame as (H, W, 3) uint8 BGR array
 
         Returns:
-            Heatmap array of shape (height, width, 2)
+            Heatmap array of shape (H, W, 2) with values in [0, 1]
             Channel 0 = front probability, Channel 1 = rear probability
         """
-        logger.info(f"predict_sync: generating prediction, size={width}x{height}")
+        orig_h, orig_w = frame.shape[:2]
+        logger.info(f"predict_sync: input frame size={orig_w}x{orig_h}")
 
-        # Generate random positions
-        front_x = random.uniform(0.2, 0.8)
-        front_y = random.uniform(0.2, 0.8)
-        rear_x = random.uniform(0.2, 0.8)
-        rear_y = random.uniform(0.2, 0.8)
+        # Load model (uses cache)
+        model = self._load_model(project_path)
+        device = self._device
 
-        logger.info(
-            f"predict_sync: mock prediction - front=({front_x:.3f}, {front_y:.3f}), "
-            f"rear=({rear_x:.3f}, {rear_y:.3f})"
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Resize to model input size
+        frame_resized = cv2.resize(
+            frame_rgb, (ALIGNMENT_INPUT_SIZE, ALIGNMENT_INPUT_SIZE),
+            interpolation=cv2.INTER_LINEAR
         )
 
-        # Generate gaussian heatmaps
-        front_heatmap = generate_gaussian_heatmap(front_x, front_y, height, width)
-        rear_heatmap = generate_gaussian_heatmap(rear_x, rear_y, height, width)
+        # Normalize to [0, 1] and convert to (C, H, W) tensor
+        frame_tensor = torch.from_numpy(frame_resized).float() / 255.0
+        frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+        frame_tensor = frame_tensor.unsqueeze(0)  # Add batch dimension
+        frame_tensor = frame_tensor.to(device)
 
-        # Stack into (H, W, 2) array
-        heatmap = np.stack([front_heatmap, rear_heatmap], axis=2)
+        # Run inference
+        with torch.no_grad():
+            output = model(frame_tensor)
+            output = torch.sigmoid(output)  # Ensure [0, 1] range
 
-        logger.debug(f"predict_sync: output_shape={heatmap.shape}, dtype={heatmap.dtype}")
+        # Convert to numpy: (1, 2, H, W) -> (H, W, 2)
+        heatmap = output[0].cpu().numpy()  # (2, H, W)
+        heatmap = np.transpose(heatmap, (1, 2, 0))  # (H, W, 2)
 
-        return heatmap
+        logger.debug(f"predict_sync: model output shape={heatmap.shape}, range=[{heatmap.min():.3f}, {heatmap.max():.3f}]")
+
+        # Resize back to original dimensions
+        heatmap_resized = cv2.resize(
+            heatmap, (orig_w, orig_h),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        logger.info(f"predict_sync: output heatmap size={orig_w}x{orig_h}")
+
+        return heatmap_resized
 
     def predict_to_png(
         self,
         project_path: Path,
-        height: int,
-        width: int,
+        frame: np.ndarray,
     ) -> bytes:
-        """Get mock prediction as PNG bytes.
+        """Run inference and return prediction as PNG bytes.
 
         Args:
             project_path: Path to project folder
-            height: Output height
-            width: Output width
+            frame: Input frame as (H, W, 3) uint8 BGR array
 
         Returns:
             PNG image bytes (R = front, G = rear)
         """
-        logger.info(f"predict_to_png: project={project_path.name}, size={width}x{height}")
-        heatmap = self.predict_sync(project_path, height, width)
+        height, width = frame.shape[:2]
+        logger.info(f"predict_to_png: project={project_path.name}, frame size={width}x{height}")
+        heatmap = self.predict_sync(project_path, frame)
         png_bytes = heatmap_to_png(heatmap)
         logger.info(f"predict_to_png: returning {len(png_bytes)} bytes")
         return png_bytes
