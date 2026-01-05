@@ -677,3 +677,128 @@ export async function getCroppedVideoFrame(
     return response.blob()
 }
 
+// Alignment API
+
+export interface AlignmentLabel {
+    id: number
+    video_id: number
+    frame_idx: number
+    front_x: number
+    front_y: number
+    rear_x: number
+    rear_y: number
+}
+
+export interface AlignmentStatus {
+    label_count: number
+    model_trained: boolean
+    is_training: boolean
+    is_applying: boolean
+    all_videos_cropped: boolean
+}
+
+export interface RandomFrame {
+    video_id: number
+    frame_idx: number
+}
+
+export async function getAlignmentStatus(projectId: number): Promise<AlignmentStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/status`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch alignment status'))
+    }
+    return response.json()
+}
+
+export async function getRandomAlignmentFrame(projectId: number): Promise<RandomFrame> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/random-frame`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch random frame'))
+    }
+    return response.json()
+}
+
+export async function saveAlignmentLabel(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    frontX: number,
+    frontY: number,
+    rearX: number,
+    rearY: number
+): Promise<AlignmentLabel> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/labels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            video_id: videoId,
+            frame_idx: frameIdx,
+            front_x: frontX,
+            front_y: frontY,
+            rear_x: rearX,
+            rear_y: rearY,
+        }),
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to save alignment label'))
+    }
+    return response.json()
+}
+
+export async function getAllAlignmentLabels(projectId: number): Promise<AlignmentLabel[]> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/labels`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch alignment labels'))
+    }
+    return response.json()
+}
+
+export async function clearAllAlignmentLabels(projectId: number): Promise<{ deleted_count: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/labels`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to clear alignment labels'))
+    }
+    return response.json()
+}
+
+export async function clearAlignmentModel(projectId: number): Promise<{ deleted: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/model`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to clear alignment model'))
+    }
+    return response.json()
+}
+
+export async function trainAlignmentModel(projectId: number, epochs: number = 10): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/train?epochs=${epochs}`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to train alignment model'))
+    }
+}
+
+export function getAlignmentPredictionUrl(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): string {
+    return `${API_BASE}/projects/${projectId}/alignment/predict/${videoId}/${frameIdx}`
+}
+
+export async function applyAlignment(projectId: number): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/apply`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to apply alignment'))
+    }
+}

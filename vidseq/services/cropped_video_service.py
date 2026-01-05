@@ -496,6 +496,16 @@ class CroppedVideoService:
                                     )
                                 )
                                 session.commit()
+
+                            # Update cropping_status in project database
+                            project_engine = db_manager.get_project_engine(project_path)
+                            with Session(project_engine) as session:
+                                session.execute(
+                                    update(Video)
+                                    .where(Video.id == video.id)
+                                    .values(cropping_status="completed")
+                                )
+                                session.commit()
                         else:
                             raise RuntimeError("Processing failed")
 

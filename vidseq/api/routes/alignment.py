@@ -1,0 +1,370 @@
+"""API routes for egocentric alignment."""
+
+import logging
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vidseq.api.dependencies import get_project_folder, get_project_session
+from vidseq.models.video import Video
+from vidseq.services.alignment_service import AlignmentService
+from vidseq.services.database_manager import DatabaseManager
+
+router = APIRouter()
+
+# Configure logger for alignment API
+logger = logging.getLogger("vidseq.alignment.api")
+logger.setLevel(logging.DEBUG)
+
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [Alignment API] %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
+# --- Schemas ---
+
+
+class AlignmentLabelCreate(BaseModel):
+    """Request body for creating an alignment label."""
+    video_id: int
+    frame_idx: int
+    front_x: float
+    front_y: float
+    rear_x: float
+    rear_y: float
+
+
+class AlignmentLabelResponse(BaseModel):
+    """Response for an alignment label."""
+    id: int
+    video_id: int
+    frame_idx: int
+    front_x: float
+    front_y: float
+    rear_x: float
+    rear_y: float
+
+
+class RandomFrameResponse(BaseModel):
+    """Response for a random frame request."""
+    video_id: int
+    frame_idx: int
+
+
+class AlignmentStatusResponse(BaseModel):
+    """Response for alignment status."""
+    label_count: int
+    model_trained: bool
+    is_training: bool
+    is_applying: bool
+    all_videos_cropped: bool
+
+
+# --- Routes ---
+
+
+@router.get("/projects/{project_id}/alignment/status")
+async def get_alignment_status(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+) -> AlignmentStatusResponse:
+    """Get current alignment training status."""
+    logger.info(f"GET /alignment/status: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    label_count = await service.get_label_count(session)
+    model_trained = service.is_model_trained(project_path)
+    is_training = service.is_training()
+    is_applying = service.is_applying()
+
+    # Check if all videos have cropping completed
+    result = await session.execute(select(Video))
+    videos = list(result.scalars().all())
+    video_count = len(videos)
+    cropped_count = sum(1 for v in videos if v.cropping_status == "completed")
+    all_cropped = video_count > 0 and cropped_count == video_count
+
+    logger.info(
+        f"GET /alignment/status: label_count={label_count}, model_trained={model_trained}, "
+        f"is_training={is_training}, is_applying={is_applying}, "
+        f"videos={video_count}, cropped={cropped_count}, all_cropped={all_cropped}"
+    )
+
+    response = AlignmentStatusResponse(
+        label_count=label_count,
+        model_trained=model_trained,
+        is_training=is_training,
+        is_applying=is_applying,
+        all_videos_cropped=all_cropped,
+    )
+    logger.debug(f"GET /alignment/status: response={response.model_dump()}")
+    return response
+
+
+@router.get("/projects/{project_id}/alignment/random-frame")
+async def get_random_frame(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> RandomFrameResponse:
+    """Get a random unlabeled frame from cropped videos."""
+    logger.info(f"GET /alignment/random-frame: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    result = await service.get_random_unlabeled_frame(session)
+    if result is None:
+        logger.warning(f"GET /alignment/random-frame: no unlabeled frames available")
+        raise HTTPException(
+            status_code=404,
+            detail="No unlabeled frames available. Either no videos have cropping completed, or all frames are labeled.",
+        )
+
+    video_id, frame_idx = result
+    logger.info(f"GET /alignment/random-frame: returning video_id={video_id}, frame_idx={frame_idx}")
+    return RandomFrameResponse(video_id=video_id, frame_idx=frame_idx)
+
+
+@router.post("/projects/{project_id}/alignment/labels")
+async def save_alignment_label(
+    project_id: int,
+    label: AlignmentLabelCreate,
+    session: AsyncSession = Depends(get_project_session),
+) -> AlignmentLabelResponse:
+    """Save front/rear keypoint label for a frame."""
+    logger.info(
+        f"POST /alignment/labels: project_id={project_id}, "
+        f"video_id={label.video_id}, frame_idx={label.frame_idx}, "
+        f"front=({label.front_x:.4f}, {label.front_y:.4f}), "
+        f"rear=({label.rear_x:.4f}, {label.rear_y:.4f})"
+    )
+
+    service = AlignmentService.get_instance()
+
+    saved = await service.save_label(
+        session,
+        video_id=label.video_id,
+        frame_idx=label.frame_idx,
+        front_x=label.front_x,
+        front_y=label.front_y,
+        rear_x=label.rear_x,
+        rear_y=label.rear_y,
+    )
+
+    response = AlignmentLabelResponse(
+        id=saved.id,
+        video_id=saved.video_id,
+        frame_idx=saved.frame_idx,
+        front_x=saved.front_x,
+        front_y=saved.front_y,
+        rear_x=saved.rear_x,
+        rear_y=saved.rear_y,
+    )
+    logger.info(f"POST /alignment/labels: created/updated label id={saved.id}")
+    logger.debug(f"POST /alignment/labels: response={response.model_dump()}")
+    return response
+
+
+@router.get("/projects/{project_id}/alignment/labels")
+async def get_all_labels(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> list[AlignmentLabelResponse]:
+    """Get all alignment labels."""
+    logger.info(f"GET /alignment/labels: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    labels = await service.get_all_labels(session)
+
+    response = [
+        AlignmentLabelResponse(
+            id=l.id,
+            video_id=l.video_id,
+            frame_idx=l.frame_idx,
+            front_x=l.front_x,
+            front_y=l.front_y,
+            rear_x=l.rear_x,
+            rear_y=l.rear_y,
+        )
+        for l in labels
+    ]
+
+    logger.info(f"GET /alignment/labels: returning {len(response)} labels")
+    return response
+
+
+@router.delete("/projects/{project_id}/alignment/labels")
+async def delete_all_labels(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete all alignment labels for the project."""
+    logger.info(f"DELETE /alignment/labels: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    deleted_count = await service.delete_all_labels(session)
+
+    logger.info(f"DELETE /alignment/labels: deleted {deleted_count} labels")
+    return {"deleted_count": deleted_count}
+
+
+@router.delete("/projects/{project_id}/alignment/model")
+async def delete_model(
+    project_id: int,
+    project_path: Path = Depends(get_project_folder),
+):
+    """Delete the alignment model for the project."""
+    logger.info(f"DELETE /alignment/model: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    deleted = service.delete_model(project_path)
+
+    logger.info(f"DELETE /alignment/model: deleted={deleted}")
+    return {"deleted": deleted}
+
+
+@router.post("/projects/{project_id}/alignment/train")
+async def train_alignment_model(
+    project_id: int,
+    epochs: int = 10,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Train alignment model for specified number of epochs.
+
+    This is a blocking call that returns when training is complete.
+    """
+    logger.info(f"POST /alignment/train: project_id={project_id}, epochs={epochs}")
+
+    service = AlignmentService.get_instance()
+
+    if service.is_training():
+        logger.warning(f"POST /alignment/train: training already in progress")
+        raise HTTPException(status_code=400, detail="Training already in progress")
+
+    label_count = await service.get_label_count(session)
+    logger.info(f"POST /alignment/train: label_count={label_count}")
+
+    if label_count == 0:
+        logger.warning(f"POST /alignment/train: no labels available for training")
+        raise HTTPException(
+            status_code=400, detail="No labels available for training"
+        )
+
+    # Training is synchronous (blocking) as per user requirement
+    logger.info(f"POST /alignment/train: starting training...")
+    success = service.train_model_sync(project_path, epochs=epochs)
+
+    if not success:
+        logger.error(f"POST /alignment/train: training failed")
+        raise HTTPException(status_code=500, detail="Training failed")
+
+    logger.info(f"POST /alignment/train: training complete")
+    return {"message": "Training complete", "epochs": epochs}
+
+
+@router.get("/projects/{project_id}/alignment/predict/{video_id}/{frame_idx}")
+async def get_alignment_prediction(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Get model prediction heatmap for a frame.
+
+    Returns PNG image with R channel = front probability, G channel = rear probability.
+    """
+    logger.info(f"GET /alignment/predict: project_id={project_id}, video_id={video_id}, frame_idx={frame_idx}")
+
+    service = AlignmentService.get_instance()
+
+    if not service.is_model_trained(project_path):
+        logger.warning(f"GET /alignment/predict: model not trained yet")
+        raise HTTPException(status_code=404, detail="Model not trained yet")
+
+    # Get video dimensions
+    result = await session.execute(select(Video).where(Video.id == video_id))
+    video = result.scalar_one_or_none()
+    if video is None:
+        logger.warning(f"GET /alignment/predict: video {video_id} not found")
+        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
+
+    logger.debug(f"GET /alignment/predict: found video name={video.name}")
+
+    # For cropped videos, dimensions come from the crop size
+    # We'll use a standard size for now (could be improved to get actual crop size)
+    from vidseq.services.cropped_video_service import get_cropped_video_path
+    import cv2
+
+    cropped_path = get_cropped_video_path(project_path, video.name)
+    if not cropped_path.exists():
+        logger.warning(f"GET /alignment/predict: cropped video not found: {cropped_path}")
+        raise HTTPException(
+            status_code=404, detail=f"Cropped video not found for video {video_id}"
+        )
+
+    # Get actual dimensions from cropped video
+    cap = cv2.VideoCapture(str(cropped_path))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    logger.info(f"GET /alignment/predict: cropped video size={width}x{height}")
+
+    # Generate prediction heatmap
+    png_bytes = service.predict_to_png(project_path, height, width)
+
+    logger.info(f"GET /alignment/predict: returning PNG, size={len(png_bytes)} bytes")
+
+    return Response(content=png_bytes, media_type="image/png")
+
+
+@router.post("/projects/{project_id}/alignment/apply")
+async def apply_alignment(
+    project_id: int,
+    project_path: Path = Depends(get_project_folder),
+):
+    """Apply alignment to all cropped videos.
+
+    Creates aligned videos in <project>/aligned_videos/ folder.
+    """
+    logger.info(f"POST /alignment/apply: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    if service.is_applying():
+        logger.warning(f"POST /alignment/apply: alignment already in progress")
+        raise HTTPException(status_code=400, detail="Alignment already in progress")
+
+    if not service.is_model_trained(project_path):
+        logger.warning(f"POST /alignment/apply: model not trained yet")
+        raise HTTPException(status_code=404, detail="Model not trained yet")
+
+    # Get project engine for sync operations
+    db_manager = DatabaseManager.get_instance()
+    project_engine = db_manager.get_project_engine(project_path)
+
+    logger.info(f"POST /alignment/apply: starting alignment...")
+    success = service.apply_alignment_sync(project_path, project_engine)
+
+    if not success:
+        logger.error(f"POST /alignment/apply: alignment failed")
+        raise HTTPException(status_code=500, detail="Alignment failed")
+
+    logger.info(f"POST /alignment/apply: alignment complete")
+    return {"message": "Alignment complete"}
