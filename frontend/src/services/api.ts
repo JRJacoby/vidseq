@@ -854,3 +854,51 @@ export function getStoredAlignmentPredictionUrl(
 ): string {
     return `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-prediction/${frameIdx}`
 }
+
+// --- Video-specific Alignment Labels ---
+
+export interface VideoAlignmentLabelsResponse {
+    frame_indices: number[]
+}
+
+export async function getVideoAlignmentLabels(
+    projectId: number,
+    videoId: number
+): Promise<VideoAlignmentLabelsResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch video alignment labels'))
+    }
+    return response.json()
+}
+
+export async function deleteAlignmentLabel(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<{ deleted: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels/${frameIdx}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to delete alignment label'))
+    }
+    return response.json()
+}
+
+export async function deleteVideoAlignmentLabels(
+    projectId: number,
+    videoId: number
+): Promise<{ deleted_count: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to delete video alignment labels'))
+    }
+    return response.json()
+}

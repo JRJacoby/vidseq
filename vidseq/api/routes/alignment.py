@@ -7,10 +7,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
 from vidseq.services.alignment_service import (
     AlignmentService,
@@ -511,3 +512,61 @@ async def get_alignment_prediction_frame(
     logger.info(f"GET /alignment-prediction/{frame_idx}: returning PNG, size={len(png_bytes)} bytes")
 
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/alignment-labels")
+async def get_video_alignment_labels(
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get frame indices that have alignment labels for a specific video."""
+    logger.info(f"GET /videos/{video.id}/alignment-labels")
+
+    result = await session.execute(
+        select(AlignmentLabel.frame_idx)
+        .where(AlignmentLabel.video_id == video.id)
+        .order_by(AlignmentLabel.frame_idx)
+    )
+    frame_indices = list(result.scalars().all())
+
+    logger.info(f"GET /videos/{video.id}/alignment-labels: found {len(frame_indices)} labels")
+    return {"frame_indices": frame_indices}
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels/{frame_idx}")
+async def delete_video_alignment_label(
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete a single alignment label for a specific frame."""
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels/{frame_idx}")
+
+    result = await session.execute(
+        delete(AlignmentLabel)
+        .where(AlignmentLabel.video_id == video.id)
+        .where(AlignmentLabel.frame_idx == frame_idx)
+    )
+    await session.commit()
+
+    deleted = result.rowcount > 0
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels/{frame_idx}: deleted={deleted}")
+    return {"deleted": deleted}
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels")
+async def delete_video_alignment_labels(
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete all alignment labels for a specific video."""
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels (all)")
+
+    result = await session.execute(
+        delete(AlignmentLabel).where(AlignmentLabel.video_id == video.id)
+    )
+    await session.commit()
+
+    deleted_count = result.rowcount
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels: deleted_count={deleted_count}")
+    return {"deleted_count": deleted_count}

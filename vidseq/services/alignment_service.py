@@ -40,7 +40,7 @@ ALIGNMENT_INPUT_SIZE = 128  # Fixed input size for model
 
 # OneEuro filter defaults for temporal smoothing
 ONE_EURO_MIN_CUTOFF = 1.0  # Minimum cutoff frequency (Hz) - lower = more smoothing
-ONE_EURO_BETA = 0.5        # Speed coefficient - higher = less lag during fast movements
+ONE_EURO_BETA = 0.0        # Speed coefficient - 0 = simple low-pass filter (no adaptive behavior)
 ONE_EURO_D_CUTOFF = 1.0    # Derivative cutoff frequency (Hz)
 
 
@@ -1202,13 +1202,13 @@ class AlignmentService:
                     f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
                 )
 
-                # Create OneEuro filters for temporal smoothing of keypoints
-                filter_front_x = OneEuroFilter(freq=fps)
-                filter_front_y = OneEuroFilter(freq=fps)
-                filter_rear_x = OneEuroFilter(freq=fps)
-                filter_rear_y = OneEuroFilter(freq=fps)
+                # Create OneEuro filter for temporal smoothing of angle directly
+                angle_filter = OneEuroFilter(freq=fps)
+                # For angle unwrapping (handle -180/180 discontinuity)
+                prev_raw_angle: Optional[float] = None
+                unwrapped_angle: float = 0.0
                 logger.info(
-                    f"apply_alignment_sync: OneEuro filters initialized "
+                    f"apply_alignment_sync: OneEuro angle filter initialized "
                     f"(min_cutoff={ONE_EURO_MIN_CUTOFF}, beta={ONE_EURO_BETA})"
                 )
 
@@ -1239,17 +1239,27 @@ class AlignmentService:
                     save_prediction(project_path, video.id, frame_idx, heatmap)
 
                     # Fit gaussians to find keypoints
-                    front_x_raw, front_y_raw = fit_gaussian_to_heatmap(heatmap[:, :, 0])
-                    rear_x_raw, rear_y_raw = fit_gaussian_to_heatmap(heatmap[:, :, 1])
+                    front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
+                    rear_x, rear_y = fit_gaussian_to_heatmap(heatmap[:, :, 1])
 
-                    # Apply temporal smoothing with OneEuro filter
-                    front_x = filter_front_x(front_x_raw)
-                    front_y = filter_front_y(front_y_raw)
-                    rear_x = filter_rear_x(rear_x_raw)
-                    rear_y = filter_rear_y(rear_y_raw)
+                    # Calculate raw rotation angle (pass dimensions for aspect ratio correction)
+                    raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
 
-                    # Calculate rotation angle (pass dimensions for aspect ratio correction)
-                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+                    # Unwrap angle to handle -180/180 discontinuity
+                    if prev_raw_angle is None:
+                        unwrapped_angle = raw_angle
+                    else:
+                        delta = raw_angle - prev_raw_angle
+                        # Take the shortest path across the boundary
+                        if delta > 180:
+                            delta -= 360
+                        elif delta < -180:
+                            delta += 360
+                        unwrapped_angle += delta
+                    prev_raw_angle = raw_angle
+
+                    # Apply temporal smoothing to the unwrapped angle
+                    angle = angle_filter(unwrapped_angle)
 
                     # Rotate frame
                     rotated = rotate_frame(frame, angle)

@@ -1,7 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getProject, getVideos, addVideos, segmentAllVideos, extractCroppedVideos, getCroppedVideoExists, getAlignedVideoExists, type Video, type Project } from '@/services/api'
+import {
+  getProject,
+  getVideos,
+  addVideos,
+  segmentAllVideos,
+  extractCroppedVideos,
+  getCroppedVideoExists,
+  getAlignedVideoExists,
+  getAlignmentStatus,
+  trainAlignmentModel,
+  applyAlignment,
+  clearAlignmentModel,
+  clearAllAlignmentLabels,
+  type Video,
+  type Project,
+  type AlignmentStatus,
+} from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
@@ -17,6 +33,12 @@ const isSegmenting = ref(false)
 const isExtracting = ref(false)
 const croppedVideoExists = ref<Record<number, boolean>>({})
 const alignedVideoExists = ref<Record<number, boolean>>({})
+
+// Alignment state
+const alignmentStatus = ref<AlignmentStatus | null>(null)
+const isTrainingAlignment = ref(false)
+const isApplyingAlignment = ref(false)
+const alignmentEpochs = ref(10)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -67,6 +89,7 @@ onMounted(async () => {
   await loadVideos()
   await loadCroppedVideoStatus()
   await loadAlignedVideoStatus()
+  await loadAlignmentStatus()
 })
 
 const handleAddVideos = () => {
@@ -179,6 +202,67 @@ const loadAlignedVideoStatus = async () => {
 const handleViewAligned = (videoId: number) => {
   if (projectStore.currentProjectId) {
     router.push(`/project/${projectStore.currentProjectId}/video/${videoId}/aligned`)
+  }
+}
+
+const loadAlignmentStatus = async () => {
+  if (!projectStore.currentProjectId) return
+  try {
+    alignmentStatus.value = await getAlignmentStatus(projectStore.currentProjectId)
+  } catch (e) {
+    console.error('Failed to load alignment status:', e)
+  }
+}
+
+const handleTrainAlignment = async () => {
+  if (!projectId.value || isTrainingAlignment.value) return
+  isTrainingAlignment.value = true
+  try {
+    await trainAlignmentModel(projectId.value, alignmentEpochs.value)
+    await loadAlignmentStatus()
+  } catch (e: any) {
+    console.error('Failed to train alignment model:', e)
+    alert(e.message || 'Failed to train alignment model')
+  } finally {
+    isTrainingAlignment.value = false
+  }
+}
+
+const handleApplyAlignment = async () => {
+  if (!projectId.value || isApplyingAlignment.value) return
+  isApplyingAlignment.value = true
+  try {
+    await applyAlignment(projectId.value)
+    await loadAlignedVideoStatus()
+  } catch (e: any) {
+    console.error('Failed to apply alignment:', e)
+    alert(e.message || 'Failed to apply alignment')
+  } finally {
+    isApplyingAlignment.value = false
+  }
+}
+
+const handleClearAlignmentModel = async () => {
+  if (!projectId.value) return
+  if (!confirm('Delete the alignment model? You will need to retrain.')) return
+  try {
+    await clearAlignmentModel(projectId.value)
+    await loadAlignmentStatus()
+  } catch (e: any) {
+    console.error('Failed to clear alignment model:', e)
+    alert(e.message || 'Failed to clear alignment model')
+  }
+}
+
+const handleClearAlignmentLabels = async () => {
+  if (!projectId.value) return
+  if (!confirm('Delete ALL alignment labels across ALL videos?')) return
+  try {
+    await clearAllAlignmentLabels(projectId.value)
+    await loadAlignmentStatus()
+  } catch (e: any) {
+    console.error('Failed to clear alignment labels:', e)
+    alert(e.message || 'Failed to clear alignment labels')
   }
 }
 
@@ -336,8 +420,58 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isExtracting ? 'Starting...' : 'Extract Cropped Videos' }}</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : 'Starting cropped video extraction...' }}
+          <h4 class="sidebar-section-title">Egocentric Alignment</h4>
+          <div class="alignment-info">
+            <span class="info-label">Labels:</span>
+            <span class="info-value">{{ alignmentStatus?.label_count ?? 0 }}</span>
+          </div>
+          <div class="epochs-input">
+            <label for="epochs">Epochs:</label>
+            <input
+              id="epochs"
+              v-model.number="alignmentEpochs"
+              type="number"
+              min="1"
+              max="100"
+              class="epochs-field"
+            />
+          </div>
+          <button
+            class="sidebar-button train-alignment-button"
+            @click="handleTrainAlignment"
+            :disabled="isTrainingAlignment || isApplyingAlignment || (alignmentStatus?.label_count ?? 0) === 0"
+          >
+            <span class="button-label">{{ isTrainingAlignment ? 'Training...' : 'Train Alignment Model' }}</span>
+          </button>
+          <button
+            class="sidebar-button apply-alignment-button"
+            @click="handleApplyAlignment"
+            :disabled="isTrainingAlignment || isApplyingAlignment || !alignmentStatus?.model_trained"
+          >
+            <span class="button-label">{{ isApplyingAlignment ? 'Aligning...' : 'Align All Videos' }}</span>
+          </button>
+
+          <div class="alignment-clear-buttons">
+            <button
+              class="clear-button"
+              @click="handleClearAlignmentModel"
+              :disabled="!alignmentStatus?.model_trained"
+              title="Delete trained model"
+            >
+              Clear Model
+            </button>
+            <button
+              class="clear-button"
+              @click="handleClearAlignmentLabels"
+              :disabled="(alignmentStatus?.label_count ?? 0) === 0"
+              title="Delete all training labels"
+            >
+              Clear Labels
+            </button>
+          </div>
+
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || isTrainingAlignment || isApplyingAlignment" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : isTrainingAlignment ? 'Training alignment model...' : 'Applying alignment...' }}
           </div>
         </aside>
       </div>
@@ -618,5 +752,77 @@ const formatScore = (score: number | undefined) => {
 
 .stat-item strong {
   color: #0366d6;
+}
+
+/* Alignment Controls */
+.alignment-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+}
+
+.info-label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.info-value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #a855f7;
+}
+
+.epochs-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.epochs-input label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.epochs-field {
+  width: 60px;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.train-alignment-button,
+.apply-alignment-button {
+  margin-top: 0.25rem;
+}
+
+.alignment-clear-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.clear-button {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  background-color: #fef2f2;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+
+.clear-button:hover:not(:disabled) {
+  background-color: #fee2e2;
+  border-color: #dc2626;
+}
+
+.clear-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 </style>

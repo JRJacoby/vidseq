@@ -67,6 +67,19 @@ const handleViewChange = (start: number, end: number) => {
   viewEnd.value = end
 }
 
+// Calculate current frame index from currentTime and fps
+const currentFrameIdx = computed(() => {
+  if (!video.value?.fps) return 0
+  return Math.floor(currentTime.value * video.value.fps)
+})
+
+const handleLabelFrame = () => {
+  router.push({
+    path: `/project/${projectId.value}/video/${videoId.value}/cropped`,
+    query: { frame: currentFrameIdx.value.toString(), training: 'true' },
+  })
+}
+
 onMounted(async () => {
   await loadVideo()
 })
@@ -119,6 +132,13 @@ onMounted(async () => {
     <aside class="action-bar">
       <div class="action-bar-content">
         <p class="action-bar-info">This is the aligned video view. The animal has been rotated to face right in each frame.</p>
+
+        <h4 class="action-bar-title">Training</h4>
+        <p class="frame-indicator">Frame: {{ currentFrameIdx }}</p>
+        <button class="label-frame-button" @click="handleLabelFrame">
+          Label This Frame
+        </button>
+        <p class="label-hint">Jump to cropped video to add this frame to alignment training data.</p>
       </div>
     </aside>
   </div>
@@ -233,5 +253,45 @@ onMounted(async () => {
   font-size: 0.9rem;
   color: #666;
   line-height: 1.5;
+}
+
+.action-bar-title {
+  margin: 1.5rem 0 0.5rem 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.frame-indicator {
+  margin: 0 0 0.75rem 0;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.label-frame-button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  background-color: #fffbeb;
+  color: #b45309;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.label-frame-button:hover {
+  background-color: #fef3c7;
+  border-color: #d97706;
+}
+
+.label-hint {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.8rem;
+  color: #888;
+  line-height: 1.4;
 }
 </style>

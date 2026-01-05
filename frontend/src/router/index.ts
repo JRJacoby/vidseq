@@ -7,7 +7,6 @@ import VideoDetail from '../components/VideoDetail.vue'
 import CroppedVideoDetail from '../components/CroppedVideoDetail.vue'
 import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
-import EgocentricAlignment from '../components/EgocentricAlignment.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -50,11 +49,6 @@ const router = createRouter({
           path: 'video/:videoId/aligned',
           name: 'alignedVideo',
           component: AlignedVideoDetail
-        },
-        {
-          path: 'alignment',
-          name: 'alignment',
-          component: EgocentricAlignment
         }
       ]
     }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   duration: number
   fps: number
   currentTime: number
@@ -14,7 +14,13 @@ const props = defineProps<{
   showConfidencePlot: boolean
   isMarkingMode: boolean
   confidenceScores: { frame_idx: number; score: number }[]
-}>()
+  // Alignment label frames (individual frame indices)
+  alignmentLabelFrames?: number[]
+  showAlignmentLabels?: boolean
+}>(), {
+  alignmentLabelFrames: () => [],
+  showAlignmentLabels: false,
+})
 
 const emit = defineEmits<{
   'mark-training': [startFrame: number, endFrame: number]
@@ -127,6 +133,17 @@ const dragRangeStyle = computed(() => {
 const selectedRangeStyle = computed(() => {
   if (!selectedRange.value) return null
   return rangeToStyle(selectedRange.value)
+})
+
+const alignmentLabelStyles = computed(() => {
+  if (!props.showAlignmentLabels) return []
+  return props.alignmentLabelFrames
+    .map(frameIdx => {
+      const percent = frameToPercent(frameIdx)
+      if (percent < 0 || percent > 100) return null
+      return { frameIdx, left: `${percent}%` }
+    })
+    .filter((s): s is { frameIdx: number; left: string } => s !== null)
 })
 
 const getFrameFromEvent = (event: MouseEvent): number => {
@@ -348,15 +365,22 @@ onUnmounted(() => {
           class="confidence-plot"
         />
         
-        <div 
+        <div
           v-for="item in trainingRangeStyles"
           :key="'training-' + item.range[0]"
           class="range-overlay training"
           :class="{ selected: selectedRange && selectedRange[0] === item.range[0] && selectedRange[1] === item.range[1] }"
           :style="item.style"
         />
-        
-        <div 
+
+        <div
+          v-for="item in alignmentLabelStyles"
+          :key="'alignment-' + item.frameIdx"
+          class="alignment-label-tick"
+          :style="{ left: item.left }"
+        />
+
+        <div
           v-if="dragRangeStyle"
           class="range-overlay drag-selection"
           :style="dragRangeStyle"
@@ -464,5 +488,16 @@ onUnmounted(() => {
   opacity: 0.7;
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.alignment-label-tick {
+  position: absolute;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background-color: rgba(168, 85, 247, 0.8); /* Purple */
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 4;
 }
 </style>
