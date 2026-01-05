@@ -902,3 +902,48 @@ export async function deleteVideoAlignmentLabels(
     }
     return response.json()
 }
+
+// --- PCA API ---
+
+export interface PCAStatus {
+    has_pca: boolean
+    n_components: number | null
+    explained_variance_ratio: number[] | null
+    total_frames: number | null
+}
+
+export interface PCARunResult {
+    n_components: number
+    explained_variance_ratio: number[]
+    total_frames: number
+}
+
+export async function runPCA(
+    projectId: number,
+    nComponents: number = 20
+): Promise<PCARunResult> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/pca/run?n_components=${nComponents}`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to run PCA'))
+    }
+    return response.json()
+}
+
+export async function getPCAStatus(projectId: number): Promise<PCAStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/pca/status`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get PCA status'))
+    }
+    return response.json()
+}
+
+export function getPCAScreePlotUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/pca/scree-plot`
+}
+
+export function getPCAComponentsPlotUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/pca/components-plot`
+}

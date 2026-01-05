@@ -24,9 +24,9 @@ const navigateToFirstFrames = () => {
   }
 }
 
-const navigateToAlignment = () => {
+const navigateToPCA = () => {
   if (projectStore.currentProjectId) {
-    router.push(`/project/${projectStore.currentProjectId}/alignment`)
+    router.push(`/project/${projectStore.currentProjectId}/pca`)
   }
 }
 
@@ -56,11 +56,11 @@ const isActiveRoute = (routeName: string) => {
       </button>
       <button
         class="navbar-button"
-        :class="{ 'navbar-button-active': isActiveRoute('alignment') }"
-        @click="navigateToAlignment"
+        :class="{ 'navbar-button-active': isActiveRoute('pca') }"
+        @click="navigateToPCA"
         :disabled="!projectStore.currentProjectId"
       >
-        Egocentric Alignment
+        PCA
       </button>
     </div>
     <div class="navbar-bottom">

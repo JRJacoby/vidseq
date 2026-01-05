@@ -22,6 +22,7 @@ dependencies = [
     "tqdm>=4.66.0",
     "ultralytics>=8.3.235",
     "imageio-ffmpeg>=0.5.1",
+    "jax[cuda]>=0.8.2",
 ]
 
 [build-system]

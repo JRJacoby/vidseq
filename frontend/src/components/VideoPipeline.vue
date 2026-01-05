@@ -14,9 +14,12 @@ import {
   applyAlignment,
   clearAlignmentModel,
   clearAllAlignmentLabels,
+  getPCAStatus,
+  runPCA,
   type Video,
   type Project,
   type AlignmentStatus,
+  type PCAStatus,
 } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
@@ -39,6 +42,11 @@ const alignmentStatus = ref<AlignmentStatus | null>(null)
 const isTrainingAlignment = ref(false)
 const isApplyingAlignment = ref(false)
 const alignmentEpochs = ref(10)
+
+// PCA state
+const pcaStatus = ref<PCAStatus | null>(null)
+const isRunningPCA = ref(false)
+const pcaComponents = ref(20)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -90,6 +98,7 @@ onMounted(async () => {
   await loadCroppedVideoStatus()
   await loadAlignedVideoStatus()
   await loadAlignmentStatus()
+  await loadPCAStatus()
 })
 
 const handleAddVideos = () => {
@@ -265,6 +274,34 @@ const handleClearAlignmentLabels = async () => {
     alert(e.message || 'Failed to clear alignment labels')
   }
 }
+
+// PCA handlers
+const loadPCAStatus = async () => {
+  if (!projectStore.currentProjectId) return
+  try {
+    pcaStatus.value = await getPCAStatus(projectStore.currentProjectId)
+  } catch (e) {
+    console.error('Failed to load PCA status:', e)
+  }
+}
+
+const handleRunPCA = async () => {
+  if (!projectId.value || isRunningPCA.value) return
+  isRunningPCA.value = true
+  try {
+    await runPCA(projectId.value, pcaComponents.value)
+    await loadPCAStatus()
+  } catch (e: any) {
+    console.error('Failed to run PCA:', e)
+    alert(e.message || 'Failed to run PCA')
+  } finally {
+    isRunningPCA.value = false
+  }
+}
+
+const hasAlignedVideos = computed(() => {
+  return Object.values(alignedVideoExists.value).some(exists => exists)
+})
 
 // Sorting logic
 type SortOption = 'name' | 'min_confidence' | 'p50_confidence' | 'p95_confidence'
@@ -470,8 +507,41 @@ const formatScore = (score: number | undefined) => {
             </button>
           </div>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || isTrainingAlignment || isApplyingAlignment" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : isTrainingAlignment ? 'Training alignment model...' : 'Applying alignment...' }}
+          <h4 class="sidebar-section-title">PCA</h4>
+          <div v-if="pcaStatus?.has_pca" class="pca-info">
+            <div class="info-row">
+              <span class="info-label">Components:</span>
+              <span class="info-value">{{ pcaStatus.n_components }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Frames:</span>
+              <span class="info-value">{{ pcaStatus.total_frames?.toLocaleString() }}</span>
+            </div>
+          </div>
+          <div v-else class="pca-info">
+            <span class="info-label">No PCA computed yet</span>
+          </div>
+          <div class="pca-input">
+            <label for="pca-components">Components:</label>
+            <input
+              id="pca-components"
+              v-model.number="pcaComponents"
+              type="number"
+              min="1"
+              max="100"
+              class="pca-field"
+            />
+          </div>
+          <button
+            class="sidebar-button run-pca-button"
+            @click="handleRunPCA"
+            :disabled="isRunningPCA || !hasAlignedVideos"
+          >
+            <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : 'Run PCA' }}</span>
+          </button>
+
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || isTrainingAlignment || isApplyingAlignment || isRunningPCA" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : isTrainingAlignment ? 'Training alignment model...' : isApplyingAlignment ? 'Applying alignment...' : 'Running PCA...' }}
           </div>
         </aside>
       </div>
@@ -824,5 +894,43 @@ const formatScore = (score: number | undefined) => {
 .clear-button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* PCA Controls */
+.pca-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pca-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.pca-input label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.pca-field {
+  width: 60px;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.run-pca-button {
+  margin-top: 0.25rem;
 }
 </style>
