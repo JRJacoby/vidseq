@@ -38,6 +38,94 @@ from vidseq.services.cropped_video_service import get_cropped_video_path
 # Constants
 ALIGNMENT_INPUT_SIZE = 128  # Fixed input size for model
 
+# OneEuro filter defaults for temporal smoothing
+ONE_EURO_MIN_CUTOFF = 1.0  # Minimum cutoff frequency (Hz) - lower = more smoothing
+ONE_EURO_BETA = 0.5        # Speed coefficient - higher = less lag during fast movements
+ONE_EURO_D_CUTOFF = 1.0    # Derivative cutoff frequency (Hz)
+
+
+class OneEuroFilter:
+    """OneEuro filter for temporal smoothing of noisy signals.
+
+    Attempt to smooth out jitter. The closer to zero min_cutoff is,
+    the more smoothing there is. It's recommended to leave min_cutoff
+    alone and tweak beta to find the optimal smoothing for your signal.
+
+    Reference: https://cristal.univ-lille.fr/~casiez/1euro/
+    """
+
+    def __init__(
+        self,
+        freq: float,
+        min_cutoff: float = ONE_EURO_MIN_CUTOFF,
+        beta: float = ONE_EURO_BETA,
+        d_cutoff: float = ONE_EURO_D_CUTOFF,
+    ):
+        """Initialize the filter.
+
+        Args:
+            freq: Sampling frequency in Hz (e.g., video FPS)
+            min_cutoff: Minimum cutoff frequency
+            beta: Speed coefficient
+            d_cutoff: Derivative cutoff frequency
+        """
+        self.freq = freq
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+
+        # State
+        self.x_prev: Optional[float] = None
+        self.dx_prev: float = 0.0
+
+    def _smoothing_factor(self, cutoff: float) -> float:
+        """Compute the smoothing factor (alpha) for a given cutoff frequency."""
+        tau = 1.0 / (2.0 * np.pi * cutoff)
+        te = 1.0 / self.freq
+        return 1.0 / (1.0 + tau / te)
+
+    def _exponential_smoothing(self, alpha: float, x: float, x_prev: float) -> float:
+        """Apply exponential smoothing."""
+        return alpha * x + (1.0 - alpha) * x_prev
+
+    def reset(self) -> None:
+        """Reset filter state."""
+        self.x_prev = None
+        self.dx_prev = 0.0
+
+    def __call__(self, x: float) -> float:
+        """Filter a single value.
+
+        Args:
+            x: Input value
+
+        Returns:
+            Filtered value
+        """
+        if self.x_prev is None:
+            # First sample - initialize state
+            self.x_prev = x
+            self.dx_prev = 0.0
+            return x
+
+        # Estimate derivative
+        dx = (x - self.x_prev) * self.freq
+
+        # Smooth the derivative
+        alpha_d = self._smoothing_factor(self.d_cutoff)
+        dx_smooth = self._exponential_smoothing(alpha_d, dx, self.dx_prev)
+        self.dx_prev = dx_smooth
+
+        # Compute adaptive cutoff based on speed
+        cutoff = self.min_cutoff + self.beta * abs(dx_smooth)
+
+        # Smooth the signal
+        alpha = self._smoothing_factor(cutoff)
+        x_smooth = self._exponential_smoothing(alpha, x, self.x_prev)
+        self.x_prev = x_smooth
+
+        return x_smooth
+
 # Configure logger for alignment service
 logger = logging.getLogger("vidseq.alignment")
 logger.setLevel(logging.DEBUG)
@@ -1114,6 +1202,16 @@ class AlignmentService:
                     f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
                 )
 
+                # Create OneEuro filters for temporal smoothing of keypoints
+                filter_front_x = OneEuroFilter(freq=fps)
+                filter_front_y = OneEuroFilter(freq=fps)
+                filter_rear_x = OneEuroFilter(freq=fps)
+                filter_rear_y = OneEuroFilter(freq=fps)
+                logger.info(
+                    f"apply_alignment_sync: OneEuro filters initialized "
+                    f"(min_cutoff={ONE_EURO_MIN_CUTOFF}, beta={ONE_EURO_BETA})"
+                )
+
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
                 output_path = output_dir / f"{cropped_path.stem}_aligned.mp4"
@@ -1141,8 +1239,14 @@ class AlignmentService:
                     save_prediction(project_path, video.id, frame_idx, heatmap)
 
                     # Fit gaussians to find keypoints
-                    front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
-                    rear_x, rear_y = fit_gaussian_to_heatmap(heatmap[:, :, 1])
+                    front_x_raw, front_y_raw = fit_gaussian_to_heatmap(heatmap[:, :, 0])
+                    rear_x_raw, rear_y_raw = fit_gaussian_to_heatmap(heatmap[:, :, 1])
+
+                    # Apply temporal smoothing with OneEuro filter
+                    front_x = filter_front_x(front_x_raw)
+                    front_y = filter_front_y(front_y_raw)
+                    rear_x = filter_rear_x(rear_x_raw)
+                    rear_y = filter_rear_y(rear_y_raw)
 
                     # Calculate rotation angle (pass dimensions for aspect ratio correction)
                     angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
