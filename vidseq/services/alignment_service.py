@@ -6,12 +6,17 @@ using a U-Net model with ResNet18 encoder.
 
 import io
 import logging
+import os
 import random
 import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
 
+# Disable HDF5's internal file locking (we use our own approach)
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+import h5py
 import imageio_ffmpeg
 
 import cv2
@@ -116,6 +121,120 @@ def heatmap_to_png(heatmap: np.ndarray) -> bytes:
     logger.debug(f"heatmap_to_png: output_size={len(png_bytes)} bytes, R_max={r_channel.max()}, G_max={g_channel.max()}")
 
     return png_bytes
+
+
+# --- Prediction Storage (HDF5) ---
+
+
+def _get_predictions_dir(project_path: Path) -> Path:
+    """Get the alignment predictions directory for a project."""
+    return project_path / "alignment_predictions"
+
+
+def _get_predictions_h5_path(project_path: Path, video_id: int) -> Path:
+    """Get path to the HDF5 file for a video's alignment predictions."""
+    return _get_predictions_dir(project_path) / f"{video_id}.h5"
+
+
+def save_prediction(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    heatmap: np.ndarray,
+) -> None:
+    """Save prediction heatmap to HDF5.
+
+    Args:
+        project_path: Path to project folder
+        video_id: Video ID
+        frame_idx: Frame index
+        heatmap: (H, W, 2) float32 array with front/rear probabilities
+    """
+    predictions_dir = _get_predictions_dir(project_path)
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+
+    h5_path = _get_predictions_h5_path(project_path, video_id)
+
+    with h5py.File(h5_path, "a") as f:
+        # Create predictions group if it doesn't exist
+        if "predictions" not in f:
+            f.create_group("predictions")
+
+        predictions_group = f["predictions"]
+        dataset_name = str(frame_idx)
+
+        # Delete existing dataset if present (overwrite behavior)
+        if dataset_name in predictions_group:
+            del predictions_group[dataset_name]
+
+        # Save with gzip compression
+        predictions_group.create_dataset(
+            dataset_name,
+            data=heatmap.astype(np.float32),
+            compression="gzip",
+            compression_opts=4,
+        )
+
+
+def load_prediction(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+) -> Optional[np.ndarray]:
+    """Load prediction heatmap from HDF5.
+
+    Args:
+        project_path: Path to project folder
+        video_id: Video ID
+        frame_idx: Frame index
+
+    Returns:
+        (H, W, 2) float32 array or None if not found
+    """
+    h5_path = _get_predictions_h5_path(project_path, video_id)
+
+    if not h5_path.exists():
+        return None
+
+    try:
+        with h5py.File(h5_path, "r") as f:
+            if "predictions" not in f:
+                return None
+
+            predictions_group = f["predictions"]
+            dataset_name = str(frame_idx)
+
+            if dataset_name not in predictions_group:
+                return None
+
+            return predictions_group[dataset_name][:]
+    except Exception as e:
+        logger.warning(f"load_prediction: failed to load frame {frame_idx} for video {video_id}: {e}")
+        return None
+
+
+def predictions_exist(project_path: Path, video_id: int) -> bool:
+    """Check if predictions exist for a video.
+
+    Args:
+        project_path: Path to project folder
+        video_id: Video ID
+
+    Returns:
+        True if predictions HDF5 file exists and has data
+    """
+    h5_path = _get_predictions_h5_path(project_path, video_id)
+
+    if not h5_path.exists():
+        return False
+
+    try:
+        with h5py.File(h5_path, "r") as f:
+            if "predictions" not in f:
+                return False
+            return len(f["predictions"]) > 0
+    except Exception:
+        return False
 
 
 def _gaussian_2d(coords: tuple, amplitude: float, x0: float, y0: float, sigma: float) -> np.ndarray:
@@ -1012,6 +1131,9 @@ class AlignmentService:
 
                     # Run prediction to get heatmap
                     heatmap = self.predict_sync(project_path, frame)
+
+                    # Save prediction for debugging
+                    save_prediction(project_path, video.id, frame_idx, heatmap)
 
                     # Fit gaussians to find keypoints
                     front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
