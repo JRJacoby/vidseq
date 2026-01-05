@@ -663,6 +663,30 @@ export function getCroppedVideoStreamUrl(projectId: number, videoId: number): st
     return `${API_BASE}/projects/${projectId}/videos/${videoId}/cropped-video/stream`
 }
 
+// --- Aligned Video ---
+
+export interface AlignedVideoExistsResponse {
+    exists: boolean
+    path?: string
+}
+
+export async function getAlignedVideoExists(
+    projectId: number,
+    videoId: number
+): Promise<AlignedVideoExistsResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/aligned-video/exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check aligned video existence'))
+    }
+    return response.json()
+}
+
+export function getAlignedVideoStreamUrl(projectId: number, videoId: number): string {
+    return `${API_BASE}/projects/${projectId}/videos/${videoId}/aligned-video/stream`
+}
+
 export async function getCroppedVideoFrame(
     projectId: number,
     videoId: number,

@@ -7,9 +7,12 @@ using a U-Net model with ResNet18 encoder.
 import io
 import logging
 import random
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
+
+import imageio_ffmpeg
 
 import cv2
 import numpy as np
@@ -17,6 +20,7 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 from PIL import Image
+from scipy.optimize import curve_fit
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -112,6 +116,128 @@ def heatmap_to_png(heatmap: np.ndarray) -> bytes:
     logger.debug(f"heatmap_to_png: output_size={len(png_bytes)} bytes, R_max={r_channel.max()}, G_max={g_channel.max()}")
 
     return png_bytes
+
+
+def _gaussian_2d(coords: tuple, amplitude: float, x0: float, y0: float, sigma: float) -> np.ndarray:
+    """2D Gaussian function for curve fitting.
+
+    Args:
+        coords: Tuple of (x, y) coordinate arrays
+        amplitude: Peak amplitude
+        x0, y0: Center coordinates (normalized 0-1)
+        sigma: Standard deviation (normalized)
+
+    Returns:
+        Flattened gaussian values
+    """
+    x, y = coords
+    return amplitude * np.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
+
+
+def fit_gaussian_to_heatmap(heatmap: np.ndarray) -> tuple[float, float]:
+    """Fit 2D Gaussian to heatmap and return (x, y) of peak.
+
+    Args:
+        heatmap: (H, W) array with values in [0, 1]
+
+    Returns:
+        (x, y) normalized coordinates (0-1) of gaussian center
+    """
+    h, w = heatmap.shape
+
+    # Create normalized coordinate grids
+    yy, xx = np.mgrid[0:h, 0:w]
+    xx_norm = xx / w
+    yy_norm = yy / h
+
+    # Initial guess from argmax
+    max_idx = np.argmax(heatmap)
+    max_y, max_x = np.unravel_index(max_idx, heatmap.shape)
+    x0_init = max_x / w
+    y0_init = max_y / h
+    amp_init = heatmap[max_y, max_x]
+
+    # Flatten arrays for curve_fit
+    x_flat = xx_norm.ravel()
+    y_flat = yy_norm.ravel()
+    z_flat = heatmap.ravel()
+
+    try:
+        # Fit gaussian with bounds
+        popt, _ = curve_fit(
+            _gaussian_2d,
+            (x_flat, y_flat),
+            z_flat,
+            p0=[amp_init, x0_init, y0_init, 0.05],  # Initial: amp, x0, y0, sigma
+            bounds=(
+                [0, 0, 0, 0.01],      # Lower bounds
+                [2, 1, 1, 0.5]        # Upper bounds
+            ),
+            maxfev=1000,
+        )
+        _, x0, y0, _ = popt
+        logger.debug(f"fit_gaussian_to_heatmap: fitted center=({x0:.3f}, {y0:.3f})")
+        return x0, y0
+
+    except (RuntimeError, ValueError) as e:
+        # Fall back to argmax if fitting fails
+        logger.warning(f"fit_gaussian_to_heatmap: fitting failed ({e}), falling back to argmax")
+        return x0_init, y0_init
+
+
+def calculate_rotation_angle(
+    front_x: float,
+    front_y: float,
+    rear_x: float,
+    rear_y: float,
+) -> float:
+    """Calculate rotation angle to make animal face right.
+
+    Args:
+        front_x, front_y: Front (nose) keypoint coordinates (normalized 0-1)
+        rear_x, rear_y: Rear (tail) keypoint coordinates (normalized 0-1)
+
+    Returns:
+        Angle in degrees (positive = counterclockwise)
+    """
+    # Vector from rear to front
+    dx = front_x - rear_x
+    dy = front_y - rear_y
+
+    # Current angle (radians) - note: y increases downward in image coords
+    # arctan2(dy, dx) gives angle from positive x-axis
+    angle_rad = np.arctan2(dy, dx)
+
+    # Convert to degrees
+    # We want animal facing right (angle = 0)
+    # So rotation needed is -angle_rad
+    rotation_degrees = -np.degrees(angle_rad)
+
+    logger.debug(
+        f"calculate_rotation_angle: front=({front_x:.3f}, {front_y:.3f}), "
+        f"rear=({rear_x:.3f}, {rear_y:.3f}), angle={rotation_degrees:.1f}°"
+    )
+
+    return rotation_degrees
+
+
+def rotate_frame(frame: np.ndarray, angle_degrees: float) -> np.ndarray:
+    """Rotate frame around center by given angle.
+
+    Args:
+        frame: (H, W, 3) BGR image
+        angle_degrees: Rotation angle (positive = counterclockwise)
+
+    Returns:
+        Rotated frame (same dimensions)
+    """
+    h, w = frame.shape[:2]
+    center = (w / 2, h / 2)  # Frame center
+
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle_degrees, scale=1.0)
+    rotated = cv2.warpAffine(frame, rotation_matrix, (w, h))
+
+    return rotated
 
 
 class AlignmentDataset(Dataset):
@@ -770,6 +896,37 @@ class AlignmentService:
         logger.info(f"predict_to_png: returning {len(png_bytes)} bytes")
         return png_bytes
 
+    def _reencode_to_h264(self, input_path: Path, output_path: Path) -> bool:
+        """Re-encode video to H.264 for browser compatibility.
+
+        Args:
+            input_path: Path to input video (any codec)
+            output_path: Path to output video (H.264/MP4)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+
+        cmd = [
+            ffmpeg_path,
+            "-y",  # Overwrite output
+            "-i", str(input_path),
+            "-c:v", "libx264",  # H.264 codec
+            "-preset", "fast",  # Encoding speed/quality tradeoff
+            "-crf", "23",  # Quality (lower = better, 18-28 is typical)
+            "-pix_fmt", "yuv420p",  # Pixel format for browser compatibility
+            "-movflags", "+faststart",  # Move moov atom to start for streaming
+            str(output_path),
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"_reencode_to_h264: FFmpeg error: {e.stderr}")
+            return False
+
     def apply_alignment_sync(
         self,
         project_path: Path,
@@ -779,8 +936,6 @@ class AlignmentService:
 
         Reads cropped videos, rotates frames so animal faces right,
         saves to aligned_videos folder.
-
-        This is a mock implementation that just copies videos without rotation.
 
         Args:
             project_path: Path to project folder
@@ -792,8 +947,6 @@ class AlignmentService:
         logger.info(f"apply_alignment_sync: starting, project={project_path.name}")
         self._is_applying = True
         try:
-            from vidseq.services.cropped_video_service import get_cropped_video_path
-
             # Get videos with cropping completed
             with Session(project_engine) as session:
                 result = session.execute(
@@ -820,13 +973,80 @@ class AlignmentService:
                     logger.warning(f"apply_alignment_sync: cropped video not found: {cropped_path}")
                     continue
 
-                output_path = output_dir / f"{cropped_path.stem}_aligned.mp4"
-                logger.info(f"apply_alignment_sync: copying {cropped_path} -> {output_path}")
+                # Open input video
+                cap = cv2.VideoCapture(str(cropped_path))
+                if not cap.isOpened():
+                    logger.error(f"apply_alignment_sync: failed to open video: {cropped_path}")
+                    continue
 
-                # Mock: just copy the video without rotation
-                # In real implementation, would rotate each frame based on predictions
-                import shutil
-                shutil.copy2(cropped_path, output_path)
+                # Get video properties
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+                logger.info(
+                    f"apply_alignment_sync: video properties - "
+                    f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
+                )
+
+                # Create temp output file (mp4v codec, then re-encode to H.264)
+                temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
+                output_path = output_dir / f"{cropped_path.stem}_aligned.mp4"
+
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(str(temp_path), fourcc, fps, (width, height))
+
+                if not writer.isOpened():
+                    logger.error(f"apply_alignment_sync: failed to create video writer: {temp_path}")
+                    cap.release()
+                    continue
+
+                # Process each frame
+                log_interval = max(1, frame_count // 10)  # Log every 10%
+                for frame_idx in range(frame_count):
+                    ret, frame = cap.read()
+                    if not ret:
+                        logger.warning(f"apply_alignment_sync: failed to read frame {frame_idx}")
+                        break
+
+                    # Run prediction to get heatmap
+                    heatmap = self.predict_sync(project_path, frame)
+
+                    # Fit gaussians to find keypoints
+                    front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
+                    rear_x, rear_y = fit_gaussian_to_heatmap(heatmap[:, :, 1])
+
+                    # Calculate rotation angle
+                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y)
+
+                    # Rotate frame
+                    rotated = rotate_frame(frame, angle)
+
+                    # Write rotated frame
+                    writer.write(rotated)
+
+                    # Log progress
+                    if frame_idx % log_interval == 0 or frame_idx == frame_count - 1:
+                        progress = (frame_idx + 1) / frame_count * 100
+                        logger.info(
+                            f"apply_alignment_sync: video {video.id} - "
+                            f"frame {frame_idx + 1}/{frame_count} ({progress:.0f}%)"
+                        )
+
+                # Release resources
+                cap.release()
+                writer.release()
+
+                # Re-encode to H.264 for browser compatibility
+                logger.info(f"apply_alignment_sync: re-encoding to H.264: {output_path.name}")
+                if not self._reencode_to_h264(temp_path, output_path):
+                    logger.error(f"apply_alignment_sync: failed to re-encode video {video.id}")
+                    temp_path.unlink(missing_ok=True)
+                    continue
+
+                # Clean up temp file
+                temp_path.unlink(missing_ok=True)
 
                 file_size = output_path.stat().st_size
                 logger.info(f"apply_alignment_sync: aligned video saved, size={file_size} bytes")

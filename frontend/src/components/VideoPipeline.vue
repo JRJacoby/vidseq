@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { getProject, getVideos, addVideos, segmentAllVideos, extractCroppedVideos, getCroppedVideoExists, type Video, type Project } from '@/services/api'
+import { getProject, getVideos, addVideos, segmentAllVideos, extractCroppedVideos, getCroppedVideoExists, getAlignedVideoExists, type Video, type Project } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
@@ -16,6 +16,7 @@ const showFilePicker = ref(false)
 const isSegmenting = ref(false)
 const isExtracting = ref(false)
 const croppedVideoExists = ref<Record<number, boolean>>({})
+const alignedVideoExists = ref<Record<number, boolean>>({})
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -65,6 +66,7 @@ onMounted(async () => {
   await loadProject()
   await loadVideos()
   await loadCroppedVideoStatus()
+  await loadAlignedVideoStatus()
 })
 
 const handleAddVideos = () => {
@@ -157,6 +159,26 @@ const handleExtractCroppedVideos = async () => {
 const handleViewCropped = (videoId: number) => {
   if (projectStore.currentProjectId) {
     router.push(`/project/${projectStore.currentProjectId}/video/${videoId}/cropped`)
+  }
+}
+
+const loadAlignedVideoStatus = async () => {
+  if (!projectStore.currentProjectId) return
+  const status: Record<number, boolean> = {}
+  for (const video of videos.value) {
+    try {
+      const result = await getAlignedVideoExists(projectStore.currentProjectId, video.id)
+      status[video.id] = result.exists
+    } catch {
+      status[video.id] = false
+    }
+  }
+  alignedVideoExists.value = status
+}
+
+const handleViewAligned = (videoId: number) => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/video/${videoId}/aligned`)
   }
 }
 
@@ -261,6 +283,13 @@ const formatScore = (score: number | undefined) => {
                       @click.stop="handleViewCropped(video.id)"
                     >
                       View Cropped
+                    </button>
+                    <button
+                      v-if="alignedVideoExists[video.id]"
+                      class="view-aligned-button"
+                      @click.stop="handleViewAligned(video.id)"
+                    >
+                      View Aligned
                     </button>
                     <span v-if="getStatusDisplay(video)" class="status-badge" :class="getStatusClass(video)">
                       {{ getStatusDisplay(video) }}
@@ -490,6 +519,23 @@ const formatScore = (score: number | undefined) => {
 
 .view-cropped-button:hover {
   background-color: #0366d6;
+  color: white;
+}
+
+.view-aligned-button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #28a745;
+  border-radius: 4px;
+  background-color: #f0fff4;
+  color: #28a745;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-aligned-button:hover {
+  background-color: #28a745;
   color: white;
 }
 

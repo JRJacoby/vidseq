@@ -1,18 +1,25 @@
 """API routes for egocentric alignment."""
 
 import logging
+import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vidseq.api.dependencies import get_project_folder, get_project_session
+from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.services.alignment_service import AlignmentService
 from vidseq.services.database_manager import DatabaseManager
+
+
+def get_aligned_video_path(project_path: Path, video_name: str) -> Path:
+    """Get path to the aligned video file."""
+    stem = Path(video_name).stem
+    return project_path / "aligned_videos" / f"{stem}_cropped_aligned.mp4"
 
 router = APIRouter()
 
@@ -387,3 +394,78 @@ async def apply_alignment(
 
     logger.info(f"POST /alignment/apply: alignment complete")
     return {"message": "Alignment complete"}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/aligned-video/exists")
+async def get_aligned_video_exists(
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Check if aligned video exists for a video."""
+    aligned_path = get_aligned_video_path(project_path, video.name)
+    exists = aligned_path.exists()
+    path = str(aligned_path) if exists else None
+
+    logger.info(f"GET /aligned-video/exists: video_id={video.id}, exists={exists}")
+    return {"exists": exists, "path": path}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/aligned-video/stream")
+async def stream_aligned_video(
+    request: Request,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Stream aligned video with HTTP range support."""
+    aligned_path = get_aligned_video_path(project_path, video.name)
+
+    if not aligned_path.exists():
+        raise HTTPException(status_code=404, detail="Aligned video not found")
+
+    file_size = aligned_path.stat().st_size
+    content_type = mimetypes.guess_type(str(aligned_path))[0] or "video/mp4"
+
+    range_header = request.headers.get("range")
+    if range_header:
+        range_match = range_header.replace("bytes=", "").split("-")
+        start = int(range_match[0])
+        end = int(range_match[1]) if range_match[1] else file_size - 1
+
+        chunk_size = end - start + 1
+
+        def iter_file():
+            with open(aligned_path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    read_size = min(8192, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+                "Content-Type": content_type,
+            },
+        )
+    else:
+        def iter_full_file():
+            with open(aligned_path, "rb") as f:
+                while chunk := f.read(8192):
+                    yield chunk
+
+        return StreamingResponse(
+            iter_full_file(),
+            headers={
+                "Content-Length": str(file_size),
+                "Content-Type": content_type,
+                "Accept-Ranges": "bytes",
+            },
+        )
