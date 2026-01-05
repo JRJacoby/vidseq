@@ -118,7 +118,11 @@ class AlignmentDataset(Dataset):
     """PyTorch Dataset for alignment model training.
 
     Loads frames from cropped videos and generates gaussian heatmap targets.
+    Applies augmentations (rotations, flips) to expand training data 6x.
     """
+
+    # Augmentation types applied to every sample
+    AUG_TYPES = ["none", "rot90", "rot180", "rot270", "flip_h", "flip_v"]
 
     def __init__(
         self,
@@ -133,16 +137,89 @@ class AlignmentDataset(Dataset):
             project_path: Path to project folder
             video_name_map: Dict mapping video_id -> video.name for file lookup
         """
-        self.labels = labels
         self.project_path = project_path
         self.video_name_map = video_name_map
         self.size = ALIGNMENT_INPUT_SIZE
 
+        # Expand labels with all augmentation types (6x expansion)
+        self.samples: list[tuple] = []
+        for label in labels:
+            for aug_type in self.AUG_TYPES:
+                self.samples.append((label, aug_type))
+
+        logger.info(
+            f"AlignmentDataset: {len(labels)} labels expanded to {len(self.samples)} samples "
+            f"(6x augmentation: {self.AUG_TYPES})"
+        )
+
     def __len__(self) -> int:
-        return len(self.labels)
+        return len(self.samples)
+
+    def _apply_augmentation(
+        self,
+        frame: np.ndarray,
+        front_x: float,
+        front_y: float,
+        rear_x: float,
+        rear_y: float,
+        aug_type: str,
+    ) -> tuple[np.ndarray, float, float, float, float]:
+        """Apply augmentation to frame and keypoint coordinates.
+
+        Args:
+            frame: Image array (H, W, C)
+            front_x, front_y: Front keypoint normalized coords (0-1)
+            rear_x, rear_y: Rear keypoint normalized coords (0-1)
+            aug_type: Augmentation type
+
+        Returns:
+            (augmented_frame, new_front_x, new_front_y, new_rear_x, new_rear_y)
+        """
+        if aug_type == "none":
+            return frame, front_x, front_y, rear_x, rear_y
+
+        elif aug_type == "rot90":
+            # Rotate 90° clockwise
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            # (x, y) → (1-y, x)
+            new_front_x, new_front_y = 1 - front_y, front_x
+            new_rear_x, new_rear_y = 1 - rear_y, rear_x
+
+        elif aug_type == "rot180":
+            # Rotate 180°
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+            # (x, y) → (1-x, 1-y)
+            new_front_x, new_front_y = 1 - front_x, 1 - front_y
+            new_rear_x, new_rear_y = 1 - rear_x, 1 - rear_y
+
+        elif aug_type == "rot270":
+            # Rotate 270° clockwise (= 90° counter-clockwise)
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            # (x, y) → (y, 1-x)
+            new_front_x, new_front_y = front_y, 1 - front_x
+            new_rear_x, new_rear_y = rear_y, 1 - rear_x
+
+        elif aug_type == "flip_h":
+            # Flip horizontal
+            frame = cv2.flip(frame, 1)
+            # (x, y) → (1-x, y)
+            new_front_x, new_front_y = 1 - front_x, front_y
+            new_rear_x, new_rear_y = 1 - rear_x, rear_y
+
+        elif aug_type == "flip_v":
+            # Flip vertical
+            frame = cv2.flip(frame, 0)
+            # (x, y) → (x, 1-y)
+            new_front_x, new_front_y = front_x, 1 - front_y
+            new_rear_x, new_rear_y = rear_x, 1 - rear_y
+
+        else:
+            raise ValueError(f"Unknown augmentation type: {aug_type}")
+
+        return frame, new_front_x, new_front_y, new_rear_x, new_rear_y
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        label = self.labels[idx]
+        label, aug_type = self.samples[idx]
 
         # Get video name for file lookup
         video_name = self.video_name_map[label.video_id]
@@ -160,19 +237,29 @@ class AlignmentDataset(Dataset):
         # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize to fixed size
+        # Resize to fixed size (before augmentation for consistency)
         frame = cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
+
+        # Apply augmentation to frame and coordinates
+        frame, front_x, front_y, rear_x, rear_y = self._apply_augmentation(
+            frame,
+            label.front_x,
+            label.front_y,
+            label.rear_x,
+            label.rear_y,
+            aug_type,
+        )
 
         # Normalize to [0, 1] and convert to (C, H, W) tensor
         frame_tensor = torch.from_numpy(frame).float() / 255.0
         frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
 
-        # Generate target heatmaps at the fixed size
+        # Generate target heatmaps at the fixed size using augmented coordinates
         front_heatmap = generate_gaussian_heatmap(
-            label.front_x, label.front_y, self.size, self.size
+            front_x, front_y, self.size, self.size
         )
         rear_heatmap = generate_gaussian_heatmap(
-            label.rear_x, label.rear_y, self.size, self.size
+            rear_x, rear_y, self.size, self.size
         )
 
         # Stack into (2, H, W) tensor
