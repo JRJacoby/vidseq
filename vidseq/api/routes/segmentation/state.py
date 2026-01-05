@@ -21,6 +21,7 @@ router = APIRouter()
     "/projects/{project_id}/videos/{video_id}/frame/{frame_idx}",
 )
 async def reset_frame(
+    project_id: int,
     frame_idx: int,
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
@@ -30,7 +31,7 @@ async def reset_frame(
     Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM2 prompts.
     """
     sam2_service.clear_prompts_for_frame(frame_idx)
-    sam2_service.clear_frame_prompts(video.id, frame_idx)
+    sam2_service.clear_frame_prompts(project_id, video.id, frame_idx)
 
     # Clear mask from per-video HDF5
     segmentation_service.clear_mask(
@@ -55,6 +56,7 @@ async def reset_frame(
     "/projects/{project_id}/videos/{video_id}/all-frames",
 )
 async def reset_video(
+    project_id: int,
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
@@ -74,7 +76,7 @@ async def reset_video(
         video_id=video.id,
     )
 
-    sam2_service.reset_state(video.id)
+    sam2_service.reset_state(project_id, video.id)
 
     return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
 

@@ -382,24 +382,26 @@ onMounted(async () => {
         </div>
         <div v-else class="video-with-timeline">
           <div class="video-container">
-            <video
-              ref="videoRef"
-              class="video-player"
-              :src="croppedVideoStreamUrl"
-              @timeupdate="onTimeUpdate"
-              @loadedmetadata="onLoadedMetadata"
-              @play="onPlay"
-              @pause="onPause"
-            >
-              Your browser does not support the video tag.
-            </video>
-            <canvas
-              v-if="showHeatmap || isTrainingMode"
-              ref="overlayCanvasRef"
-              class="overlay-canvas"
-              :class="{ 'training-mode': isTrainingMode }"
-              @click="handleOverlayClick"
-            />
+            <div class="video-wrapper">
+              <video
+                ref="videoRef"
+                class="video-player"
+                :src="croppedVideoStreamUrl"
+                @timeupdate="onTimeUpdate"
+                @loadedmetadata="onLoadedMetadata"
+                @play="onPlay"
+                @pause="onPause"
+              >
+                Your browser does not support the video tag.
+              </video>
+              <canvas
+                v-if="showHeatmap || isTrainingMode"
+                ref="overlayCanvasRef"
+                class="overlay-canvas"
+                :class="{ 'training-mode': isTrainingMode }"
+                @click="handleOverlayClick"
+              />
+            </div>
           </div>
           <TimelineSystem>
             <VideoTimeline
@@ -595,6 +597,13 @@ onMounted(async () => {
 .overlay-canvas.training-mode {
   pointer-events: auto;
   cursor: crosshair;
+}
+
+.video-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .video-player {

@@ -17,14 +17,19 @@ import h5py
 import numpy as np
 
 
-def _get_masks_dir(project_path: Path) -> Path:
-    """Get the masks directory for a project."""
-    return project_path / "masks"
+def _get_masks_dir(project_path: Path, mask_subdir: str = "masks") -> Path:
+    """Get the masks directory for a project.
+
+    Args:
+        project_path: Path to the project folder
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
+    """
+    return project_path / mask_subdir
 
 
-def _get_video_h5_path(project_path: Path, video_id: int) -> Path:
+def _get_video_h5_path(project_path: Path, video_id: int, mask_subdir: str = "masks") -> Path:
     """Get path to the HDF5 file for a specific video's masks."""
-    return _get_masks_dir(project_path) / f"{video_id}.h5"
+    return _get_masks_dir(project_path, mask_subdir) / f"{video_id}.h5"
 
 
 def _get_lock_path(h5_path: Path) -> Path:
@@ -33,13 +38,14 @@ def _get_lock_path(h5_path: Path) -> Path:
 
 
 @contextmanager
-def open_video_h5(project_path: Path, video_id: int, mode: str):
+def open_video_h5(project_path: Path, video_id: int, mode: str, mask_subdir: str = "masks"):
     """Context manager for per-video HDF5 mask file access with file locking.
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         mode: File mode - 'r' for read-only, 'a' for append/write
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
 
     Yields:
         h5py.File: The opened HDF5 file handle
@@ -55,11 +61,11 @@ def open_video_h5(project_path: Path, video_id: int, mode: str):
     if not project_path.exists():
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    masks_dir = _get_masks_dir(project_path)
+    masks_dir = _get_masks_dir(project_path, mask_subdir)
     if mode == "a":
         masks_dir.mkdir(parents=True, exist_ok=True)
 
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
     lock_path = _get_lock_path(h5_path)
 
     lock_created = False
@@ -115,6 +121,7 @@ def save_mask(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
+    mask_subdir: str = "masks",
 ) -> None:
     """Save a mask to the per-video HDF5 file.
 
@@ -127,12 +134,13 @@ def save_mask(
         height: Video height in pixels
         width: Video width in pixels
         h5_file: Optional pre-opened h5py.File in write mode
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
     """
     if h5_file is not None:
         _ensure_dataset(h5_file, num_frames, height, width)
         h5_file["masks"][frame_idx] = mask
     else:
-        with open_video_h5(project_path, video_id, "a") as f:
+        with open_video_h5(project_path, video_id, "a", mask_subdir) as f:
             _ensure_dataset(f, num_frames, height, width)
             f["masks"][frame_idx] = mask
             f.flush()
@@ -146,6 +154,7 @@ def load_mask(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
+    mask_subdir: str = "masks",
 ) -> np.ndarray:
     """Load a mask from the per-video HDF5 file.
 
@@ -159,6 +168,7 @@ def load_mask(
         height: Video height in pixels
         width: Video width in pixels
         h5_file: Optional pre-opened h5py.File
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
 
     Returns:
         Mask array (height, width) with dtype uint8
@@ -168,12 +178,12 @@ def load_mask(
             return np.zeros((height, width), dtype=np.uint8)
         return np.array(h5_file["masks"][frame_idx])
 
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
     if not h5_path.exists():
         return np.zeros((height, width), dtype=np.uint8)
 
     try:
-        with open_video_h5(project_path, video_id, "r") as f:
+        with open_video_h5(project_path, video_id, "r", mask_subdir) as f:
             if "masks" not in f:
                 return np.zeros((height, width), dtype=np.uint8)
             return np.array(f["masks"][frame_idx])
@@ -190,6 +200,7 @@ def load_masks_batch(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
+    mask_subdir: str = "masks",
 ) -> np.ndarray:
     """Load multiple masks efficiently using HDF5 slice indexing.
 
@@ -200,8 +211,9 @@ def load_masks_batch(
         count: Number of frames to load
         num_frames: Total number of frames in the video
         height: Video height in pixels
-        width: Video width in pixels
+        width: Video height in pixels
         h5_file: Optional pre-opened h5py.File
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
 
     Returns:
         Array of shape (actual_count, height, width) where actual_count
@@ -215,12 +227,12 @@ def load_masks_batch(
             return np.zeros((actual_count, height, width), dtype=np.uint8)
         return np.array(h5_file["masks"][start_frame:end_frame])
 
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
     if not h5_path.exists():
         return np.zeros((actual_count, height, width), dtype=np.uint8)
 
     try:
-        with open_video_h5(project_path, video_id, "r") as f:
+        with open_video_h5(project_path, video_id, "r", mask_subdir) as f:
             if "masks" not in f:
                 return np.zeros((actual_count, height, width), dtype=np.uint8)
             return np.array(f["masks"][start_frame:end_frame])
@@ -233,6 +245,7 @@ def clear_mask(
     video_id: int,
     frame_idx: int,
     h5_file: Optional[h5py.File] = None,
+    mask_subdir: str = "masks",
 ) -> None:
     """Clear (zero out) a mask for a specific frame.
 
@@ -241,6 +254,7 @@ def clear_mask(
         video_id: ID of the video
         frame_idx: Frame index (0-based)
         h5_file: Optional pre-opened h5py.File in write mode
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
     """
     if h5_file is not None:
         if "masks" in h5_file:
@@ -249,25 +263,28 @@ def clear_mask(
             h5_file.flush()
         return
 
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, "a") as f:
+    with open_video_h5(project_path, video_id, "a", mask_subdir) as f:
         if "masks" in f:
             ds = f["masks"]
             ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
             f.flush()
 
 
-def clear_all_masks(project_path: Path, video_id: int) -> None:
+def clear_all_masks(
+    project_path: Path, video_id: int, mask_subdir: str = "masks"
+) -> None:
     """Delete all masks for a video by removing the HDF5 file.
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
     """
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
     lock_path = _get_lock_path(h5_path)
 
     # Check for lock

@@ -100,6 +100,7 @@ async def preload_segmentation():
 
 @router.post("/projects/{project_id}/videos/{video_id}/session")
 async def init_video_session(
+    project_id: int,
     video: Video = Depends(get_video),
 ):
     """
@@ -112,7 +113,7 @@ async def init_video_session(
     video_path = Path(video.path)
 
     try:
-        session_info = sam2_service.init_session(video.id, video_path)
+        session_info = sam2_service.init_session(project_id, video.id, video_path)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -126,6 +127,7 @@ async def init_video_session(
 
 @router.delete("/projects/{project_id}/videos/{video_id}/session")
 async def close_video_session(
+    project_id: int,
     video_id: int,
 ):
     """
@@ -133,5 +135,5 @@ async def close_video_session(
 
     Frees GPU memory. Call this when leaving the video detail view.
     """
-    closed = sam2_service.close_session(video_id)
+    closed = sam2_service.close_session(project_id, video_id)
     return {"closed": closed}

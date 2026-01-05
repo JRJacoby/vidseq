@@ -238,30 +238,32 @@ onMounted(async () => {
         </div>
         <div v-else class="video-with-timeline">
           <div class="video-container">
-            <video
-              ref="videoRef"
-              class="video-player"
-              :src="videoStreamUrl"
-              @timeupdate="onTimeUpdate"
-              @loadedmetadata="onLoadedMetadata"
-              @play="onPlay"
-              @pause="onPause"
-            >
-              Your browser does not support the video tag.
-            </video>
-            <VideoOverlay
-              v-if="videoWidth > 0 && videoHeight > 0"
-              :video-width="videoWidth"
-              :video-height="videoHeight"
-              :active-tool="activeTool"
-              :mask="currentMask"
-              :bbox="currentBbox"
-              :prompts="currentPrompts"
-              :show-mask="showMask"
-              :show-bbox="true"
-              :show-prompts="showPrompts"
-              @point-complete="handlePointComplete"
-            />
+            <div class="video-wrapper">
+              <video
+                ref="videoRef"
+                class="video-player"
+                :src="videoStreamUrl"
+                @timeupdate="onTimeUpdate"
+                @loadedmetadata="onLoadedMetadata"
+                @play="onPlay"
+                @pause="onPause"
+              >
+                Your browser does not support the video tag.
+              </video>
+              <VideoOverlay
+                v-if="videoWidth > 0 && videoHeight > 0"
+                :video-width="videoWidth"
+                :video-height="videoHeight"
+                :active-tool="activeTool"
+                :mask="currentMask"
+                :bbox="currentBbox"
+                :prompts="currentPrompts"
+                :show-mask="showMask"
+                :show-bbox="true"
+                :show-prompts="showPrompts"
+                @point-complete="handlePointComplete"
+              />
+            </div>
           </div>
           <TimelineSystem>
             <VideoTimeline
@@ -514,6 +516,13 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.video-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .video-player {

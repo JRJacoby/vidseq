@@ -197,6 +197,8 @@ def process_single_video(
     Returns:
         True if successful, False otherwise
     """
+    import h5py
+
     video_path = Path(video.path)
     output_path = _get_cropped_video_path(project_path, video.name)
     temp_path = output_path.with_suffix(".temp.mp4")
@@ -226,15 +228,30 @@ def process_single_video(
         cap.release()
         return False
 
-    # Open HDF5 mask file
+    # Open source HDF5 mask file (read-only)
     h5_path = project_path / "masks" / f"{video.id}.h5"
     h5_file = None
     if h5_path.exists():
         try:
-            import h5py
             h5_file = h5py.File(h5_path, "r")
         except Exception as e:
             print(f"[Cropped Video] Warning: Could not open mask file: {e}")
+
+    # Open cropped masks HDF5 file for writing
+    cropped_masks_dir = project_path / "cropped_masks"
+    cropped_masks_dir.mkdir(parents=True, exist_ok=True)
+    cropped_h5_path = cropped_masks_dir / f"{video.id}.h5"
+    cropped_h5_file = h5py.File(cropped_h5_path, "w")
+
+    # Create dataset for cropped masks
+    cropped_h5_file.create_dataset(
+        "masks",
+        shape=(video.num_frames, crop_size, crop_size),
+        dtype=np.uint8,
+        fillvalue=0,
+        chunks=(1, crop_size, crop_size),
+        compression=None,
+    )
 
     try:
         frame_idx = 0
@@ -283,6 +300,9 @@ def process_single_video(
             if src_x2 > src_x1 and src_y2 > src_y1:
                 cropped_mask[dst_y1:dst_y2, dst_x1:dst_x2] = mask[src_y1:src_y2, src_x1:src_x2]
 
+            # Save cropped mask to HDF5
+            cropped_h5_file["masks"][frame_idx] = cropped_mask
+
             # Zero out pixels where mask is 0
             mask_3ch = np.stack([cropped_mask, cropped_mask, cropped_mask], axis=2)
             cropped_frame = np.where(mask_3ch > 0, cropped_frame, 0)
@@ -308,6 +328,7 @@ def process_single_video(
         writer.release()
         if h5_file is not None:
             h5_file.close()
+        cropped_h5_file.close()
 
     # Re-encode to H.264 for browser compatibility
     print(f"[Cropped Video] Re-encoding to H.264: {output_path.name}")

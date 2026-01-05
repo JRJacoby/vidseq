@@ -452,6 +452,30 @@ def rotate_frame(frame: np.ndarray, angle_degrees: float) -> np.ndarray:
     return rotated
 
 
+def rotate_mask(mask: np.ndarray, angle_degrees: float, threshold: int = 127) -> np.ndarray:
+    """Rotate a binary mask around center and re-threshold to binary.
+
+    Args:
+        mask: (H, W) uint8 mask
+        angle_degrees: Rotation angle (positive = counterclockwise)
+        threshold: Threshold value for re-binarization after rotation (default 127)
+
+    Returns:
+        Rotated binary mask (same dimensions)
+    """
+    h, w = mask.shape[:2]
+    center = (w / 2, h / 2)
+
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle_degrees, scale=1.0)
+    # Use INTER_LINEAR for smoother rotation, then threshold back to binary
+    rotated = cv2.warpAffine(mask, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
+
+    # Re-threshold to binary (values > threshold become 255, else 0)
+    _, binary = cv2.threshold(rotated, threshold, 255, cv2.THRESH_BINARY)
+
+    return binary
+
+
 class AlignmentDataset(Dataset):
     """PyTorch Dataset for alignment model training.
 
@@ -1147,7 +1171,8 @@ class AlignmentService:
         """Apply alignment to all cropped videos.
 
         Reads cropped videos, rotates frames so animal faces right,
-        saves to aligned_videos folder.
+        saves to aligned_videos folder. Also rotates cropped masks
+        and saves to aligned_masks folder.
 
         Args:
             project_path: Path to project folder
@@ -1172,10 +1197,29 @@ class AlignmentService:
                 logger.warning("apply_alignment_sync: no cropped videos to align")
                 return False
 
-            # Create output directory
+            # Check that all videos have cropped masks
+            cropped_masks_dir = project_path / "cropped_masks"
+            missing_masks = []
+            for video in videos:
+                cropped_mask_path = cropped_masks_dir / f"{video.id}.h5"
+                if not cropped_mask_path.exists():
+                    missing_masks.append(video.id)
+
+            if missing_masks:
+                logger.error(
+                    f"apply_alignment_sync: cropped masks missing for videos: {missing_masks}. "
+                    f"Please re-run cropped video extraction."
+                )
+                return False
+
+            logger.info("apply_alignment_sync: all cropped masks verified")
+
+            # Create output directories
             output_dir = project_path / "aligned_videos"
             output_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"apply_alignment_sync: output_dir={output_dir}")
+            aligned_masks_dir = project_path / "aligned_masks"
+            aligned_masks_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"apply_alignment_sync: output_dir={output_dir}, aligned_masks_dir={aligned_masks_dir}")
 
             for video in videos:
                 logger.info(f"apply_alignment_sync: processing video id={video.id}, name={video.name}")
@@ -1224,6 +1268,30 @@ class AlignmentService:
                     cap.release()
                     continue
 
+                # Open cropped masks HDF5 for reading
+                cropped_mask_h5_path = cropped_masks_dir / f"{video.id}.h5"
+                cropped_mask_h5 = h5py.File(cropped_mask_h5_path, "r")
+
+                # Get mask dimensions from cropped masks (may differ from video dimensions)
+                mask_shape = cropped_mask_h5["masks"].shape
+                mask_height, mask_width = mask_shape[1], mask_shape[2]
+
+                # Create aligned masks HDF5 for writing (use mask dimensions, not video dimensions)
+                aligned_mask_h5_path = aligned_masks_dir / f"{video.id}.h5"
+                aligned_mask_h5 = h5py.File(aligned_mask_h5_path, "w")
+                aligned_mask_h5.create_dataset(
+                    "masks",
+                    shape=(frame_count, mask_height, mask_width),
+                    dtype=np.uint8,
+                    fillvalue=0,
+                    chunks=(1, mask_height, mask_width),
+                    compression=None,
+                )
+                logger.info(
+                    f"apply_alignment_sync: opened cropped masks from {cropped_mask_h5_path.name} "
+                    f"(shape {mask_shape}), creating aligned masks at {aligned_mask_h5_path.name}"
+                )
+
                 # Process each frame
                 log_interval = max(1, frame_count // 10)  # Log every 10%
                 for frame_idx in range(frame_count):
@@ -1267,6 +1335,11 @@ class AlignmentService:
                     # Write rotated frame
                     writer.write(rotated)
 
+                    # Load cropped mask, rotate, threshold, and save
+                    cropped_mask = np.array(cropped_mask_h5["masks"][frame_idx])
+                    aligned_mask = rotate_mask(cropped_mask, angle)
+                    aligned_mask_h5["masks"][frame_idx] = aligned_mask
+
                     # Log progress
                     if frame_idx % log_interval == 0 or frame_idx == frame_count - 1:
                         progress = (frame_idx + 1) / frame_count * 100
@@ -1278,6 +1351,9 @@ class AlignmentService:
                 # Release resources
                 cap.release()
                 writer.release()
+                cropped_mask_h5.close()
+                aligned_mask_h5.close()
+                logger.info(f"apply_alignment_sync: video {video.id} - aligned masks saved")
 
                 # Re-encode to H.264 for browser compatibility
                 logger.info(f"apply_alignment_sync: re-encoding to H.264: {output_path.name}")

@@ -112,7 +112,8 @@ class SAM2Service:
         self._tcp_client: Optional[SAM2TCPClient] = None
         self._status = SAM2Status.NOT_LOADED
         self._error_message: Optional[str] = None
-        self._sessions: dict[int, VideoSessionInfo] = {}
+        # Sessions keyed by (project_id, video_id) to avoid collisions across projects
+        self._sessions: dict[tuple[int, int], VideoSessionInfo] = {}
         self._prompts: dict[int, list[dict]] = {}  # frame_idx -> list of prompts
         
         self._initialized = True
@@ -272,41 +273,43 @@ class SAM2Service:
                 # Don't change status - might be temporary connection issue
             raise RuntimeError(f"Failed to communicate with SAM2 worker: {e}") from e
     
-    def init_session(self, video_id: int, video_path: Path) -> VideoSessionInfo:
+    def init_session(self, project_id: int, video_id: int, video_path: Path) -> VideoSessionInfo:
         """Initialize a segmentation session for a video."""
-        if video_id in self._sessions:
-            return self._sessions[video_id]
-        
+        session_key = (project_id, video_id)
+        if session_key in self._sessions:
+            return self._sessions[session_key]
+
         # Clear prompts when initializing a new session
         self._prompts = {}
-        
+
         result = self._send_and_wait({
             "type": "init_session",
             "video_id": video_id,
             "video_path": str(video_path),
         }, timeout=600.0)  # 10 min timeout for first session (torch.compile warmup)
-        
+
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to init session"))
-        
+
         session_info = VideoSessionInfo(
             video_id=video_id,
             num_frames=result["num_frames"],
             height=result["height"],
             width=result["width"],
         )
-        self._sessions[video_id] = session_info
+        self._sessions[session_key] = session_info
         return session_info
-    
-    def get_session(self, video_id: int) -> Optional[VideoSessionInfo]:
+
+    def get_session(self, project_id: int, video_id: int) -> Optional[VideoSessionInfo]:
         """Get session info if it exists."""
-        return self._sessions.get(video_id)
-    
-    def close_session(self, video_id: int) -> bool:
+        return self._sessions.get((project_id, video_id))
+
+    def close_session(self, project_id: int, video_id: int) -> bool:
         """Close a video session."""
-        if video_id not in self._sessions:
+        session_key = (project_id, video_id)
+        if session_key not in self._sessions:
             return False
-        
+
         try:
             self._send_and_wait({
                 "type": "close_session",
@@ -314,12 +317,13 @@ class SAM2Service:
             }, timeout=10.0)
         except Exception:
             pass
-        
-        self._sessions.pop(video_id, None)
+
+        self._sessions.pop(session_key, None)
         return True
     
     def add_point_prompt(
         self,
+        project_id: int,
         video_id: int,
         video_path: Path,
         frame_idx: int,
@@ -328,22 +332,23 @@ class SAM2Service:
     ) -> np.ndarray:
         """
         Add point prompts and get the segmentation mask.
-        
+
         First point creates the tracked object, subsequent points refine it.
-        
+
         Args:
+            project_id: ID of the project
             video_id: ID of the video
             video_path: Path to video file (used to init session if needed)
             frame_idx: Frame index to segment
             points: List of [x, y] coordinates in normalized [0,1] coords
             labels: List of labels (1=positive, 0=negative)
-            
+
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
         """
-        session = self.get_session(video_id)
+        session = self.get_session(project_id, video_id)
         if session is None:
-            session = self.init_session(video_id, video_path)
+            session = self.init_session(project_id, video_id, video_path)
         
         result = self._send_and_wait({
             "type": "add_point_prompt",
@@ -379,68 +384,71 @@ class SAM2Service:
         
         return mask
     
-    def reset_state(self, video_id: int) -> bool:
+    def reset_state(self, project_id: int, video_id: int) -> bool:
         """
         Reset the tracking state for a video.
-        
+
         Clears all object tracking memory. User must re-click to define object.
-        
+
         Args:
+            project_id: ID of the project
             video_id: ID of the video
-            
+
         Returns:
             True if successful
         """
-        session = self.get_session(video_id)
+        session = self.get_session(project_id, video_id)
         if session is None:
             return True
-        
+
         result = self._send_and_wait({
             "type": "reset_state",
             "video_id": video_id,
         }, timeout=30.0)
-        
+
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to reset state"))
-        
+
         session.has_object = False
         # Clear prompts when resetting state
         self._prompts = {}
         return True
-    
-    def clear_frame_prompts(self, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
+
+    def clear_frame_prompts(self, project_id: int, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
         """
         Clear all prompts for a specific frame.
-        
+
         Removes point and mask inputs for the given frame from SAM2's inference state.
         This is useful when resetting a conditioning frame.
-        
+
         Args:
+            project_id: ID of the project
             video_id: ID of the video
             frame_idx: Frame index to clear
             obj_id: Object ID (default: 1)
-            
+
         Returns:
             True if successful
         """
-        session = self.get_session(video_id)
+        session = self.get_session(project_id, video_id)
         if session is None:
             return True
-        
+
         result = self._send_and_wait({
             "type": "clear_frame_prompts",
             "video_id": video_id,
             "frame_idx": frame_idx,
             "obj_id": obj_id,
         }, timeout=30.0)
-        
+
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to clear frame prompts"))
-        
+
         return True
     
     def generate_training_masks(
         self,
+        project_id: int,
         video_id: int,
         start_frame_idx: int,
         max_frames: int,
@@ -451,8 +459,9 @@ class SAM2Service:
     ) -> int:
         """
         Generate training masks by propagating tracking forward and save to H5.
-        
+
         Args:
+            project_id: ID of the project
             video_id: ID of the video
             start_frame_idx: Frame index to start propagation from
             max_frames: Maximum number of frames to propagate
@@ -460,14 +469,14 @@ class SAM2Service:
             num_frames: Total number of frames in the video
             height: Video height in pixels
             width: Video width in pixels
-            
+
         Returns:
             Number of frames processed
-            
+
         Raises:
             RuntimeError: If no object has been tracked
         """
-        session = self.get_session(video_id)
+        session = self.get_session(project_id, video_id)
         if session is None:
             raise RuntimeError("No session exists. Add a point prompt first.")
         
@@ -600,22 +609,23 @@ def start_loading_in_background() -> None:
     SAM2Service.get_instance().start_loading_in_background()
 
 
-def init_session(video_id: int, video_path: Path) -> VideoSessionInfo:
+def init_session(project_id: int, video_id: int, video_path: Path) -> VideoSessionInfo:
     """Initialize a segmentation session for a video."""
-    return SAM2Service.get_instance().init_session(video_id, video_path)
+    return SAM2Service.get_instance().init_session(project_id, video_id, video_path)
 
 
-def get_session(video_id: int) -> Optional[VideoSessionInfo]:
+def get_session(project_id: int, video_id: int) -> Optional[VideoSessionInfo]:
     """Get session info if it exists."""
-    return SAM2Service.get_instance().get_session(video_id)
+    return SAM2Service.get_instance().get_session(project_id, video_id)
 
 
-def close_session(video_id: int) -> bool:
+def close_session(project_id: int, video_id: int) -> bool:
     """Close a video session."""
-    return SAM2Service.get_instance().close_session(video_id)
+    return SAM2Service.get_instance().close_session(project_id, video_id)
 
 
 def add_point_prompt(
+    project_id: int,
     video_id: int,
     video_path: Path,
     frame_idx: int,
@@ -624,25 +634,26 @@ def add_point_prompt(
 ) -> np.ndarray:
     """
     Add point prompts and get the segmentation mask.
-    
+
     First point creates the tracked object, subsequent points refine it.
     """
     return SAM2Service.get_instance().add_point_prompt(
-        video_id, video_path, frame_idx, points, labels
+        project_id, video_id, video_path, frame_idx, points, labels
     )
 
 
-def reset_state(video_id: int) -> bool:
+def reset_state(project_id: int, video_id: int) -> bool:
     """Reset the tracking state for a video."""
-    return SAM2Service.get_instance().reset_state(video_id)
+    return SAM2Service.get_instance().reset_state(project_id, video_id)
 
 
-def clear_frame_prompts(video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
+def clear_frame_prompts(project_id: int, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
     """Clear all prompts for a specific frame."""
-    return SAM2Service.get_instance().clear_frame_prompts(video_id, frame_idx, obj_id)
+    return SAM2Service.get_instance().clear_frame_prompts(project_id, video_id, frame_idx, obj_id)
 
 
 def generate_training_masks(
+    project_id: int,
     video_id: int,
     start_frame_idx: int,
     max_frames: int,
@@ -653,7 +664,7 @@ def generate_training_masks(
 ) -> int:
     """Generate training masks by propagating tracking forward and save to H5."""
     return SAM2Service.get_instance().generate_training_masks(
-        video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
+        project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
     )
 
 

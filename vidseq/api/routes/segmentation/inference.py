@@ -26,6 +26,7 @@ router = APIRouter()
 
 @router.post("/projects/{project_id}/videos/{video_id}/segment")
 async def run_segmentation(
+    project_id: int,
     segment_request: SegmentRequest,
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
@@ -45,6 +46,7 @@ async def run_segmentation(
 
     try:
         mask = sam2_service.add_point_prompt(
+            project_id=project_id,
             video_id=video.id,
             video_path=video_path,
             frame_idx=segment_request.frame_idx,
@@ -85,6 +87,7 @@ async def run_segmentation(
     response_model=PropagateResponse,
 )
 async def propagate_mask(
+    project_id: int,
     request: PropagateRequest,
     video: Video = Depends(get_video),
     project_path: Path = Depends(get_project_folder),
@@ -98,6 +101,7 @@ async def propagate_mask(
     """
     try:
         frames_processed = sam2_service.generate_training_masks(
+            project_id=project_id,
             video_id=video.id,
             start_frame_idx=request.start_frame_idx,
             max_frames=request.max_frames,
