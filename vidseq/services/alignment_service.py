@@ -309,19 +309,22 @@ def calculate_rotation_angle(
     front_y: float,
     rear_x: float,
     rear_y: float,
+    width: int = 1,
+    height: int = 1,
 ) -> float:
     """Calculate rotation angle to make animal face right.
 
     Args:
         front_x, front_y: Front (nose) keypoint coordinates (normalized 0-1)
         rear_x, rear_y: Rear (tail) keypoint coordinates (normalized 0-1)
+        width, height: Frame dimensions for aspect ratio correction
 
     Returns:
-        Angle in degrees (positive = counterclockwise)
+        Angle in degrees for cv2.getRotationMatrix2D
     """
-    # Vector from rear to front
-    dx = front_x - rear_x
-    dy = front_y - rear_y
+    # Vector from rear to front, scaled by dimensions for correct aspect ratio
+    dx = (front_x - rear_x) * width
+    dy = (front_y - rear_y) * height
 
     # Current angle (radians) - note: y increases downward in image coords
     # arctan2(dy, dx) gives angle from positive x-axis
@@ -329,12 +332,14 @@ def calculate_rotation_angle(
 
     # Convert to degrees
     # We want animal facing right (angle = 0)
-    # So rotation needed is -angle_rad
-    rotation_degrees = -np.degrees(angle_rad)
+    # In OpenCV with image coords (y-down), positive angle = visually clockwise
+    # To rotate the animal TO 0°, we need to rotate BY the negative of its current angle
+    # But since positive rotation is CW (decreases angle), we use the angle directly
+    rotation_degrees = np.degrees(angle_rad)
 
     logger.debug(
         f"calculate_rotation_angle: front=({front_x:.3f}, {front_y:.3f}), "
-        f"rear=({rear_x:.3f}, {rear_y:.3f}), angle={rotation_degrees:.1f}°"
+        f"rear=({rear_x:.3f}, {rear_y:.3f}), dims={width}x{height}, angle={rotation_degrees:.1f}°"
     )
 
     return rotation_degrees
@@ -1139,8 +1144,8 @@ class AlignmentService:
                     front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
                     rear_x, rear_y = fit_gaussian_to_heatmap(heatmap[:, :, 1])
 
-                    # Calculate rotation angle
-                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y)
+                    # Calculate rotation angle (pass dimensions for aspect ratio correction)
+                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
 
                     # Rotate frame
                     rotated = rotate_frame(frame, angle)
