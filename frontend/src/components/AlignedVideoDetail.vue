@@ -1,9 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getAlignedVideoStreamUrl, type Video } from '@/services/api'
+import { useDebounceFn } from '@vueuse/core'
+import {
+  getVideo,
+  getAlignedVideoStreamUrl,
+  getPCAStatus,
+  getPCAScoresDownsampled,
+  checkPCAScoresExist,
+  type Video,
+  type PCAScorePoint,
+} from '@/services/api'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import VideoTimeline from './VideoTimeline.vue'
+import TimelineSystem from './TimelineSystem.vue'
+import DataTrack from './DataTrack.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -80,8 +91,85 @@ const handleLabelFrame = () => {
   })
 }
 
+// PCA state
+const hasPCAScores = ref(false)
+const nComponents = ref(0)
+const visiblePCs = ref<number[]>([0, 1, 2])  // Default: show first 3 PCs
+const showPCAPlot = ref(true)
+const pcaScores = ref<Record<string, PCAScorePoint[]>>({})
+
+// Color palette for PC checkboxes
+const PC_COLORS = [
+  '#3b82f6', '#ef4444', '#22c55e', '#a855f7',
+  '#f97316', '#ec4899', '#14b8a6', '#eab308',
+]
+
+const getPCColor = (pcIdx: number): string => {
+  return PC_COLORS[pcIdx % PC_COLORS.length] ?? '#888888'
+}
+
+const fetchPCAScores = async () => {
+  if (!projectId.value || !videoId.value || !video.value || !hasPCAScores.value) return
+  if (visiblePCs.value.length === 0) {
+    pcaScores.value = {}
+    return
+  }
+
+  try {
+    const startFrame = Math.floor(viewStart.value * video.value.fps)
+    const endFrame = Math.ceil(viewEnd.value * video.value.fps)
+
+    const response = await getPCAScoresDownsampled(
+      projectId.value,
+      videoId.value,
+      visiblePCs.value,
+      800,
+      startFrame,
+      endFrame
+    )
+    pcaScores.value = response.scores
+    nComponents.value = response.n_components
+  } catch (e) {
+    console.error('Failed to fetch PCA scores:', e)
+  }
+}
+
+const debouncedFetchPCAScores = useDebounceFn(fetchPCAScores, 150)
+
+// Watch for view changes
+watch([viewStart, viewEnd], () => {
+  if (hasPCAScores.value) {
+    debouncedFetchPCAScores()
+  }
+})
+
+// Watch for PC selection changes (immediate fetch)
+watch(visiblePCs, () => {
+  if (hasPCAScores.value) {
+    fetchPCAScores()
+  }
+}, { deep: true })
+
+const loadPCAStatus = async () => {
+  try {
+    hasPCAScores.value = await checkPCAScoresExist(projectId.value, videoId.value)
+    if (hasPCAScores.value) {
+      const status = await getPCAStatus(projectId.value)
+      if (status.has_pca && status.n_components) {
+        nComponents.value = status.n_components
+      }
+    }
+  } catch (e) {
+    console.error('Failed to check PCA scores:', e)
+  }
+}
+
 onMounted(async () => {
   await loadVideo()
+  await loadPCAStatus()
+  if (hasPCAScores.value) {
+    await fetchPCAScores()
+  }
 })
 </script>
 
@@ -114,17 +202,38 @@ onMounted(async () => {
               Your browser does not support the video tag.
             </video>
           </div>
-          <VideoTimeline
-            :current-time="currentTime"
-            :duration="duration"
-            :is-playing="isPlaying"
-            :fps="video!.fps"
-            :external-view-start="viewStart"
-            :external-view-end="viewEnd"
-            @seek="handleSeek"
-            @toggle-play="handleTogglePlay"
-            @view-change="handleViewChange"
-          />
+          <TimelineSystem>
+            <VideoTimeline
+              :current-time="currentTime"
+              :duration="duration"
+              :is-playing="isPlaying"
+              :fps="video!.fps"
+              :external-view-start="viewStart"
+              :external-view-end="viewEnd"
+              @seek="handleSeek"
+              @toggle-play="handleTogglePlay"
+              @view-change="handleViewChange"
+            />
+            <DataTrack
+              v-if="hasPCAScores"
+              :duration="duration"
+              :fps="video!.fps"
+              :current-time="currentTime"
+              :view-start="viewStart"
+              :view-end="viewEnd"
+              :masked-ranges="[]"
+              :training-ranges="[]"
+              :show-masked-frames="false"
+              :show-training-frames="false"
+              :show-confidence-plot="false"
+              :is-marking-mode="false"
+              :confidence-scores="[]"
+              :pca-scores="pcaScores"
+              :visible-p-cs="visiblePCs"
+              :show-p-c-a-plot="showPCAPlot"
+              @view-change="handleViewChange"
+            />
+          </TimelineSystem>
         </div>
       </div>
     </div>
@@ -139,6 +248,40 @@ onMounted(async () => {
           Label This Frame
         </button>
         <p class="label-hint">Jump to cropped video to add this frame to alignment training data.</p>
+
+        <template v-if="hasPCAScores">
+          <h4 class="action-bar-title">PCA Visualization</h4>
+          <button
+            class="toggle-button"
+            :class="{ active: showPCAPlot }"
+            @click="showPCAPlot = !showPCAPlot"
+          >
+            {{ showPCAPlot ? 'PCA Plot On' : 'PCA Plot Off' }}
+          </button>
+
+          <div v-if="showPCAPlot" class="pc-selector">
+            <label class="pc-selector-label">Visible PCs:</label>
+            <div class="pc-checkboxes">
+              <label
+                v-for="pc in nComponents"
+                :key="pc - 1"
+                class="pc-checkbox"
+              >
+                <input
+                  type="checkbox"
+                  :value="pc - 1"
+                  v-model="visiblePCs"
+                />
+                <span
+                  class="pc-color-dot"
+                  :style="{ backgroundColor: getPCColor(pc - 1) }"
+                ></span>
+                <span class="pc-label">PC{{ pc }}</span>
+              </label>
+            </div>
+          </div>
+        </template>
+        <p v-else class="no-pca-hint">Run PCA to visualize PC scores.</p>
       </div>
     </aside>
   </div>
@@ -293,5 +436,77 @@ onMounted(async () => {
   font-size: 0.8rem;
   color: #888;
   line-height: 1.4;
+}
+
+/* PCA Controls */
+.toggle-button {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: #f8f8f8;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.toggle-button:hover {
+  background-color: #e8e8e8;
+}
+
+.toggle-button.active {
+  background-color: #dbeafe;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
+.pc-selector {
+  margin-top: 0.75rem;
+}
+
+.pc-selector-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.pc-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.pc-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.pc-checkbox input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.pc-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pc-label {
+  color: #444;
+}
+
+.no-pca-hint {
+  margin: 1rem 0 0 0;
+  font-size: 0.85rem;
+  color: #888;
+  font-style: italic;
 }
 </style>

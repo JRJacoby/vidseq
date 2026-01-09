@@ -4,12 +4,15 @@ Provides training and inference for keypoint detection (front/rear of animal)
 using a U-Net model with ResNet18 encoder.
 """
 
+import copy
 import io
 import logging
 import os
 import random
 import subprocess
 import threading
+import time
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +45,56 @@ ALIGNMENT_INPUT_SIZE = 128  # Fixed input size for model
 ONE_EURO_MIN_CUTOFF = 1.0  # Minimum cutoff frequency (Hz) - lower = more smoothing
 ONE_EURO_BETA = 0.0        # Speed coefficient - 0 = simple low-pass filter (no adaptive behavior)
 ONE_EURO_D_CUTOFF = 1.0    # Derivative cutoff frequency (Hz)
+
+
+@dataclass
+class TrainingProgress:
+    """Real-time training progress state for SSE streaming."""
+
+    is_training: bool = False
+    current_epoch: int = 0
+    max_epochs: int = 100
+
+    # Training loss
+    current_train_loss: float = 0.0
+    train_loss_history: list[float] = field(default_factory=list)
+
+    # Validation loss
+    current_val_loss: float = 0.0
+    val_loss_history: list[float] = field(default_factory=list)
+
+    # Best model tracking (based on validation loss)
+    best_val_loss: float = float("inf")
+    best_epoch: int = 0
+
+    # Learning rate
+    current_lr: float = 1e-4
+
+    # Patience counters (based on val loss)
+    epochs_without_improvement: int = 0
+    lr_patience: int = 3
+    early_stop_patience: int = 5
+    lr_reduced_this_plateau: bool = False
+
+    # Status
+    status: str = "idle"  # idle, training, completed, stopped, failed
+    started_at: Optional[float] = None
+
+    # Dataset info
+    num_train_labels: int = 0
+    num_val_labels: int = 0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        d = asdict(self)
+        # Convert inf to None for JSON compatibility
+        if d["best_val_loss"] == float("inf"):
+            d["best_val_loss"] = None
+        # Add backward-compatible field aliases
+        d["current_loss"] = d["current_train_loss"]
+        d["best_loss"] = d["best_val_loss"]
+        d["loss_history"] = d["train_loss_history"]
+        return d
 
 
 class OneEuroFilter:
@@ -147,7 +200,7 @@ def generate_gaussian_heatmap(
     y: float,
     height: int,
     width: int,
-    sigma: float = 0.05,
+    sigma: float = 0.10,
 ) -> np.ndarray:
     """Generate a gaussian heatmap centered at (x, y).
 
@@ -156,13 +209,11 @@ def generate_gaussian_heatmap(
         y: Normalized y coordinate (0-1)
         height: Height of output heatmap
         width: Width of output heatmap
-        sigma: Standard deviation of gaussian (normalized, default 0.05 = 5% of image)
+        sigma: Standard deviation of gaussian (normalized, default 0.10 = 10% of image)
 
     Returns:
         Heatmap array of shape (height, width) with values in [0, 1]
     """
-    logger.debug(f"generate_gaussian_heatmap: center=({x:.3f}, {y:.3f}), size={width}x{height}, sigma={sigma}")
-
     # Create coordinate grids (normalized 0-1)
     yy, xx = np.mgrid[0:height, 0:width]
     xx = xx / width
@@ -172,10 +223,277 @@ def generate_gaussian_heatmap(
     dist_sq = (xx - x) ** 2 + (yy - y) ** 2
     heatmap = np.exp(-dist_sq / (2 * sigma ** 2))
 
-    max_val = float(np.max(heatmap))
-    logger.debug(f"generate_gaussian_heatmap: max_value={max_val:.4f}")
-
     return heatmap.astype(np.float32)
+
+
+# --- Augmentation Configuration ---
+AUGMENT_VERSIONS_PER_SAMPLE = 10  # Number of augmented versions per training sample
+AUGMENT_CATEGORY_PROB = 0.5  # 50% chance each category is activated
+
+# --- Train/Validation Split Configuration ---
+TRAIN_VAL_SPLIT_SEED = 42  # Fixed seed for reproducible splits
+TRAIN_VAL_SPLIT_RATIO = 0.8  # 80% train, 20% val
+MIN_LABELS_FOR_VALIDATION = 5  # Minimum labels needed for meaningful validation
+
+
+def split_labels_train_val(
+    labels: list,
+    train_ratio: float = TRAIN_VAL_SPLIT_RATIO,
+    seed: int = TRAIN_VAL_SPLIT_SEED,
+) -> tuple[list, list]:
+    """Split labels into train and validation sets.
+
+    Args:
+        labels: List of AlignmentLabel objects
+        train_ratio: Fraction of labels for training (default 0.8)
+        seed: Random seed for reproducible splits
+
+    Returns:
+        (train_labels, val_labels) tuple
+    """
+    # Copy list to avoid modifying original
+    labels_copy = list(labels)
+
+    # Shuffle with fixed seed
+    rng = random.Random(seed)
+    rng.shuffle(labels_copy)
+
+    # Split
+    split_idx = int(len(labels_copy) * train_ratio)
+    train_labels = labels_copy[:split_idx]
+    val_labels = labels_copy[split_idx:]
+
+    logger.info(
+        f"split_labels_train_val: {len(labels)} total -> "
+        f"{len(train_labels)} train, {len(val_labels)} val "
+        f"(ratio={train_ratio}, seed={seed})"
+    )
+
+    return train_labels, val_labels
+
+
+def _apply_geometric_augmentation(
+    frame: np.ndarray,
+    front_x: float,
+    front_y: float,
+    rear_x: float,
+    rear_y: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, float, float, float, float]:
+    """Apply random rotation and optional flips.
+
+    Args:
+        frame: Input frame (H, W, 3)
+        front_x, front_y: Front keypoint normalized coords (0-1)
+        rear_x, rear_y: Rear keypoint normalized coords (0-1)
+        rng: NumPy random generator for reproducibility
+
+    Returns:
+        (augmented_frame, new_front_x, new_front_y, new_rear_x, new_rear_y)
+    """
+    h, w = frame.shape[:2]
+
+    # Random rotation angle
+    angle = rng.uniform(-180, 180)
+    center = (w / 2, h / 2)
+    rot_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    frame = cv2.warpAffine(frame, rot_matrix, (w, h))
+
+    # Transform coordinates (rotate around center)
+    def rotate_point(x: float, y: float) -> tuple[float, float]:
+        px, py = x * w, y * h
+        cos_a, sin_a = np.cos(np.radians(angle)), np.sin(np.radians(angle))
+        cx, cy = w / 2, h / 2
+        px_new = cos_a * (px - cx) - sin_a * (py - cy) + cx
+        py_new = sin_a * (px - cx) + cos_a * (py - cy) + cy
+        return px_new / w, py_new / h
+
+    front_x, front_y = rotate_point(front_x, front_y)
+    rear_x, rear_y = rotate_point(rear_x, rear_y)
+
+    # Optional horizontal flip (50% chance)
+    if rng.random() < 0.5:
+        frame = cv2.flip(frame, 1)
+        front_x, rear_x = 1 - front_x, 1 - rear_x
+
+    # Optional vertical flip (50% chance)
+    if rng.random() < 0.5:
+        frame = cv2.flip(frame, 0)
+        front_y, rear_y = 1 - front_y, 1 - rear_y
+
+    return frame, front_x, front_y, rear_x, rear_y
+
+
+def _apply_color_augmentation(
+    frame: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Apply brightness, contrast, saturation adjustments.
+
+    Args:
+        frame: Input frame (H, W, 3) uint8
+        rng: NumPy random generator for reproducibility
+
+    Returns:
+        Augmented frame (H, W, 3) uint8
+    """
+    frame = frame.astype(np.float32)
+
+    # Brightness: multiply by factor
+    brightness = rng.uniform(0.7, 1.3)
+    frame = frame * brightness
+
+    # Contrast: scale around mean
+    contrast = rng.uniform(0.7, 1.3)
+    mean = frame.mean()
+    frame = (frame - mean) * contrast + mean
+
+    # Saturation: blend with grayscale
+    saturation = rng.uniform(0.8, 1.2)
+    gray = cv2.cvtColor(frame.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32)
+    frame = gray_rgb + saturation * (frame - gray_rgb)
+
+    # Optional Gaussian blur (30% chance)
+    if rng.random() < 0.3:
+        kernel_size = int(rng.choice([3, 5]))
+        frame = cv2.GaussianBlur(
+            frame.clip(0, 255).astype(np.uint8),
+            (kernel_size, kernel_size),
+            0,
+        ).astype(np.float32)
+
+    return frame.clip(0, 255).astype(np.uint8)
+
+
+def _apply_erasing_augmentation(
+    frame: np.ndarray,
+    front_x: float,
+    front_y: float,
+    rear_x: float,
+    rear_y: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Apply random erasing (cutout or coarse dropout).
+
+    Avoids erasing regions near keypoints.
+
+    Args:
+        frame: Input frame (H, W, 3)
+        front_x, front_y: Front keypoint normalized coords (0-1)
+        rear_x, rear_y: Rear keypoint normalized coords (0-1)
+        rng: NumPy random generator for reproducibility
+
+    Returns:
+        Augmented frame with erased regions
+    """
+    h, w = frame.shape[:2]
+    frame = frame.copy()
+
+    # Define keypoint exclusion zones (don't erase keypoints)
+    exclusion_radius = 0.1  # 10% of image around each keypoint
+
+    def is_safe_region(cx: float, cy: float, size: float) -> bool:
+        """Check if erasing region doesn't overlap keypoints."""
+        for kx, ky in [(front_x, front_y), (rear_x, rear_y)]:
+            if abs(cx - kx) < (size / 2 + exclusion_radius) and abs(cy - ky) < (
+                size / 2 + exclusion_radius
+            ):
+                return False
+        return True
+
+    if rng.random() < 0.7:
+        # Single rectangular cutout (70% chance)
+        for _ in range(10):  # Try up to 10 times to find safe region
+            size = rng.uniform(0.1, 0.2)
+            cx = rng.uniform(size / 2, 1 - size / 2)
+            cy = rng.uniform(size / 2, 1 - size / 2)
+            if is_safe_region(cx, cy, size):
+                x1 = int((cx - size / 2) * w)
+                y1 = int((cy - size / 2) * h)
+                x2 = int((cx + size / 2) * w)
+                y2 = int((cy + size / 2) * h)
+                frame[y1:y2, x1:x2] = rng.integers(
+                    0, 255, size=(y2 - y1, x2 - x1, 3), dtype=np.uint8
+                )
+                break
+    else:
+        # Coarse dropout (30% chance) - multiple small squares
+        n_squares = rng.integers(5, 11)
+        for _ in range(n_squares):
+            size = rng.uniform(0.02, 0.05)
+            cx = rng.uniform(size / 2, 1 - size / 2)
+            cy = rng.uniform(size / 2, 1 - size / 2)
+            if is_safe_region(cx, cy, size):
+                x1 = int((cx - size / 2) * w)
+                y1 = int((cy - size / 2) * h)
+                x2 = int((cx + size / 2) * w)
+                y2 = int((cy + size / 2) * h)
+                frame[y1:y2, x1:x2] = rng.integers(
+                    0, 255, size=(y2 - y1, x2 - x1, 3), dtype=np.uint8
+                )
+
+    return frame
+
+
+def _apply_scaling_augmentation(
+    frame: np.ndarray,
+    front_x: float,
+    front_y: float,
+    rear_x: float,
+    rear_y: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, float, float, float, float]:
+    """Apply random scaling (zoom in/out).
+
+    Args:
+        frame: Input frame (H, W, 3)
+        front_x, front_y: Front keypoint normalized coords (0-1)
+        rear_x, rear_y: Rear keypoint normalized coords (0-1)
+        rng: NumPy random generator for reproducibility
+
+    Returns:
+        (augmented_frame, new_front_x, new_front_y, new_rear_x, new_rear_y)
+    """
+    h, w = frame.shape[:2]
+    scale = rng.uniform(0.85, 1.15)
+
+    # Calculate new dimensions
+    new_h, new_w = int(h * scale), int(w * scale)
+
+    if scale > 1:
+        # Zoom in: resize larger, then center crop
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        start_x = (new_w - w) // 2
+        start_y = (new_h - h) // 2
+        frame = resized[start_y : start_y + h, start_x : start_x + w]
+
+        # Adjust coordinates: shift toward center
+        front_x = (front_x - 0.5) * scale + 0.5
+        front_y = (front_y - 0.5) * scale + 0.5
+        rear_x = (rear_x - 0.5) * scale + 0.5
+        rear_y = (rear_y - 0.5) * scale + 0.5
+    else:
+        # Zoom out: resize smaller, then pad
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        pad_x = (w - new_w) // 2
+        pad_y = (h - new_h) // 2
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        frame[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+
+        # Adjust coordinates: shift away from center
+        front_x = (front_x - 0.5) * scale + 0.5
+        front_y = (front_y - 0.5) * scale + 0.5
+        rear_x = (rear_x - 0.5) * scale + 0.5
+        rear_y = (rear_y - 0.5) * scale + 0.5
+
+    # Clamp coordinates to [0, 1]
+    front_x = float(np.clip(front_x, 0, 1))
+    front_y = float(np.clip(front_y, 0, 1))
+    rear_x = float(np.clip(rear_x, 0, 1))
+    rear_y = float(np.clip(rear_y, 0, 1))
+
+    return frame, front_x, front_y, rear_x, rear_y
 
 
 def heatmap_to_png(heatmap: np.ndarray) -> bytes:
@@ -480,17 +798,17 @@ class AlignmentDataset(Dataset):
     """PyTorch Dataset for alignment model training.
 
     Loads frames from cropped videos and generates gaussian heatmap targets.
-    Applies augmentations (rotations, flips) to expand training data 6x.
+    Optionally applies probabilistic augmentations (geometric, color, erasing, scaling)
+    with 50% chance per category, expanding training data 10x.
     """
-
-    # Augmentation types applied to every sample
-    AUG_TYPES = ["none", "rot90", "rot180", "rot270", "flip_h", "flip_v"]
 
     def __init__(
         self,
         labels: list,
         project_path: Path,
         video_name_map: dict[int, str],
+        versions_per_sample: int = AUGMENT_VERSIONS_PER_SAMPLE,
+        augment: bool = True,
     ):
         """Initialize the dataset.
 
@@ -498,90 +816,47 @@ class AlignmentDataset(Dataset):
             labels: List of AlignmentLabel objects (or dicts with same fields)
             project_path: Path to project folder
             video_name_map: Dict mapping video_id -> video.name for file lookup
+            versions_per_sample: Number of augmented versions per label (default 10)
+            augment: Whether to apply data augmentation (default True)
         """
         self.project_path = project_path
         self.video_name_map = video_name_map
         self.size = ALIGNMENT_INPUT_SIZE
+        self.augment = augment
+        self.labels = labels
 
-        # Expand labels with all augmentation types (6x expansion)
-        self.samples: list[tuple] = []
-        for label in labels:
-            for aug_type in self.AUG_TYPES:
-                self.samples.append((label, aug_type))
+        if augment:
+            # Create sample indices: (label_idx, version_idx)
+            # Each version gets a unique seed for reproducibility
+            self.versions_per_sample = versions_per_sample
+            self.samples: list[tuple[int, int]] = []
+            for label_idx in range(len(labels)):
+                for version_idx in range(versions_per_sample):
+                    self.samples.append((label_idx, version_idx))
 
-        logger.info(
-            f"AlignmentDataset: {len(labels)} labels expanded to {len(self.samples)} samples "
-            f"(6x augmentation: {self.AUG_TYPES})"
-        )
+            logger.info(
+                f"AlignmentDataset: {len(labels)} labels expanded to {len(self.samples)} samples "
+                f"({versions_per_sample}x augmentation, augment=True)"
+            )
+        else:
+            # No augmentation: one sample per label
+            self.versions_per_sample = 1
+            self.samples = [(label_idx, 0) for label_idx in range(len(labels))]
+
+            logger.info(
+                f"AlignmentDataset: {len(labels)} labels = {len(self.samples)} samples "
+                f"(no augmentation, augment=False)"
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _apply_augmentation(
-        self,
-        frame: np.ndarray,
-        front_x: float,
-        front_y: float,
-        rear_x: float,
-        rear_y: float,
-        aug_type: str,
-    ) -> tuple[np.ndarray, float, float, float, float]:
-        """Apply augmentation to frame and keypoint coordinates.
-
-        Args:
-            frame: Image array (H, W, C)
-            front_x, front_y: Front keypoint normalized coords (0-1)
-            rear_x, rear_y: Rear keypoint normalized coords (0-1)
-            aug_type: Augmentation type
-
-        Returns:
-            (augmented_frame, new_front_x, new_front_y, new_rear_x, new_rear_y)
-        """
-        if aug_type == "none":
-            return frame, front_x, front_y, rear_x, rear_y
-
-        elif aug_type == "rot90":
-            # Rotate 90° clockwise
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            # (x, y) → (1-y, x)
-            new_front_x, new_front_y = 1 - front_y, front_x
-            new_rear_x, new_rear_y = 1 - rear_y, rear_x
-
-        elif aug_type == "rot180":
-            # Rotate 180°
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-            # (x, y) → (1-x, 1-y)
-            new_front_x, new_front_y = 1 - front_x, 1 - front_y
-            new_rear_x, new_rear_y = 1 - rear_x, 1 - rear_y
-
-        elif aug_type == "rot270":
-            # Rotate 270° clockwise (= 90° counter-clockwise)
-            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            # (x, y) → (y, 1-x)
-            new_front_x, new_front_y = front_y, 1 - front_x
-            new_rear_x, new_rear_y = rear_y, 1 - rear_x
-
-        elif aug_type == "flip_h":
-            # Flip horizontal
-            frame = cv2.flip(frame, 1)
-            # (x, y) → (1-x, y)
-            new_front_x, new_front_y = 1 - front_x, front_y
-            new_rear_x, new_rear_y = 1 - rear_x, rear_y
-
-        elif aug_type == "flip_v":
-            # Flip vertical
-            frame = cv2.flip(frame, 0)
-            # (x, y) → (x, 1-y)
-            new_front_x, new_front_y = front_x, 1 - front_y
-            new_rear_x, new_rear_y = rear_x, 1 - rear_y
-
-        else:
-            raise ValueError(f"Unknown augmentation type: {aug_type}")
-
-        return frame, new_front_x, new_front_y, new_rear_x, new_rear_y
-
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        label, aug_type = self.samples[idx]
+        label_idx, version_idx = self.samples[idx]
+        label = self.labels[label_idx]
+
+        # Fresh RNG each time - different augmentation every epoch (standard practice)
+        rng = np.random.default_rng()
 
         # Get video name for file lookup
         video_name = self.video_name_map[label.video_id]
@@ -594,23 +869,47 @@ class AlignmentDataset(Dataset):
         cap.release()
 
         if not ret:
-            raise RuntimeError(f"Failed to read frame {label.frame_idx} from {cropped_path}")
+            raise RuntimeError(
+                f"Failed to read frame {label.frame_idx} from {cropped_path}"
+            )
 
         # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize to fixed size (before augmentation for consistency)
-        frame = cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
-
-        # Apply augmentation to frame and coordinates
-        frame, front_x, front_y, rear_x, rear_y = self._apply_augmentation(
-            frame,
-            label.front_x,
-            label.front_y,
-            label.rear_x,
-            label.rear_y,
-            aug_type,
+        # Resize to fixed size
+        frame = cv2.resize(
+            frame, (self.size, self.size), interpolation=cv2.INTER_LINEAR
         )
+
+        # Get keypoint coordinates
+        front_x, front_y = label.front_x, label.front_y
+        rear_x, rear_y = label.rear_x, label.rear_y
+
+        # Apply augmentations only for training set (not validation)
+        if self.augment:
+            # Apply augmentations probabilistically (50% chance each category)
+
+            # 1. Geometric (rotation + flips) - affects coordinates
+            if rng.random() < AUGMENT_CATEGORY_PROB:
+                frame, front_x, front_y, rear_x, rear_y = _apply_geometric_augmentation(
+                    frame, front_x, front_y, rear_x, rear_y, rng
+                )
+
+            # 2. Color (brightness, contrast, saturation, blur) - no coord change
+            if rng.random() < AUGMENT_CATEGORY_PROB:
+                frame = _apply_color_augmentation(frame, rng)
+
+            # 3. Random erasing (cutout or dropout) - no coord change
+            if rng.random() < AUGMENT_CATEGORY_PROB:
+                frame = _apply_erasing_augmentation(
+                    frame, front_x, front_y, rear_x, rear_y, rng
+                )
+
+            # 4. Scaling (zoom in/out) - affects coordinates
+            if rng.random() < AUGMENT_CATEGORY_PROB:
+                frame, front_x, front_y, rear_x, rear_y = _apply_scaling_augmentation(
+                    frame, front_x, front_y, rear_x, rear_y, rng
+                )
 
         # Normalize to [0, 1] and convert to (C, H, W) tensor
         frame_tensor = torch.from_numpy(frame).float() / 255.0
@@ -620,9 +919,7 @@ class AlignmentDataset(Dataset):
         front_heatmap = generate_gaussian_heatmap(
             front_x, front_y, self.size, self.size
         )
-        rear_heatmap = generate_gaussian_heatmap(
-            rear_x, rear_y, self.size, self.size
-        )
+        rear_heatmap = generate_gaussian_heatmap(rear_x, rear_y, self.size, self.size)
 
         # Stack into (2, H, W) tensor
         target = torch.from_numpy(
@@ -659,6 +956,9 @@ class AlignmentService:
         self._model_path: Optional[Path] = None
         self._device: Optional[torch.device] = None
 
+        # Training progress tracking for real-time updates
+        self._training_progress = TrainingProgress()
+
         self._initialized = True
         logger.info("AlignmentService initialized: is_training=False, is_applying=False")
 
@@ -684,6 +984,10 @@ class AlignmentService:
         """Check if applying alignment is in progress."""
         logger.debug(f"is_applying() -> {self._is_applying}")
         return self._is_applying
+
+    def get_training_progress(self) -> TrainingProgress:
+        """Get current training progress for SSE streaming."""
+        return self._training_progress
 
     def get_model_path(self, project_path: Path) -> Path:
         """Get path to the alignment model weights file."""
@@ -899,28 +1203,78 @@ class AlignmentService:
         project_path: Path,
         labels: list,
         video_name_map: dict[int, str],
-        epochs: int = 10,
+        max_epochs: int = 100,
         batch_size: int = 8,
         lr: float = 1e-4,
+        lr_patience: int = 3,
+        lr_factor: float = 0.25,
+        early_stop_patience: int = 5,
     ) -> bool:
-        """Train the alignment model using labeled data.
+        """Train the alignment model using labeled data with train/val split.
+
+        Uses early stopping and learning rate reduction on plateau based on
+        validation loss (or training loss if insufficient labels for validation):
+        - If no improvement for `lr_patience` epochs, reduce LR by `lr_factor`
+        - If no improvement for `early_stop_patience` epochs, stop training
+        - Saves the best model (lowest validation loss), not the final epoch
 
         Args:
             project_path: Path to project folder
             labels: List of AlignmentLabel objects
             video_name_map: Dict mapping video_id -> video.name
-            epochs: Number of training epochs
+            max_epochs: Maximum number of training epochs (default 100)
             batch_size: Training batch size
-            lr: Learning rate
+            lr: Initial learning rate
+            lr_patience: Epochs without improvement before reducing LR (default 3)
+            lr_factor: Factor to multiply LR by when reducing (default 0.25)
+            early_stop_patience: Epochs without improvement before stopping (default 5)
 
         Returns:
             True if successful
         """
         logger.info(
-            f"train_model_sync: starting training with epochs={epochs}, "
+            f"train_model_sync: starting training with max_epochs={max_epochs}, "
             f"batch_size={batch_size}, lr={lr}, num_labels={len(labels)}"
         )
+        logger.info(
+            f"train_model_sync: lr_patience={lr_patience}, lr_factor={lr_factor}, "
+            f"early_stop_patience={early_stop_patience}"
+        )
         self._is_training = True
+
+        # Split labels into train/val sets
+        use_validation = len(labels) >= MIN_LABELS_FOR_VALIDATION
+        if use_validation:
+            train_labels, val_labels = split_labels_train_val(labels)
+        else:
+            train_labels = labels
+            val_labels = []
+            logger.warning(
+                f"train_model_sync: only {len(labels)} labels, need >= {MIN_LABELS_FOR_VALIDATION} "
+                f"for validation split. Using training loss for early stopping."
+            )
+
+        # Initialize training progress
+        self._training_progress = TrainingProgress(
+            is_training=True,
+            current_epoch=0,
+            max_epochs=max_epochs,
+            current_train_loss=0.0,
+            train_loss_history=[],
+            current_val_loss=0.0,
+            val_loss_history=[],
+            best_val_loss=float("inf"),
+            best_epoch=0,
+            current_lr=lr,
+            epochs_without_improvement=0,
+            lr_patience=lr_patience,
+            early_stop_patience=early_stop_patience,
+            lr_reduced_this_plateau=False,
+            status="training",
+            started_at=time.time(),
+            num_train_labels=len(train_labels),
+            num_val_labels=len(val_labels),
+        )
 
         try:
             # Setup device
@@ -929,7 +1283,7 @@ class AlignmentService:
 
             # Create model
             model = smp.Unet(
-                encoder_name="resnet18",
+                encoder_name="resnet152",
                 encoder_weights="imagenet",
                 in_channels=3,
                 classes=2,
@@ -937,52 +1291,188 @@ class AlignmentService:
             model = model.to(device)
             logger.info("train_model_sync: created U-Net model with ResNet18 encoder")
 
-            # Create dataset and dataloader
-            dataset = AlignmentDataset(labels, project_path, video_name_map)
-            dataloader = DataLoader(
-                dataset,
+            # Create train dataset with augmentation
+            train_dataset = AlignmentDataset(
+                train_labels, project_path, video_name_map, augment=True
+            )
+            train_dataloader = DataLoader(
+                train_dataset,
                 batch_size=batch_size,
                 shuffle=True,
-                num_workers=0,  # Keep simple for now
+                num_workers=0,
             )
-            logger.info(f"train_model_sync: created dataloader with {len(dataset)} samples")
+            logger.info(
+                f"train_model_sync: train dataset - {len(train_labels)} labels -> "
+                f"{len(train_dataset)} samples (with augmentation)"
+            )
+
+            # Create val dataset without augmentation (if we have validation labels)
+            val_dataloader = None
+            if use_validation:
+                val_dataset = AlignmentDataset(
+                    val_labels, project_path, video_name_map, augment=False
+                )
+                val_dataloader = DataLoader(
+                    val_dataset,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    num_workers=0,
+                )
+                logger.info(
+                    f"train_model_sync: val dataset - {len(val_labels)} labels -> "
+                    f"{len(val_dataset)} samples (no augmentation)"
+                )
 
             # Setup optimizer and loss
             optimizer = torch.optim.Adam(model.parameters(), lr=lr)
             criterion = nn.MSELoss()
 
-            # Training loop
-            model.train()
-            for epoch in range(epochs):
-                epoch_loss = 0.0
-                num_batches = 0
+            # Early stopping and LR reduction tracking (based on val loss)
+            best_val_loss = float("inf")
+            best_model_state = None
+            best_epoch = 0
+            epochs_without_improvement = 0
+            current_lr = lr
+            lr_reduced_this_plateau = False
+            min_lr = 1e-7
 
-                for batch_idx, (frames, targets) in enumerate(dataloader):
+            # Training loop
+            for epoch in range(max_epochs):
+                # --- Training phase ---
+                model.train()
+                train_loss = 0.0
+                train_batches = 0
+
+                for frames, targets in train_dataloader:
                     frames = frames.to(device)
                     targets = targets.to(device)
 
-                    # Forward pass
                     optimizer.zero_grad()
                     outputs = model(frames)
-
-                    # Apply sigmoid to get probabilities
                     outputs = torch.sigmoid(outputs)
-
-                    # Compute loss
                     loss = criterion(outputs, targets)
-
-                    # Backward pass
                     loss.backward()
                     optimizer.step()
 
-                    epoch_loss += loss.item()
-                    num_batches += 1
+                    train_loss += loss.item()
+                    train_batches += 1
 
-                avg_loss = epoch_loss / max(num_batches, 1)
-                logger.info(f"train_model_sync: epoch {epoch + 1}/{epochs}, loss={avg_loss:.6f}")
+                avg_train_loss = train_loss / max(train_batches, 1)
 
-            # Save model weights
+                # --- Validation phase ---
+                if use_validation and val_dataloader is not None:
+                    model.eval()
+                    val_loss = 0.0
+                    val_batches = 0
+
+                    with torch.no_grad():
+                        for frames, targets in val_dataloader:
+                            frames = frames.to(device)
+                            targets = targets.to(device)
+
+                            outputs = model(frames)
+                            outputs = torch.sigmoid(outputs)
+                            loss = criterion(outputs, targets)
+
+                            val_loss += loss.item()
+                            val_batches += 1
+
+                    avg_val_loss = val_loss / max(val_batches, 1)
+                else:
+                    # No validation set - use training loss for early stopping
+                    avg_val_loss = avg_train_loss
+
+                # Use validation loss for improvement tracking
+                loss_for_comparison = avg_val_loss
+
+                # Check for improvement
+                if loss_for_comparison < best_val_loss:
+                    # Improvement - save best model state
+                    best_val_loss = loss_for_comparison
+                    best_model_state = copy.deepcopy(model.state_dict())
+                    best_epoch = epoch + 1
+                    epochs_without_improvement = 0
+                    lr_reduced_this_plateau = False
+                    if use_validation:
+                        logger.info(
+                            f"train_model_sync: epoch {epoch + 1}/{max_epochs}, "
+                            f"train={avg_train_loss:.6f}, val={avg_val_loss:.6f} (new best), "
+                            f"lr={current_lr:.2e}"
+                        )
+                    else:
+                        logger.info(
+                            f"train_model_sync: epoch {epoch + 1}/{max_epochs}, "
+                            f"loss={avg_train_loss:.6f} (new best), lr={current_lr:.2e}"
+                        )
+                else:
+                    # No improvement
+                    epochs_without_improvement += 1
+                    if use_validation:
+                        logger.info(
+                            f"train_model_sync: epoch {epoch + 1}/{max_epochs}, "
+                            f"train={avg_train_loss:.6f}, val={avg_val_loss:.6f}, "
+                            f"no improvement x{epochs_without_improvement}, lr={current_lr:.2e}"
+                        )
+                    else:
+                        logger.info(
+                            f"train_model_sync: epoch {epoch + 1}/{max_epochs}, "
+                            f"loss={avg_train_loss:.6f}, no improvement x{epochs_without_improvement}, "
+                            f"lr={current_lr:.2e}"
+                        )
+
+                    # Check for early stopping
+                    if epochs_without_improvement >= early_stop_patience:
+                        logger.info(
+                            f"train_model_sync: early stopping after {epoch + 1} epochs "
+                            f"(no improvement for {early_stop_patience} epochs)"
+                        )
+                        # Update progress for early stop
+                        self._training_progress.current_epoch = epoch + 1
+                        self._training_progress.current_train_loss = avg_train_loss
+                        self._training_progress.train_loss_history.append(avg_train_loss)
+                        self._training_progress.current_val_loss = avg_val_loss
+                        self._training_progress.val_loss_history.append(avg_val_loss)
+                        self._training_progress.best_val_loss = best_val_loss
+                        self._training_progress.best_epoch = best_epoch
+                        self._training_progress.epochs_without_improvement = epochs_without_improvement
+                        self._training_progress.is_training = False
+                        self._training_progress.status = "stopped"
+                        break
+
+                    # Check for LR reduction (only reduce once per plateau)
+                    if (
+                        epochs_without_improvement >= lr_patience
+                        and not lr_reduced_this_plateau
+                        and current_lr > min_lr
+                    ):
+                        current_lr *= lr_factor
+                        for param_group in optimizer.param_groups:
+                            param_group["lr"] = current_lr
+                        lr_reduced_this_plateau = True
+                        logger.info(
+                            f"train_model_sync: reducing learning rate to {current_lr:.2e}"
+                        )
+
+                # Update training progress after each epoch
+                self._training_progress.current_epoch = epoch + 1
+                self._training_progress.current_train_loss = avg_train_loss
+                self._training_progress.train_loss_history.append(avg_train_loss)
+                self._training_progress.current_val_loss = avg_val_loss
+                self._training_progress.val_loss_history.append(avg_val_loss)
+                self._training_progress.best_val_loss = best_val_loss
+                self._training_progress.best_epoch = best_epoch
+                self._training_progress.current_lr = current_lr
+                self._training_progress.epochs_without_improvement = epochs_without_improvement
+                self._training_progress.lr_reduced_this_plateau = lr_reduced_this_plateau
+
+            # Save best model weights (not final)
             model_path = self.get_model_path(project_path)
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+                logger.info(
+                    f"train_model_sync: restoring best model from epoch {best_epoch} "
+                    f"(val_loss={best_val_loss:.6f})"
+                )
             torch.save(model.state_dict(), model_path)
             logger.info(f"train_model_sync: saved model weights to {model_path}")
 
@@ -990,13 +1480,27 @@ class AlignmentService:
             self._model = None
             self._model_path = None
 
-            logger.info("train_model_sync: training complete")
+            logger.info(
+                f"train_model_sync: training complete (best val_loss={best_val_loss:.6f} "
+                f"at epoch {best_epoch})"
+            )
+
+            # Mark training as completed (if not already stopped by early stopping)
+            if self._training_progress.status == "training":
+                self._training_progress.is_training = False
+                self._training_progress.status = "completed"
+
             return True
 
         except Exception as e:
             logger.error(f"train_model_sync: training failed with error: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+            # Mark training as failed
+            self._training_progress.is_training = False
+            self._training_progress.status = "failed"
+
             return False
 
         finally:
@@ -1033,7 +1537,7 @@ class AlignmentService:
 
         # Create model architecture
         model = smp.Unet(
-            encoder_name="resnet18",
+            encoder_name="resnet152",
             encoder_weights=None,  # We'll load our own weights
             in_channels=3,
             classes=2,

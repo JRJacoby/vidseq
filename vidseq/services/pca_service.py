@@ -353,6 +353,52 @@ def plot_components(pca, height: int, width: int) -> plt.Figure:
 CHUNK_SIZE = 1000  # Frames per chunk when loading from HDF5
 
 
+def _compute_and_store_scores(
+    project_path: Path,
+    pca: GPUPCA,
+    h5_files: list[Path],
+) -> None:
+    """
+    Compute PCA scores for all videos and store in HDF5 files.
+
+    After PCA fitting, this function transforms each video's aligned masks
+    into PCA scores and stores them in pca_scores/{video_id}.h5.
+
+    Args:
+        project_path: Path to the project folder
+        pca: Fitted GPUPCA object
+        h5_files: List of aligned mask HDF5 file paths
+    """
+    scores_dir = project_path / "pca_scores"
+    scores_dir.mkdir(exist_ok=True)
+
+    for h5_path in tqdm(h5_files, desc="Computing scores"):
+        video_id = h5_path.stem
+        scores_path = scores_dir / f"{video_id}.h5"
+
+        with h5py.File(h5_path, "r") as f_in:
+            masks = f_in["masks"]
+            n_frames = masks.shape[0]
+
+            with h5py.File(scores_path, "w") as f_out:
+                # Pre-allocate scores dataset
+                scores_ds = f_out.create_dataset(
+                    "scores",
+                    shape=(n_frames, pca.n_components),
+                    dtype=np.float32,
+                )
+
+                # Process in chunks to avoid memory issues
+                for start in range(0, n_frames, CHUNK_SIZE):
+                    end = min(start + CHUNK_SIZE, n_frames)
+                    chunk = masks[start:end]
+                    flat = chunk.reshape(chunk.shape[0], -1).astype(np.float32)
+                    chunk_scores = pca.transform(flat)
+                    scores_ds[start:end] = chunk_scores
+
+        logger.info(f"[PCA] Saved scores for video {video_id} ({n_frames} frames)")
+
+
 def run_pca(project_path: Path, n_components: int = 20) -> dict:
     """
     Run PCA on all aligned masks in the project.
@@ -434,6 +480,10 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     plt.close(components_fig)
     logger.info(f"[PCA] Components plot saved to {components_path}")
 
+    # Compute and store scores for all videos
+    logger.info("[PCA] Computing and storing scores for all videos...")
+    _compute_and_store_scores(project_path, pca, h5_files)
+
     logger.info("[PCA] Done!")
 
     return {
@@ -481,3 +531,75 @@ def get_pca_status(project_path: Path) -> dict:
             "explained_variance_ratio": None,
             "total_frames": None,
         }
+
+
+def get_pca_scores_downsampled(
+    project_path: Path,
+    video_id: int,
+    pc_indices: list[int],
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> dict:
+    """
+    Load LTTB-downsampled PCA scores for specified principal components.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: Video ID
+        pc_indices: List of PC indices to fetch (0-indexed)
+        max_samples: Maximum samples per PC after downsampling
+        start_frame: Start frame (inclusive)
+        end_frame: End frame (inclusive), None for last frame
+
+    Returns:
+        dict with keys:
+            - n_components: int (total available)
+            - scores: dict mapping pc_index (str) -> list of {frame_idx, score}
+    """
+    from vidseq.services.lttb import downsample_scores
+
+    scores_path = project_path / "pca_scores" / f"{video_id}.h5"
+
+    if not scores_path.exists():
+        raise FileNotFoundError(f"PCA scores not found for video {video_id}")
+
+    with h5py.File(scores_path, "r") as f:
+        scores_ds = f["scores"]
+        n_frames, n_components = scores_ds.shape
+
+        # Determine frame range
+        if end_frame is None:
+            end_frame = n_frames - 1
+        end_frame = min(end_frame, n_frames - 1)
+        start_frame = max(0, start_frame)
+
+        # Validate PC indices
+        valid_pc_indices = [i for i in pc_indices if 0 <= i < n_components]
+
+        # Load the slice of data we need
+        frame_slice = scores_ds[start_frame:end_frame + 1, :]
+
+        result_scores = {}
+        for pc_idx in valid_pc_indices:
+            # Build score points for this PC
+            pc_scores = frame_slice[:, pc_idx]
+            score_points = [
+                {"frame_idx": start_frame + i, "score": float(pc_scores[i])}
+                for i in range(len(pc_scores))
+            ]
+
+            # Downsample using LTTB
+            downsampled = downsample_scores(score_points, max_samples)
+            result_scores[str(pc_idx)] = downsampled
+
+    return {
+        "n_components": n_components,
+        "scores": result_scores,
+    }
+
+
+def check_pca_scores_exist(project_path: Path, video_id: int) -> bool:
+    """Check if PCA scores exist for a video."""
+    scores_path = project_path / "pca_scores" / f"{video_id}.h5"
+    return scores_path.exists()

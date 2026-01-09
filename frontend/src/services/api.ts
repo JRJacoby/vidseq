@@ -799,7 +799,7 @@ export async function clearAlignmentModel(projectId: number): Promise<{ deleted:
     return response.json()
 }
 
-export async function trainAlignmentModel(projectId: number, epochs: number = 10): Promise<void> {
+export async function trainAlignmentModel(projectId: number, epochs: number = 100): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/alignment/train?epochs=${epochs}`,
         { method: 'POST' }
@@ -825,6 +825,62 @@ export async function applyAlignment(projectId: number): Promise<void> {
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to apply alignment'))
     }
+}
+
+// --- Training Progress (for real-time monitoring) ---
+
+export interface TrainingProgress {
+    is_training: boolean
+    current_epoch: number
+    max_epochs: number
+
+    // Training loss
+    current_train_loss: number
+    train_loss_history: number[]
+
+    // Validation loss
+    current_val_loss: number
+    val_loss_history: number[]
+
+    // Best model tracking (based on validation loss)
+    best_val_loss: number | null
+    best_epoch: number
+
+    // Learning rate
+    current_lr: number
+
+    // Patience counters
+    epochs_without_improvement: number
+    lr_patience: number
+    early_stop_patience: number
+    lr_reduced_this_plateau: boolean
+
+    // Status
+    status: 'idle' | 'training' | 'completed' | 'stopped' | 'failed'
+    started_at: number | null
+
+    // Dataset info
+    num_train_labels: number
+    num_val_labels: number
+
+    // Backward-compatible aliases (from backend to_dict)
+    current_loss: number       // = current_train_loss
+    best_loss: number | null   // = best_val_loss
+    loss_history: number[]     // = train_loss_history
+}
+
+export async function getTrainingStatus(projectId: number): Promise<TrainingProgress> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/training/status`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get training status'))
+    }
+    return response.json()
+}
+
+export function getAlignmentTrainingStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/alignment/training/stream`
 }
 
 // --- Stored Alignment Predictions (for debugging) ---
@@ -946,4 +1002,56 @@ export function getPCAScreePlotUrl(projectId: number): string {
 
 export function getPCAComponentsPlotUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/pca/components-plot`
+}
+
+export interface PCAScorePoint {
+    frame_idx: number
+    score: number
+}
+
+export interface PCAScoresResponse {
+    n_components: number
+    scores: Record<string, PCAScorePoint[]>
+}
+
+export async function getPCAScoresDownsampled(
+    projectId: number,
+    videoId: number,
+    pcIndices: number[],
+    maxSamples: number = 800,
+    startFrame?: number,
+    endFrame?: number,
+): Promise<PCAScoresResponse> {
+    const params = new URLSearchParams({
+        pc_indices: pcIndices.join(','),
+        max_samples: maxSamples.toString(),
+    })
+    if (startFrame !== undefined) {
+        params.set('start_frame', startFrame.toString())
+    }
+    if (endFrame !== undefined) {
+        params.set('end_frame', endFrame.toString())
+    }
+
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pca-scores?${params}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch PCA scores'))
+    }
+    return response.json()
+}
+
+export async function checkPCAScoresExist(
+    projectId: number,
+    videoId: number,
+): Promise<boolean> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pca-scores-exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check PCA scores'))
+    }
+    const data = await response.json()
+    return data.exists
 }

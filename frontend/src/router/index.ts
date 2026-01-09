@@ -8,6 +8,7 @@ import CroppedVideoDetail from '../components/CroppedVideoDetail.vue'
 import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
 import PCAView from '../components/PCAView.vue'
+import AlignmentTraining from '../components/AlignmentTraining.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -55,6 +56,11 @@ const router = createRouter({
           path: 'pca',
           name: 'pca',
           component: PCAView
+        },
+        {
+          path: 'alignment-training',
+          name: 'alignmentTraining',
+          component: AlignmentTraining
         }
       ]
     }

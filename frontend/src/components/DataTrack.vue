@@ -17,9 +17,16 @@ const props = withDefaults(defineProps<{
   // Alignment label frames (individual frame indices)
   alignmentLabelFrames?: number[]
   showAlignmentLabels?: boolean
+  // PCA scores (keyed by PC index string)
+  pcaScores?: Record<string, { frame_idx: number; score: number }[]>
+  visiblePCs?: number[]
+  showPCAPlot?: boolean
 }>(), {
   alignmentLabelFrames: () => [],
   showAlignmentLabels: false,
+  pcaScores: () => ({}),
+  visiblePCs: () => [],
+  showPCAPlot: false,
 })
 
 const emit = defineEmits<{
@@ -221,89 +228,120 @@ const onMouseLeave = () => {
   isHovering.value = false
 }
 
-const drawPlot = () => {
-  const canvas = canvasRef.value
-  if (!canvas) return
-  
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  
-  const width = canvas.width
-  const height = canvas.height
-  
-  ctx.clearRect(0, 0, width, height)
-  
-  if (!props.showConfidencePlot || props.confidenceScores.length === 0) return
-  
-  // Calculate global min/max for auto-scaling
-  let minScore = 2.0 // Initialize higher than max possible (1.0)
-  let maxScore = -1.0 // Initialize lower than min possible (0.0)
-  
-  for (const item of props.confidenceScores) {
-    if (item.score >= 0) {
-      if (item.score < minScore) minScore = item.score
-      if (item.score > maxScore) maxScore = item.score
-    }
-  }
-  
-  // Default range if no valid scores or flat line
-  if (minScore > 1.0) { // No valid scores found
-    minScore = 0.0
-    maxScore = 1.0
-  } else if (Math.abs(maxScore - minScore) < 0.0001) {
-    // Avoid division by zero, center it
-    minScore = Math.max(0, minScore - 0.1)
-    maxScore = Math.min(1, maxScore + 0.1)
-  }
-  
-  const scoreRange = maxScore - minScore
+// Color palette for PC score lines
+const PC_COLORS = [
+  'rgba(59, 130, 246, 0.8)',   // Blue - PC0
+  'rgba(239, 68, 68, 0.8)',    // Red - PC1
+  'rgba(34, 197, 94, 0.8)',    // Green - PC2
+  'rgba(168, 85, 247, 0.8)',   // Purple - PC3
+  'rgba(249, 115, 22, 0.8)',   // Orange - PC4
+  'rgba(236, 72, 153, 0.8)',   // Pink - PC5
+  'rgba(20, 184, 166, 0.8)',   // Teal - PC6
+  'rgba(234, 179, 8, 0.8)',    // Yellow - PC7
+]
 
-  ctx.beginPath()
-  ctx.strokeStyle = 'rgba(255, 235, 59, 0.8)' // Yellowish
-  ctx.lineWidth = 2
-  
-  let hasStarted = false
-  
+const getPCColor = (pcIdx: number): string => {
+  return PC_COLORS[pcIdx % PC_COLORS.length] ?? '#888888'
+}
+
+// Draw a single score line on the canvas
+const drawScoreLine = (
+  ctx: CanvasRenderingContext2D,
+  scores: { frame_idx: number; score: number }[],
+  color: string,
+  width: number,
+  height: number,
+) => {
+  if (scores.length === 0) return
+
+  // Calculate min/max for auto-scaling
+  let minScore = Infinity
+  let maxScore = -Infinity
+
+  for (const item of scores) {
+    if (item.score < minScore) minScore = item.score
+    if (item.score > maxScore) maxScore = item.score
+  }
+
+  // Handle edge cases
+  if (!isFinite(minScore) || !isFinite(maxScore)) return
+  if (Math.abs(maxScore - minScore) < 0.0001) {
+    // Flat line, expand range
+    minScore = minScore - 1
+    maxScore = maxScore + 1
+  }
+
+  const scoreRange = maxScore - minScore
   const duration = visibleDuration.value
   if (duration <= 0) return
 
+  ctx.beginPath()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2
+
+  let hasStarted = false
   let lastFrameIdx = -2
-  
-  for (const item of props.confidenceScores) {
-    if (item.score < 0) continue // Skip invalid scores
-    
+
+  for (const item of scores) {
     const time = frameToTime(item.frame_idx)
-    
-    // Calculate x
     const x = ((time - props.viewStart) / duration) * width
-    
-    // Normalize score
     const normalizedScore = (item.score - minScore) / scoreRange
     const y = height * (1 - normalizedScore)
-    
+
     // Check for gaps
-    // If the gap is more than 1 frame, we should not connect the line
     const isGap = (item.frame_idx - lastFrameIdx) > 1
-    
+
     // Optimization: Skip drawing if way off screen
     if (x < -100 && !hasStarted) {
-      // Just update lastFrameIdx
       lastFrameIdx = item.frame_idx
       continue
     }
     if (x > width + 100) break
-    
+
     if (!hasStarted || isGap) {
       ctx.moveTo(x, y)
       hasStarted = true
     } else {
       ctx.lineTo(x, y)
     }
-    
+
     lastFrameIdx = item.frame_idx
   }
-  
+
   ctx.stroke()
+}
+
+const drawPlot = () => {
+  const canvas = canvasRef.value
+  if (!canvas) return
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const width = canvas.width
+  const height = canvas.height
+
+  ctx.clearRect(0, 0, width, height)
+
+  // Draw confidence scores (yellow line)
+  if (props.showConfidencePlot && props.confidenceScores.length > 0) {
+    // Filter out invalid scores (score < 0)
+    const validScores = props.confidenceScores.filter(s => s.score >= 0)
+    if (validScores.length > 0) {
+      drawScoreLine(ctx, validScores, 'rgba(255, 235, 59, 0.8)', width, height)
+    }
+  }
+
+  // Draw PCA scores (multiple colored lines)
+  if (props.showPCAPlot && props.pcaScores && props.visiblePCs.length > 0) {
+    for (const pcIdx of props.visiblePCs) {
+      const scores = props.pcaScores[pcIdx.toString()]
+      if (scores && scores.length > 0) {
+        const color = getPCColor(pcIdx)
+        drawScoreLine(ctx, scores, color, width, height)
+      }
+    }
+  }
 }
 
 const resizeCanvas = () => {
@@ -319,7 +357,9 @@ const resizeCanvas = () => {
 watch(() => props.confidenceScores, drawPlot, { deep: true })
 watch([() => props.viewStart, () => props.viewEnd], drawPlot)
 watch(() => props.showConfidencePlot, drawPlot)
-// Also watch masked/training visibility if we want to change opacity or something? No.
+watch(() => props.pcaScores, drawPlot, { deep: true })
+watch(() => props.visiblePCs, drawPlot, { deep: true })
+watch(() => props.showPCAPlot, drawPlot)
 
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)

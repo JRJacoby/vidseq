@@ -1,5 +1,7 @@
 """API routes for egocentric alignment."""
 
+import asyncio
+import json
 import logging
 import mimetypes
 from pathlib import Path
@@ -250,18 +252,34 @@ async def delete_model(
     return {"deleted": deleted}
 
 
+def _run_training_in_background(
+    service: AlignmentService,
+    project_path: Path,
+    labels: list,
+    video_name_map: dict,
+    epochs: int,
+):
+    """Run training synchronously (called from background task)."""
+    service.train_model_sync(project_path, labels, video_name_map, epochs)
+
+
 @router.post("/projects/{project_id}/alignment/train")
 async def train_alignment_model(
     project_id: int,
-    epochs: int = 10,
+    epochs: int = 100,
     project_path: Path = Depends(get_project_folder),
     session: AsyncSession = Depends(get_project_session),
 ):
-    """Train alignment model for specified number of epochs.
+    """Start alignment model training (fire-and-forget).
 
-    This is a blocking call that returns when training is complete.
+    Training will run for up to `epochs` (max), but may stop early if loss
+    plateaus. Learning rate is automatically reduced on plateau.
+
+    Returns immediately after starting training. Use the SSE stream endpoint
+    (/alignment/training/stream) to monitor progress, or the status endpoint
+    (/alignment/training/status) to check current state.
     """
-    logger.info(f"POST /alignment/train: project_id={project_id}, epochs={epochs}")
+    logger.info(f"POST /alignment/train: project_id={project_id}, max_epochs={epochs}")
 
     service = AlignmentService.get_instance()
 
@@ -286,21 +304,88 @@ async def train_alignment_model(
     video_name_map = {v.id: v.name for v in videos}
     logger.info(f"POST /alignment/train: video_name_map has {len(video_name_map)} videos")
 
-    # Training is synchronous (blocking) as per user requirement
-    logger.info(f"POST /alignment/train: starting training...")
-    success = service.train_model_sync(
-        project_path,
-        labels=labels,
-        video_name_map=video_name_map,
-        epochs=epochs,
+    # Start training in background thread (fire-and-forget)
+    # Use asyncio.to_thread but don't await it - let it run in background
+    logger.info(f"POST /alignment/train: starting training in background...")
+    asyncio.create_task(
+        asyncio.to_thread(
+            _run_training_in_background,
+            service,
+            project_path,
+            labels,
+            video_name_map,
+            epochs,
+        )
     )
 
-    if not success:
-        logger.error(f"POST /alignment/train: training failed")
-        raise HTTPException(status_code=500, detail="Training failed")
+    logger.info(f"POST /alignment/train: training started, returning immediately")
+    return {"message": "Training started", "max_epochs": epochs}
 
-    logger.info(f"POST /alignment/train: training complete")
-    return {"message": "Training complete", "epochs": epochs}
+
+@router.get("/projects/{project_id}/alignment/training/status")
+async def get_training_status(
+    project_id: int,
+):
+    """Get current training progress (non-streaming).
+
+    Returns training progress state including current epoch, loss, LR,
+    patience counters, and loss history.
+    """
+    logger.info(f"GET /alignment/training/status: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+    progress = service.get_training_progress()
+
+    logger.debug(f"GET /alignment/training/status: status={progress.status}, epoch={progress.current_epoch}")
+    return progress.to_dict()
+
+
+@router.get("/projects/{project_id}/alignment/training/stream")
+async def stream_training_progress(
+    project_id: int,
+):
+    """Stream training progress via Server-Sent Events.
+
+    Streams real-time updates during training. The stream will close
+    automatically when training completes, stops early, or fails.
+    """
+    logger.info(f"GET /alignment/training/stream: project_id={project_id} - SSE connection started")
+
+    service = AlignmentService.get_instance()
+
+    async def event_generator():
+        last_epoch = -1
+        last_status = None
+
+        while True:
+            progress = service.get_training_progress()
+
+            # Send update if epoch changed or status changed
+            if progress.current_epoch != last_epoch or progress.status != last_status:
+                last_epoch = progress.current_epoch
+                last_status = progress.status
+
+                data = json.dumps(progress.to_dict())
+                yield f"data: {data}\n\n"
+
+                logger.debug(f"SSE: sent update - epoch={progress.current_epoch}, status={progress.status}")
+
+                # Stop streaming if training finished
+                if progress.status in ("completed", "stopped", "failed"):
+                    logger.info(f"GET /alignment/training/stream: closing - status={progress.status}")
+                    break
+
+            await asyncio.sleep(0.5)  # Poll every 500ms
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @router.get("/projects/{project_id}/alignment/predict/{video_id}/{frame_idx}")

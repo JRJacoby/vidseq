@@ -230,7 +230,7 @@ function toggleHeatmap() {
 }
 
 // Toggle training mode
-function toggleTrainingMode() {
+async function toggleTrainingMode() {
   isTrainingMode.value = !isTrainingMode.value
   frontPoint.value = null
   rearPoint.value = null
@@ -238,6 +238,8 @@ function toggleTrainingMode() {
   if (isTrainingMode.value && showHeatmap.value) {
     showHeatmap.value = false
   }
+  // Wait for canvas to be rendered in DOM before setting dimensions
+  await nextTick()
   renderOverlay()
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getProject,
@@ -39,9 +39,8 @@ const alignedVideoExists = ref<Record<number, boolean>>({})
 
 // Alignment state
 const alignmentStatus = ref<AlignmentStatus | null>(null)
-const isTrainingAlignment = ref(false)
 const isApplyingAlignment = ref(false)
-const alignmentEpochs = ref(10)
+const alignmentEpochs = ref(100)
 
 // PCA state
 const pcaStatus = ref<PCAStatus | null>(null)
@@ -92,6 +91,26 @@ const loadVideos = async () => {
   }
 }
 
+// Poll alignment status while training is in progress
+let alignmentPollInterval: ReturnType<typeof setInterval> | null = null
+const pollAlignmentStatus = () => {
+  // Clear any existing interval
+  if (alignmentPollInterval) {
+    clearInterval(alignmentPollInterval)
+  }
+  // Poll every 2 seconds
+  alignmentPollInterval = setInterval(async () => {
+    await loadAlignmentStatus()
+    // Stop polling when training is done
+    if (!alignmentStatus.value?.is_training) {
+      if (alignmentPollInterval) {
+        clearInterval(alignmentPollInterval)
+        alignmentPollInterval = null
+      }
+    }
+  }, 2000)
+}
+
 onMounted(async () => {
   await loadProject()
   await loadVideos()
@@ -99,6 +118,18 @@ onMounted(async () => {
   await loadAlignedVideoStatus()
   await loadAlignmentStatus()
   await loadPCAStatus()
+  // If training is already in progress (e.g., user refreshed), start polling
+  if (alignmentStatus.value?.is_training) {
+    pollAlignmentStatus()
+  }
+})
+
+onUnmounted(() => {
+  // Clean up polling interval
+  if (alignmentPollInterval) {
+    clearInterval(alignmentPollInterval)
+    alignmentPollInterval = null
+  }
 })
 
 const handleAddVideos = () => {
@@ -224,16 +255,17 @@ const loadAlignmentStatus = async () => {
 }
 
 const handleTrainAlignment = async () => {
-  if (!projectId.value || isTrainingAlignment.value) return
-  isTrainingAlignment.value = true
+  if (!projectId.value || alignmentStatus.value?.is_training) return
   try {
+    // Fire-and-forget: endpoint returns immediately after starting training
     await trainAlignmentModel(projectId.value, alignmentEpochs.value)
+    // Refresh status - will now show is_training=true
     await loadAlignmentStatus()
+    // Start polling to detect when training completes
+    pollAlignmentStatus()
   } catch (e: any) {
-    console.error('Failed to train alignment model:', e)
-    alert(e.message || 'Failed to train alignment model')
-  } finally {
-    isTrainingAlignment.value = false
+    console.error('Failed to start alignment training:', e)
+    alert(e.message || 'Failed to start alignment training')
   }
 }
 
@@ -463,27 +495,27 @@ const formatScore = (score: number | undefined) => {
             <span class="info-value">{{ alignmentStatus?.label_count ?? 0 }}</span>
           </div>
           <div class="epochs-input">
-            <label for="epochs">Epochs:</label>
+            <label for="epochs">Max Epochs:</label>
             <input
               id="epochs"
               v-model.number="alignmentEpochs"
               type="number"
               min="1"
-              max="100"
+              max="500"
               class="epochs-field"
             />
           </div>
           <button
             class="sidebar-button train-alignment-button"
             @click="handleTrainAlignment"
-            :disabled="isTrainingAlignment || isApplyingAlignment || (alignmentStatus?.label_count ?? 0) === 0"
+            :disabled="alignmentStatus?.is_training || isApplyingAlignment || (alignmentStatus?.label_count ?? 0) === 0"
           >
-            <span class="button-label">{{ isTrainingAlignment ? 'Training...' : 'Train Alignment Model' }}</span>
+            <span class="button-label">{{ alignmentStatus?.is_training ? 'Training...' : 'Train Alignment Model' }}</span>
           </button>
           <button
             class="sidebar-button apply-alignment-button"
             @click="handleApplyAlignment"
-            :disabled="isTrainingAlignment || isApplyingAlignment || !alignmentStatus?.model_trained"
+            :disabled="alignmentStatus?.is_training || isApplyingAlignment || !alignmentStatus?.model_trained"
           >
             <span class="button-label">{{ isApplyingAlignment ? 'Aligning...' : 'Align All Videos' }}</span>
           </button>
@@ -540,8 +572,8 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : 'Run PCA' }}</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || isTrainingAlignment || isApplyingAlignment || isRunningPCA" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : isTrainingAlignment ? 'Training alignment model...' : isApplyingAlignment ? 'Applying alignment...' : 'Running PCA...' }}
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || isApplyingAlignment || isRunningPCA" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : isApplyingAlignment ? 'Applying alignment...' : 'Running PCA...' }}
           </div>
         </aside>
       </div>
