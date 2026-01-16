@@ -4,6 +4,7 @@ Provides training and inference for keypoint detection (front/rear of animal)
 using a U-Net model with ResNet18 encoder.
 """
 
+import collections
 import copy
 import io
 import logging
@@ -104,6 +105,34 @@ class TrainingProgress:
         d["best_loss"] = d["best_val_loss"]
         d["loss_history"] = d["train_loss_history"]
         return d
+
+
+@dataclass
+class AlignmentProgress:
+    """Real-time alignment (apply) progress state for SSE streaming."""
+
+    is_aligning: bool = False
+    status: str = "idle"  # idle, aligning, completed, failed
+
+    # Video-level progress
+    current_video_index: int = 0
+    total_videos: int = 0
+    current_video_name: str = ""
+
+    # Frame-level progress
+    current_frame: int = 0
+    total_frames: int = 0
+
+    # Performance metrics
+    fps: float = 0.0  # Rolling average
+    eta_seconds: float = 0.0
+
+    # Timestamps
+    started_at: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
 
 
 class OneEuroFilter:
@@ -1271,6 +1300,10 @@ class AlignmentService:
         # Training progress tracking for real-time updates
         self._training_progress = TrainingProgress()
 
+        # Alignment (apply) progress tracking for real-time updates
+        self._alignment_progress = AlignmentProgress()
+        self._fps_timestamps: collections.deque = collections.deque(maxlen=30)
+
         self._initialized = True
         logger.info("AlignmentService initialized: is_training=False, is_applying=False")
 
@@ -1300,6 +1333,21 @@ class AlignmentService:
     def get_training_progress(self) -> TrainingProgress:
         """Get current training progress for SSE streaming."""
         return self._training_progress
+
+    def get_alignment_progress(self) -> AlignmentProgress:
+        """Get current alignment (apply) progress for SSE streaming."""
+        return self._alignment_progress
+
+    def _calculate_rolling_fps(self) -> float:
+        """Calculate rolling average FPS from recent frame timestamps."""
+        if len(self._fps_timestamps) < 2:
+            return 0.0
+        # Time span across all tracked frames
+        time_span = self._fps_timestamps[-1] - self._fps_timestamps[0]
+        if time_span <= 0:
+            return 0.0
+        # FPS = (num_frames - 1) / time_span
+        return (len(self._fps_timestamps) - 1) / time_span
 
     def get_model_path(self, project_path: Path) -> Path:
         """Get path to the alignment model weights file."""
@@ -2033,6 +2081,16 @@ class AlignmentService:
         """
         logger.info(f"apply_alignment_sync: starting, project={project_path.name}")
         self._is_applying = True
+
+        # Initialize alignment progress
+        self._alignment_progress = AlignmentProgress(
+            is_aligning=True,
+            status="aligning",
+            started_at=time.time(),
+        )
+        self._fps_timestamps.clear()
+        last_progress_update = time.time()
+
         try:
             # Get videos with cropping completed
             with Session(project_engine) as session:
@@ -2042,6 +2100,7 @@ class AlignmentService:
                 videos = list(result.scalars().all())
 
             logger.info(f"apply_alignment_sync: found {len(videos)} videos with cropping completed")
+            self._alignment_progress.total_videos = len(videos)
 
             if not videos:
                 logger.warning("apply_alignment_sync: no cropped videos to align")
@@ -2071,8 +2130,8 @@ class AlignmentService:
             aligned_masks_dir.mkdir(parents=True, exist_ok=True)
             logger.info(f"apply_alignment_sync: output_dir={output_dir}, aligned_masks_dir={aligned_masks_dir}")
 
-            for video in videos:
-                logger.info(f"apply_alignment_sync: processing video id={video.id}, name={video.name}")
+            for video_idx, video in enumerate(videos):
+                logger.info(f"apply_alignment_sync: processing video {video_idx + 1}/{len(videos)}: {video.name}")
                 cropped_path = get_cropped_video_path(project_path, video.name)
 
                 if not cropped_path.exists():
@@ -2091,20 +2150,18 @@ class AlignmentService:
                 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-                logger.info(
-                    f"apply_alignment_sync: video properties - "
-                    f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
-                )
+                # Update progress for this video
+                self._alignment_progress.current_video_index = video_idx + 1
+                self._alignment_progress.current_video_name = video.name
+                self._alignment_progress.total_frames = frame_count
+                self._alignment_progress.current_frame = 0
+                self._fps_timestamps.clear()
 
                 # Create OneEuro filter for temporal smoothing of angle
                 angle_filter = OneEuroFilter(freq=fps)
                 # For angle unwrapping (handle -180/180 discontinuity)
                 prev_raw_angle: Optional[float] = None
                 unwrapped_angle: float = 0.0
-                logger.info(
-                    f"apply_alignment_sync: OneEuro angle filter initialized "
-                    f"(min_cutoff={ONE_EURO_MIN_CUTOFF}, beta={ONE_EURO_BETA})"
-                )
 
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
@@ -2137,13 +2194,7 @@ class AlignmentService:
                     chunks=(1, mask_height, mask_width),
                     compression=None,
                 )
-                logger.info(
-                    f"apply_alignment_sync: opened cropped masks from {cropped_mask_h5_path.name} "
-                    f"(shape {mask_shape}), creating aligned masks at {aligned_mask_h5_path.name}"
-                )
-
                 # Process each frame
-                log_interval = max(1, frame_count // 10)  # Log every 10%
                 for frame_idx in range(frame_count):
                     ret, frame = cap.read()
                     if not ret:
@@ -2197,23 +2248,32 @@ class AlignmentService:
                     aligned_mask = rotate_mask(cropped_mask, angle)
                     aligned_mask_h5["masks"][frame_idx] = aligned_mask
 
-                    # Log progress
-                    if frame_idx % log_interval == 0 or frame_idx == frame_count - 1:
-                        progress = (frame_idx + 1) / frame_count * 100
-                        logger.info(
-                            f"apply_alignment_sync: video {video.id} - "
-                            f"frame {frame_idx + 1}/{frame_count} ({progress:.0f}%)"
-                        )
+                    # Track frame timestamp for FPS calculation
+                    self._fps_timestamps.append(time.time())
+
+                    # Update progress every second
+                    now = time.time()
+                    if now - last_progress_update >= 1.0:
+                        self._alignment_progress.current_frame = frame_idx + 1
+                        self._alignment_progress.fps = self._calculate_rolling_fps()
+
+                        # Calculate ETA based on remaining frames and current FPS
+                        if self._alignment_progress.fps > 0:
+                            remaining_frames = frame_count - (frame_idx + 1)
+                            self._alignment_progress.eta_seconds = remaining_frames / self._alignment_progress.fps
+
+                        last_progress_update = now
+
+                # Final progress update for this video
+                self._alignment_progress.current_frame = frame_count
 
                 # Release resources
                 cap.release()
                 writer.release()
                 cropped_mask_h5.close()
                 aligned_mask_h5.close()
-                logger.info(f"apply_alignment_sync: video {video.id} - aligned masks saved")
 
                 # Re-encode to H.264 for browser compatibility
-                logger.info(f"apply_alignment_sync: re-encoding to H.264: {output_path.name}")
                 if not self._reencode_to_h264(temp_path, output_path):
                     logger.error(f"apply_alignment_sync: failed to re-encode video {video.id}")
                     temp_path.unlink(missing_ok=True)
@@ -2222,9 +2282,10 @@ class AlignmentService:
                 # Clean up temp file
                 temp_path.unlink(missing_ok=True)
 
-                file_size = output_path.stat().st_size
-                logger.info(f"apply_alignment_sync: aligned video saved, size={file_size} bytes")
-
+            # Mark completion
+            self._alignment_progress.status = "completed"
+            self._alignment_progress.is_aligning = False
+            self._alignment_progress.eta_seconds = 0.0
             logger.info(f"apply_alignment_sync: completed successfully for {len(videos)} videos")
             return True
 
@@ -2232,10 +2293,11 @@ class AlignmentService:
             logger.error(f"apply_alignment_sync: failed with error: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            self._alignment_progress.status = "failed"
+            self._alignment_progress.is_aligning = False
             return False
         finally:
             self._is_applying = False
-            logger.debug("apply_alignment_sync: is_applying set to False")
 
 
 # Module-level singleton instance

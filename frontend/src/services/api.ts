@@ -895,6 +895,43 @@ export function getAlignmentTrainingStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/alignment/training/stream`
 }
 
+// --- Alignment Apply Progress (for real-time monitoring) ---
+
+export interface AlignmentApplyProgress {
+    is_aligning: boolean
+    status: string  // idle, aligning, completed, failed
+
+    // Video-level progress
+    current_video_index: number
+    total_videos: number
+    current_video_name: string
+
+    // Frame-level progress
+    current_frame: number
+    total_frames: number
+
+    // Performance metrics
+    fps: number
+    eta_seconds: number
+
+    // Timestamps
+    started_at: number | null
+}
+
+export async function getAlignmentApplyStatus(projectId: number): Promise<AlignmentApplyProgress> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/alignment/apply/status`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get alignment apply status'))
+    }
+    return response.json()
+}
+
+export function getAlignmentApplyStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/alignment/apply/stream`
+}
+
 // --- Stored Alignment Predictions (for debugging) ---
 
 export interface AlignmentPredictionsExistsResponse {

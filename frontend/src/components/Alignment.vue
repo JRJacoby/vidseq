@@ -4,7 +4,10 @@ import { useProjectStore } from '@/stores/project'
 import {
     getAlignmentTrainingStreamUrl,
     getTrainingStatus,
-    type TrainingProgress
+    getAlignmentApplyStatus,
+    getAlignmentApplyStreamUrl,
+    type TrainingProgress,
+    type AlignmentApplyProgress
 } from '@/services/api'
 import { Chart, registerables } from 'chart.js'
 
@@ -13,10 +16,15 @@ Chart.register(...registerables)
 const projectStore = useProjectStore()
 const projectId = computed(() => projectStore.currentProjectId)
 
+// Training progress
 const progress = ref<TrainingProgress | null>(null)
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
 let chart: Chart | null = null
 let eventSource: EventSource | null = null
+
+// Alignment apply progress
+const alignProgress = ref<AlignmentApplyProgress | null>(null)
+let alignEventSource: EventSource | null = null
 
 // Initialize chart with two datasets (train and val)
 function initChart() {
@@ -108,8 +116,8 @@ function connectToStream() {
     }
 }
 
-// Load initial status
-async function loadStatus() {
+// Load initial training status
+async function loadTrainingStatus() {
     if (!projectId.value) return
 
     try {
@@ -127,13 +135,61 @@ async function loadStatus() {
     }
 }
 
+// Connect to alignment apply SSE stream
+function connectToAlignStream() {
+    if (!projectId.value) return
+
+    // Close existing connection if any
+    if (alignEventSource) {
+        alignEventSource.close()
+        alignEventSource = null
+    }
+
+    const url = getAlignmentApplyStreamUrl(projectId.value)
+    alignEventSource = new EventSource(url)
+
+    alignEventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as AlignmentApplyProgress
+        alignProgress.value = data
+
+        // Close connection if alignment finished
+        if (['completed', 'failed'].includes(data.status)) {
+            alignEventSource?.close()
+            alignEventSource = null
+        }
+    }
+
+    alignEventSource.onerror = () => {
+        alignEventSource?.close()
+        alignEventSource = null
+    }
+}
+
+// Load initial alignment apply status
+async function loadAlignmentStatus() {
+    if (!projectId.value) return
+
+    try {
+        alignProgress.value = await getAlignmentApplyStatus(projectId.value)
+
+        // If alignment in progress, connect to stream
+        if (alignProgress.value.is_aligning) {
+            connectToAlignStream()
+        }
+    } catch (e) {
+        console.error('Failed to load alignment status:', e)
+    }
+}
+
 onMounted(() => {
     initChart()
-    loadStatus()
+    loadTrainingStatus()
+    loadAlignmentStatus()
 })
 
 onUnmounted(() => {
     eventSource?.close()
+    alignEventSource?.close()
     chart?.destroy()
 })
 
@@ -141,13 +197,23 @@ onUnmounted(() => {
 watch(() => projectId.value, () => {
     eventSource?.close()
     eventSource = null
-    loadStatus()
+    alignEventSource?.close()
+    alignEventSource = null
+    loadTrainingStatus()
+    loadAlignmentStatus()
 })
 
-// Reconnect if training starts (check periodically or triggered from elsewhere)
+// Reconnect if training starts
 watch(() => progress.value?.is_training, (isTraining) => {
     if (isTraining && !eventSource) {
         connectToStream()
+    }
+})
+
+// Reconnect if alignment starts
+watch(() => alignProgress.value?.is_aligning, (isAligning) => {
+    if (isAligning && !alignEventSource) {
+        connectToAlignStream()
     }
 })
 
@@ -163,6 +229,19 @@ const formatDuration = (startedAt: number | null) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+const formatEta = (seconds: number) => {
+    if (seconds <= 0) return '--'
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    if (mins > 0) {
+        return `~${mins}m ${secs}s`
+    }
+    return `~${secs}s`
+}
+const formatFps = (fps: number) => {
+    if (fps <= 0) return '--'
+    return fps.toFixed(1)
 }
 
 const statusColor = computed(() => {
@@ -189,16 +268,35 @@ const lrReductionProgress = computed(() => {
     )
     return (effectiveEpochs / progress.value.lr_patience) * 100
 })
+
+// Alignment apply status color
+const alignStatusColor = computed(() => {
+    switch (alignProgress.value?.status) {
+        case 'aligning': return '#3b82f6'  // Blue
+        case 'completed': return '#22c55e'  // Green
+        case 'failed': return '#ef4444'     // Red
+        default: return '#6b7280'           // Gray
+    }
+})
+
+// Frame progress percentage for alignment
+const frameProgressPercent = computed(() => {
+    if (!alignProgress.value || alignProgress.value.total_frames === 0) return 0
+    return (alignProgress.value.current_frame / alignProgress.value.total_frames) * 100
+})
 </script>
 
 <template>
-    <div class="alignment-training">
-        <h1>Alignment Training</h1>
+    <div class="alignment-page">
+        <h1>Alignment</h1>
 
-        <div class="training-grid">
-            <!-- Status Panel -->
-            <div class="status-panel">
-                <h2>Status</h2>
+        <!-- Training Section -->
+        <section class="section">
+            <h2 class="section-title">Training</h2>
+            <div class="training-grid">
+                <!-- Status Panel -->
+                <div class="status-panel">
+                    <h3>Status</h3>
                 <div class="status-indicator" :style="{ backgroundColor: statusColor }">
                     {{ progress?.status ?? 'idle' }}
                 </div>
@@ -264,17 +362,68 @@ const lrReductionProgress = computed(() => {
 
             <!-- Chart Panel -->
             <div class="chart-panel">
-                <h2>Loss Over Time</h2>
+                <h3>Loss Over Time</h3>
                 <div class="chart-container">
                     <canvas ref="chartCanvas"></canvas>
                 </div>
             </div>
-        </div>
+            </div>
+        </section>
+
+        <!-- Apply Alignment Section -->
+        <section class="section">
+            <h2 class="section-title">Apply Alignment</h2>
+            <div class="apply-panel">
+                <div class="status-row">
+                    <span class="label">Status:</span>
+                    <div class="status-indicator" :style="{ backgroundColor: alignStatusColor }">
+                        {{ alignProgress?.status ?? 'idle' }}
+                    </div>
+                </div>
+
+                <div class="apply-stats" v-if="alignProgress && alignProgress.status !== 'idle'">
+                    <div class="stat-row">
+                        <span class="label">Video:</span>
+                        <span class="value">{{ alignProgress.current_video_index }} / {{ alignProgress.total_videos }}</span>
+                    </div>
+                    <div class="stat-row" v-if="alignProgress.current_video_name">
+                        <span class="label">Current:</span>
+                        <span class="value filename">{{ alignProgress.current_video_name }}</span>
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div class="progress-container">
+                        <div class="progress-bar">
+                            <div class="progress-fill" :style="{ width: `${frameProgressPercent}%` }"></div>
+                        </div>
+                        <span class="progress-text">{{ Math.round(frameProgressPercent) }}%</span>
+                    </div>
+
+                    <div class="stat-row">
+                        <span class="label">Frames:</span>
+                        <span class="value">{{ alignProgress.current_frame.toLocaleString() }} / {{ alignProgress.total_frames.toLocaleString() }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Speed:</span>
+                        <span class="value">{{ formatFps(alignProgress.fps) }} fps</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">ETA:</span>
+                        <span class="value">{{ formatEta(alignProgress.eta_seconds) }}</span>
+                    </div>
+                </div>
+
+                <div v-if="!alignProgress || alignProgress.status === 'idle'" class="no-data-message">
+                    <p>No alignment in progress.</p>
+                    <p class="hint">Start alignment from the Video Pipeline page.</p>
+                </div>
+            </div>
+        </section>
     </div>
 </template>
 
 <style scoped>
-.alignment-training {
+.alignment-page {
     padding: 20px;
     max-width: 1200px;
 }
@@ -283,15 +432,21 @@ h1 {
     margin-bottom: 20px;
 }
 
-h2 {
+.section {
+    margin-bottom: 24px;
+}
+
+.section-title {
     margin-bottom: 12px;
-    font-size: 1.1em;
+    font-size: 1.2em;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 8px;
 }
 
 h3 {
     margin: 12px 0 6px;
-    font-size: 0.9em;
-    color: #666;
+    font-size: 0.95em;
+    color: #333;
 }
 
 .training-grid {
@@ -414,5 +569,77 @@ h3 {
     .training-grid {
         grid-template-columns: 1fr;
     }
+}
+
+/* Apply Alignment Section */
+.apply-panel {
+    background: #f8f8f8;
+    border-radius: 8px;
+    padding: 16px;
+    max-width: 500px;
+}
+
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.apply-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.stat-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.stat-row .label {
+    font-size: 0.85em;
+    color: #666;
+    min-width: 60px;
+}
+
+.stat-row .value {
+    font-family: monospace;
+    font-weight: 500;
+}
+
+.stat-row .value.filename {
+    font-size: 0.9em;
+    color: #555;
+    word-break: break-all;
+}
+
+.progress-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 20px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: #3b82f6;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    font-family: monospace;
+    font-weight: 500;
+    min-width: 40px;
+    text-align: right;
 }
 </style>

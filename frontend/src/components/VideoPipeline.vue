@@ -39,7 +39,6 @@ const alignedVideoExists = ref<Record<number, boolean>>({})
 
 // Alignment state
 const alignmentStatus = ref<AlignmentStatus | null>(null)
-const isApplyingAlignment = ref(false)
 const alignmentEpochs = ref(100)
 
 // PCA state
@@ -271,16 +270,22 @@ const handleTrainAlignment = async () => {
 }
 
 const handleApplyAlignment = async () => {
-  if (!projectId.value || isApplyingAlignment.value) return
-  isApplyingAlignment.value = true
+  if (!projectId.value) return
+
+  // If already aligning, just navigate to view progress
+  if (alignmentStatus.value?.is_applying) {
+    router.push(`/project/${projectId.value}/alignment`)
+    return
+  }
+
   try {
+    // Start alignment in background (returns immediately)
     await applyAlignment(projectId.value)
-    await loadAlignedVideoStatus()
+    // Navigate to Alignment screen to monitor progress
+    router.push(`/project/${projectId.value}/alignment`)
   } catch (e: any) {
-    console.error('Failed to apply alignment:', e)
-    alert(e.message || 'Failed to apply alignment')
-  } finally {
-    isApplyingAlignment.value = false
+    console.error('Failed to start alignment:', e)
+    alert(e.message || 'Failed to start alignment')
   }
 }
 
@@ -509,16 +514,16 @@ const formatScore = (score: number | undefined) => {
           <button
             class="sidebar-button train-alignment-button"
             @click="handleTrainAlignment"
-            :disabled="alignmentStatus?.is_training || isApplyingAlignment || (alignmentStatus?.label_count ?? 0) === 0"
+            :disabled="alignmentStatus?.is_training || alignmentStatus?.is_applying || (alignmentStatus?.label_count ?? 0) === 0"
           >
             <span class="button-label">{{ alignmentStatus?.is_training ? 'Training...' : 'Train Alignment Model' }}</span>
           </button>
           <button
             class="sidebar-button apply-alignment-button"
             @click="handleApplyAlignment"
-            :disabled="alignmentStatus?.is_training || isApplyingAlignment || !alignmentStatus?.model_trained"
+            :disabled="alignmentStatus?.is_training || (!alignmentStatus?.model_trained && !alignmentStatus?.is_applying)"
           >
-            <span class="button-label">{{ isApplyingAlignment ? 'Aligning...' : 'Align All Videos' }}</span>
+            <span class="button-label">{{ alignmentStatus?.is_applying ? 'View Progress' : 'Align All Videos' }}</span>
           </button>
 
           <div class="alignment-clear-buttons">
@@ -573,8 +578,8 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : 'Run PCA' }}</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || isApplyingAlignment || isRunningPCA" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : isApplyingAlignment ? 'Applying alignment...' : 'Running PCA...' }}
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : 'Running PCA...' }}
           </div>
         </aside>
       </div>

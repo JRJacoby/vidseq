@@ -465,6 +465,15 @@ async def get_alignment_prediction(
     return Response(content=png_bytes, media_type="image/png")
 
 
+def _run_alignment_in_background(
+    service: AlignmentService,
+    project_path: Path,
+    project_engine,
+):
+    """Run alignment synchronously (called from background task)."""
+    service.apply_alignment_sync(project_path, project_engine)
+
+
 @router.post("/projects/{project_id}/alignment/apply")
 async def apply_alignment(
     project_id: int,
@@ -473,6 +482,8 @@ async def apply_alignment(
     """Apply alignment to all cropped videos.
 
     Creates aligned videos in <project>/aligned_videos/ folder.
+    Returns immediately after starting. Use the SSE stream endpoint
+    (/alignment/apply/stream) to monitor progress.
     """
     logger.info(f"POST /alignment/apply: project_id={project_id}")
 
@@ -490,15 +501,75 @@ async def apply_alignment(
     db_manager = DatabaseManager.get_instance()
     project_engine = db_manager.get_project_engine(project_path)
 
-    logger.info(f"POST /alignment/apply: starting alignment...")
-    success = service.apply_alignment_sync(project_path, project_engine)
+    # Start alignment in background thread (fire-and-forget)
+    logger.info(f"POST /alignment/apply: starting alignment in background...")
+    asyncio.create_task(
+        asyncio.to_thread(
+            _run_alignment_in_background,
+            service,
+            project_path,
+            project_engine,
+        )
+    )
 
-    if not success:
-        logger.error(f"POST /alignment/apply: alignment failed")
-        raise HTTPException(status_code=500, detail="Alignment failed")
+    logger.info(f"POST /alignment/apply: alignment started, returning immediately")
+    return {"message": "Alignment started"}
 
-    logger.info(f"POST /alignment/apply: alignment complete")
-    return {"message": "Alignment complete"}
+
+@router.get("/projects/{project_id}/alignment/apply/status")
+async def get_alignment_apply_status(
+    project_id: int,
+):
+    """Get current alignment (apply) progress status."""
+    service = AlignmentService.get_instance()
+    progress = service.get_alignment_progress()
+    return progress.to_dict()
+
+
+@router.get("/projects/{project_id}/alignment/apply/stream")
+async def stream_alignment_progress(
+    project_id: int,
+):
+    """Stream alignment (apply) progress via Server-Sent Events.
+
+    Streams real-time updates during alignment. The stream will close
+    automatically when alignment completes or fails.
+    """
+    logger.info(f"GET /alignment/apply/stream: project_id={project_id} - SSE connection started")
+
+    service = AlignmentService.get_instance()
+
+    async def event_generator():
+        last_frame = -1
+        last_status = None
+
+        while True:
+            progress = service.get_alignment_progress()
+
+            # Send update if frame changed or status changed
+            if progress.current_frame != last_frame or progress.status != last_status:
+                last_frame = progress.current_frame
+                last_status = progress.status
+
+                data = json.dumps(progress.to_dict())
+                yield f"data: {data}\n\n"
+
+                # Stop streaming if alignment finished
+                if progress.status in ("completed", "failed"):
+                    logger.info(f"GET /alignment/apply/stream: closing - status={progress.status}")
+                    break
+
+            await asyncio.sleep(1.0)  # Poll every second
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @router.get("/projects/{project_id}/videos/{video_id}/aligned-video/exists")

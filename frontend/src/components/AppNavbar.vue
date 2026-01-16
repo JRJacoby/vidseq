@@ -30,9 +30,9 @@ const navigateToPCA = () => {
   }
 }
 
-const navigateToAlignmentTraining = () => {
+const navigateToAlignment = () => {
   if (projectStore.currentProjectId) {
-    router.push(`/project/${projectStore.currentProjectId}/alignment-training`)
+    router.push(`/project/${projectStore.currentProjectId}/alignment`)
   }
 }
 
@@ -70,11 +70,11 @@ const isActiveRoute = (routeName: string) => {
       </button>
       <button
         class="navbar-button"
-        :class="{ 'navbar-button-active': isActiveRoute('alignmentTraining') }"
-        @click="navigateToAlignmentTraining"
+        :class="{ 'navbar-button-active': isActiveRoute('alignment') }"
+        @click="navigateToAlignment"
         :disabled="!projectStore.currentProjectId"
       >
-        Alignment Training
+        Alignment
       </button>
     </div>
     <div class="navbar-bottom">
