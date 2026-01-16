@@ -2096,6 +2096,15 @@ class AlignmentService:
                     f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
                 )
 
+                # Create OneEuro filter for temporal smoothing of angle
+                angle_filter = OneEuroFilter(freq=fps)
+                # For angle unwrapping (handle -180/180 discontinuity)
+                prev_raw_angle: Optional[float] = None
+                unwrapped_angle: float = 0.0
+                logger.info(
+                    f"apply_alignment_sync: OneEuro angle filter initialized "
+                    f"(min_cutoff={ONE_EURO_MIN_CUTOFF}, beta={ONE_EURO_BETA})"
+                )
 
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
@@ -2158,8 +2167,24 @@ class AlignmentService:
                     front_x, front_y = front_x_px / w, front_y_px / h
                     rear_x, rear_y = rear_x_px / w, rear_y_px / h
 
-                    # Calculate rotation angle
-                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+                    # Calculate raw rotation angle
+                    raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+
+                    # Unwrap angle to handle -180/180 discontinuity
+                    if prev_raw_angle is None:
+                        unwrapped_angle = raw_angle
+                    else:
+                        delta = raw_angle - prev_raw_angle
+                        # Take the shortest path across the boundary
+                        if delta > 180:
+                            delta -= 360
+                        elif delta < -180:
+                            delta += 360
+                        unwrapped_angle += delta
+                    prev_raw_angle = raw_angle
+
+                    # Apply temporal smoothing to the unwrapped angle
+                    angle = angle_filter(unwrapped_angle)
 
                     # Rotate frame
                     rotated = rotate_frame(frame, angle)
