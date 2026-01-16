@@ -258,7 +258,8 @@ const handleTrainAlignment = async () => {
   if (!projectId.value || alignmentStatus.value?.is_training) return
   try {
     // Fire-and-forget: endpoint returns immediately after starting training
-    await trainAlignmentModel(projectId.value, alignmentEpochs.value)
+    // TEST: no augment, early_stop_patience=20, lr_patience=10
+    await trainAlignmentModel(projectId.value, alignmentEpochs.value, false, 20, 10)
     // Refresh status - will now show is_training=true
     await loadAlignmentStatus()
     // Start polling to detect when training completes

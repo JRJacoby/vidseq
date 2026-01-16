@@ -799,9 +799,21 @@ export async function clearAlignmentModel(projectId: number): Promise<{ deleted:
     return response.json()
 }
 
-export async function trainAlignmentModel(projectId: number, epochs: number = 100): Promise<void> {
+export async function trainAlignmentModel(
+    projectId: number,
+    epochs: number = 100,
+    augment: boolean = true,
+    earlyStopPatience: number = 5,
+    lrPatience: number = 3,
+): Promise<void> {
+    const params = new URLSearchParams({
+        epochs: epochs.toString(),
+        augment: augment.toString(),
+        early_stop_patience: earlyStopPatience.toString(),
+        lr_patience: lrPatience.toString(),
+    })
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/train?epochs=${epochs}`,
+        `${API_BASE}/projects/${projectId}/alignment/train?${params}`,
         { method: 'POST' }
     )
     if (!response.ok) {

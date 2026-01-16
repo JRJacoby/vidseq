@@ -39,7 +39,16 @@ from vidseq.models.video import Video
 from vidseq.services.cropped_video_service import get_cropped_video_path
 
 # Constants
-ALIGNMENT_INPUT_SIZE = 128  # Fixed input size for model
+DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
+HEATMAP_OUTPUT_SIZE = 64  # Decoder output resolution (4x upscale from 16x16)
+HEATMAP_STRIDE = DINOV2_INPUT_SIZE / HEATMAP_OUTPUT_SIZE  # 3.5
+
+# ImageNet normalization for DINOv2
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+# For backward compatibility
+ALIGNMENT_INPUT_SIZE = DINOV2_INPUT_SIZE
 
 # OneEuro filter defaults for temporal smoothing
 ONE_EURO_MIN_CUTOFF = 1.0  # Minimum cutoff frequency (Hz) - lower = more smoothing
@@ -182,6 +191,298 @@ class OneEuroFilter:
 # Configure logger for alignment service
 logger = logging.getLogger("vidseq.alignment")
 logger.setLevel(logging.DEBUG)
+
+
+# --- DINOv2 Model Loading ---
+_dinov2_model: Optional[nn.Module] = None
+_dinov2_device: Optional[torch.device] = None
+
+# Enable cuDNN benchmark for fixed input sizes (224x224)
+torch.backends.cudnn.benchmark = True
+
+
+def _load_dinov2(device: torch.device) -> nn.Module:
+    """Load frozen DINOv2 ViT-g model (cached singleton).
+
+    Applies torch.compile() for optimized inference on first load.
+
+    Args:
+        device: Device to load model on
+
+    Returns:
+        Frozen DINOv2 model in eval mode
+    """
+    global _dinov2_model, _dinov2_device
+
+    if _dinov2_model is not None and _dinov2_device == device:
+        return _dinov2_model
+
+    logger.info("_load_dinov2: loading dinov2_vitg14_reg (this may take a while on first run)")
+    model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitg14_reg')
+    model = model.to(device)
+    model.eval()
+
+    # Freeze all parameters
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Compile for faster inference (one-time cost on first forward pass)
+    if device.type == 'cuda':
+        logger.info("_load_dinov2: compiling model with torch.compile() (first inference will be slow)")
+        model = torch.compile(model)
+
+    _dinov2_model = model
+    _dinov2_device = device
+    logger.info("_load_dinov2: model loaded and frozen")
+
+    return model
+
+
+class AlignmentDecoder(nn.Module):
+    """Lightweight CNN decoder for upsampling DINOv2 features to heatmaps.
+
+    Takes 16×16×1536 patch tokens and outputs 64×64×2 heatmaps (front/rear).
+    """
+
+    def __init__(self, in_channels: int = 1536, num_keypoints: int = 2):
+        super().__init__()
+
+        # 1. Channel reduction (1x1 conv - efficient)
+        self.reduce = nn.Sequential(
+            nn.Conv2d(in_channels, 512, kernel_size=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU()
+        )
+
+        # 2. First upsample: 16→32 (clean 2x with deconv)
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU()
+        )
+
+        # 3. Second upsample: 32→64 (bilinear + conv for smoothing)
+        self.up2 = nn.Sequential(
+            nn.Upsample(scale_factor=2.0, mode='bilinear', align_corners=False),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU()
+        )
+
+        # 4. Final prediction (1x1 conv)
+        self.final = nn.Conv2d(128, num_keypoints, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: DINOv2 patch tokens reshaped to (B, 1536, 16, 16)
+
+        Returns:
+            Heatmaps of shape (B, 2, 64, 64)
+        """
+        x = self.reduce(x)  # (B, 512, 16, 16)
+        x = self.up1(x)     # (B, 256, 32, 32)
+        x = self.up2(x)     # (B, 128, 64, 64)
+        x = self.final(x)   # (B, 2, 64, 64)
+        return x
+
+
+def preprocess_for_dinov2(
+    frame: np.ndarray,
+) -> tuple[torch.Tensor, float, int, int, int, int]:
+    """Preprocess frame for DINOv2 input.
+
+    Rescales so longest side = 224, pads to 224×224 square with gray,
+    applies ImageNet normalization.
+
+    Args:
+        frame: Input frame (H, W, 3) RGB uint8
+
+    Returns:
+        (tensor, scale, pad_left, pad_top, orig_w, orig_h)
+        - tensor: (3, 224, 224) normalized tensor
+        - scale: Scale factor applied
+        - pad_left, pad_top: Padding offsets
+        - orig_w, orig_h: Original dimensions
+    """
+    orig_h, orig_w = frame.shape[:2]
+
+    # Calculate scale to fit longest side to 224
+    scale = DINOV2_INPUT_SIZE / max(orig_w, orig_h)
+    new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
+
+    # Resize
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Pad to 224×224 with gray (centered)
+    pad_left = (DINOV2_INPUT_SIZE - new_w) // 2
+    pad_top = (DINOV2_INPUT_SIZE - new_h) // 2
+    pad_right = DINOV2_INPUT_SIZE - new_w - pad_left
+    pad_bottom = DINOV2_INPUT_SIZE - new_h - pad_top
+
+    padded = cv2.copyMakeBorder(
+        resized,
+        pad_top, pad_bottom, pad_left, pad_right,
+        cv2.BORDER_CONSTANT,
+        value=(128, 128, 128)  # Gray
+    )
+
+    # Convert to float and normalize
+    tensor = torch.from_numpy(padded).float() / 255.0
+    tensor = tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+
+    # Apply ImageNet normalization
+    mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
+    tensor = (tensor - mean) / std
+
+    return tensor, scale, pad_left, pad_top, orig_w, orig_h
+
+
+def heatmap_coords_to_original(
+    hm_x: float,
+    hm_y: float,
+    scale: float,
+    pad_left: int,
+    pad_top: int,
+    orig_w: int,
+    orig_h: int,
+) -> tuple[float, float]:
+    """Convert coordinates from heatmap space to original image space.
+
+    Args:
+        hm_x, hm_y: Coordinates in 64×64 heatmap space (0-63)
+        scale: Scale factor used in preprocessing
+        pad_left, pad_top: Padding offsets used in preprocessing
+        orig_w, orig_h: Original image dimensions
+
+    Returns:
+        (x, y) normalized coordinates in original image (0-1)
+    """
+    # Convert from heatmap to 224×224 padded space
+    x_224 = hm_x * HEATMAP_STRIDE
+    y_224 = hm_y * HEATMAP_STRIDE
+
+    # Remove padding offset
+    x_scaled = x_224 - pad_left
+    y_scaled = y_224 - pad_top
+
+    # Undo scaling to get original pixel coords
+    x_orig = x_scaled / scale
+    y_orig = y_scaled / scale
+
+    # Normalize to 0-1
+    x_norm = x_orig / orig_w
+    y_norm = y_orig / orig_h
+
+    # Clamp to valid range
+    x_norm = float(np.clip(x_norm, 0.0, 1.0))
+    y_norm = float(np.clip(y_norm, 0.0, 1.0))
+
+    return x_norm, y_norm
+
+
+def dark_postprocess(heatmap: np.ndarray) -> tuple[float, float]:
+    """DARK (Distribution-Aware Keypoint Regression) sub-pixel refinement.
+
+    Uses Taylor expansion around the argmax to refine keypoint location.
+
+    Args:
+        heatmap: (H, W) heatmap array
+
+    Returns:
+        (x, y) sub-pixel coordinates in heatmap space
+    """
+    h, w = heatmap.shape
+
+    # Find initial argmax
+    max_idx = np.argmax(heatmap)
+    max_y, max_x = np.unravel_index(max_idx, heatmap.shape)
+
+    # If on boundary, can't compute gradient - return argmax
+    if max_x <= 0 or max_x >= w - 1 or max_y <= 0 or max_y >= h - 1:
+        return float(max_x), float(max_y)
+
+    # Get local 3×3 patch (in log space for numerical stability)
+    # Add small epsilon to avoid log(0)
+    eps = 1e-10
+    patch = np.log(heatmap[max_y-1:max_y+2, max_x-1:max_x+2] + eps)
+
+    # Compute gradient
+    dx = (patch[1, 2] - patch[1, 0]) / 2
+    dy = (patch[2, 1] - patch[0, 1]) / 2
+
+    # Compute Hessian
+    dxx = patch[1, 2] - 2 * patch[1, 1] + patch[1, 0]
+    dyy = patch[2, 1] - 2 * patch[1, 1] + patch[0, 1]
+    dxy = (patch[2, 2] - patch[2, 0] - patch[0, 2] + patch[0, 0]) / 4
+
+    # Solve for offset: offset = -H^(-1) @ gradient
+    det = dxx * dyy - dxy * dxy
+    if abs(det) < 1e-6:
+        # Singular Hessian - return argmax
+        return float(max_x), float(max_y)
+
+    offset_x = -(dyy * dx - dxy * dy) / det
+    offset_y = -(dxx * dy - dxy * dx) / det
+
+    # Clamp offset to [-0.5, 0.5] (shouldn't move more than half a pixel)
+    offset_x = np.clip(offset_x, -0.5, 0.5)
+    offset_y = np.clip(offset_y, -0.5, 0.5)
+
+    refined_x = max_x + offset_x
+    refined_y = max_y + offset_y
+
+    return float(refined_x), float(refined_y)
+
+
+def original_coords_to_heatmap(
+    x_norm: float,
+    y_norm: float,
+    orig_w: int,
+    orig_h: int,
+) -> tuple[float, float, float, int, int]:
+    """Convert normalized coordinates to 64×64 heatmap space.
+
+    This applies the same preprocessing as DINOv2 (rescale, pad) and
+    returns the coordinate in heatmap space.
+
+    Args:
+        x_norm, y_norm: Normalized coordinates (0-1) in original image
+        orig_w, orig_h: Original image dimensions
+
+    Returns:
+        (hm_x, hm_y, scale, pad_left, pad_top)
+        - hm_x, hm_y: Coordinates in 64×64 heatmap space (0-63)
+        - scale, pad_left, pad_top: Preprocessing params for reference
+    """
+    # Calculate preprocessing params (same as preprocess_for_dinov2)
+    scale = DINOV2_INPUT_SIZE / max(orig_w, orig_h)
+    new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
+    pad_left = (DINOV2_INPUT_SIZE - new_w) // 2
+    pad_top = (DINOV2_INPUT_SIZE - new_h) // 2
+
+    # Convert normalized coords to original pixel coords
+    x_orig = x_norm * orig_w
+    y_orig = y_norm * orig_h
+
+    # Apply scaling
+    x_scaled = x_orig * scale
+    y_scaled = y_orig * scale
+
+    # Add padding offset
+    x_224 = x_scaled + pad_left
+    y_224 = y_scaled + pad_top
+
+    # Convert to heatmap space
+    hm_x = x_224 / HEATMAP_STRIDE
+    hm_y = y_224 / HEATMAP_STRIDE
+
+    return hm_x, hm_y, scale, pad_left, pad_top
+
 
 # Add console handler if not already present
 if not logger.handlers:
@@ -875,13 +1176,9 @@ class AlignmentDataset(Dataset):
 
         # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        orig_h, orig_w = frame.shape[:2]
 
-        # Resize to fixed size
-        frame = cv2.resize(
-            frame, (self.size, self.size), interpolation=cv2.INTER_LINEAR
-        )
-
-        # Get keypoint coordinates
+        # Get keypoint coordinates (normalized 0-1)
         front_x, front_y = label.front_x, label.front_y
         rear_x, rear_y = label.rear_x, label.rear_y
 
@@ -911,15 +1208,30 @@ class AlignmentDataset(Dataset):
                     frame, front_x, front_y, rear_x, rear_y, rng
                 )
 
-        # Normalize to [0, 1] and convert to (C, H, W) tensor
-        frame_tensor = torch.from_numpy(frame).float() / 255.0
-        frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+        # Preprocess for DINOv2 (rescale longest side to 224, pad to square, normalize)
+        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame)
 
-        # Generate target heatmaps at the fixed size using augmented coordinates
-        front_heatmap = generate_gaussian_heatmap(
-            front_x, front_y, self.size, self.size
+        # Convert normalized coords to 64×64 heatmap space
+        front_hm_x, front_hm_y, _, _, _ = original_coords_to_heatmap(
+            front_x, front_y, orig_w, orig_h
         )
-        rear_heatmap = generate_gaussian_heatmap(rear_x, rear_y, self.size, self.size)
+        rear_hm_x, rear_hm_y, _, _, _ = original_coords_to_heatmap(
+            rear_x, rear_y, orig_w, orig_h
+        )
+
+        # Normalize heatmap coords to 0-1 for generate_gaussian_heatmap
+        front_hm_x_norm = front_hm_x / HEATMAP_OUTPUT_SIZE
+        front_hm_y_norm = front_hm_y / HEATMAP_OUTPUT_SIZE
+        rear_hm_x_norm = rear_hm_x / HEATMAP_OUTPUT_SIZE
+        rear_hm_y_norm = rear_hm_y / HEATMAP_OUTPUT_SIZE
+
+        # Generate target heatmaps at 64×64 resolution
+        front_heatmap = generate_gaussian_heatmap(
+            front_hm_x_norm, front_hm_y_norm, HEATMAP_OUTPUT_SIZE, HEATMAP_OUTPUT_SIZE
+        )
+        rear_heatmap = generate_gaussian_heatmap(
+            rear_hm_x_norm, rear_hm_y_norm, HEATMAP_OUTPUT_SIZE, HEATMAP_OUTPUT_SIZE
+        )
 
         # Stack into (2, H, W) tensor
         target = torch.from_numpy(
@@ -1209,6 +1521,7 @@ class AlignmentService:
         lr_patience: int = 3,
         lr_factor: float = 0.25,
         early_stop_patience: int = 5,
+        augment: bool = True,
     ) -> bool:
         """Train the alignment model using labeled data with train/val split.
 
@@ -1281,19 +1594,21 @@ class AlignmentService:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             logger.info(f"train_model_sync: using device={device}")
 
-            # Create model
-            model = smp.Unet(
-                encoder_name="resnet152",
-                encoder_weights="imagenet",
-                in_channels=3,
-                classes=2,
-            )
-            model = model.to(device)
-            logger.info("train_model_sync: created U-Net model with ResNet18 encoder")
+            # Load frozen DINOv2 feature extractor
+            dinov2 = _load_dinov2(device)
+            logger.info("train_model_sync: loaded frozen DINOv2 ViT-g")
+
+            # Create trainable decoder
+            decoder = AlignmentDecoder(in_channels=1536, num_keypoints=2)
+            decoder = decoder.to(device)
+
+            # Count trainable parameters
+            num_params = sum(p.numel() for p in decoder.parameters() if p.requires_grad)
+            logger.info(f"train_model_sync: created AlignmentDecoder with {num_params:,} trainable parameters")
 
             # Create train dataset with augmentation
             train_dataset = AlignmentDataset(
-                train_labels, project_path, video_name_map, augment=True
+                train_labels, project_path, video_name_map, augment=augment
             )
             train_dataloader = DataLoader(
                 train_dataset,
@@ -1323,8 +1638,8 @@ class AlignmentService:
                     f"{len(val_dataset)} samples (no augmentation)"
                 )
 
-            # Setup optimizer and loss
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            # Setup optimizer (only decoder params) and loss
+            optimizer = torch.optim.Adam(decoder.parameters(), lr=lr)
             criterion = nn.MSELoss()
 
             # Early stopping and LR reduction tracking (based on val loss)
@@ -1336,10 +1651,14 @@ class AlignmentService:
             lr_reduced_this_plateau = False
             min_lr = 1e-7
 
+            # Use bfloat16 autocast for faster training on Ampere+ GPUs
+            use_amp = device.type == 'cuda'
+            amp_dtype = torch.bfloat16
+
             # Training loop
             for epoch in range(max_epochs):
                 # --- Training phase ---
-                model.train()
+                decoder.train()
                 train_loss = 0.0
                 train_batches = 0
 
@@ -1348,9 +1667,26 @@ class AlignmentService:
                     targets = targets.to(device)
 
                     optimizer.zero_grad()
-                    outputs = model(frames)
-                    outputs = torch.sigmoid(outputs)
-                    loss = criterion(outputs, targets)
+
+                    with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+                        # Extract DINOv2 features (no grad needed for frozen encoder)
+                        with torch.no_grad():
+                            # DINOv2 forward returns class token + patch tokens
+                            # We use forward_features to get intermediate features
+                            features = dinov2.forward_features(frames)
+                            # features dict contains 'x_norm_patchtokens' of shape (B, 256, 1536)
+                            # Reshape to (B, 1536, 16, 16) for the decoder
+                            patch_tokens = features["x_norm_patchtokens"]  # (B, 256, 1536)
+                            B = patch_tokens.shape[0]
+                            patch_tokens = patch_tokens.permute(0, 2, 1)  # (B, 1536, 256)
+                            patch_tokens = patch_tokens.reshape(B, 1536, 16, 16)  # (B, 1536, 16, 16)
+
+                        # Pass through trainable decoder
+                        outputs = decoder(patch_tokens)
+                        outputs = torch.sigmoid(outputs)
+                        loss = criterion(outputs, targets)
+
+                    # Backward pass outside autocast (bfloat16 doesn't need GradScaler)
                     loss.backward()
                     optimizer.step()
 
@@ -1361,16 +1697,23 @@ class AlignmentService:
 
                 # --- Validation phase ---
                 if use_validation and val_dataloader is not None:
-                    model.eval()
+                    decoder.eval()
                     val_loss = 0.0
                     val_batches = 0
 
-                    with torch.no_grad():
+                    with torch.no_grad(), torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
                         for frames, targets in val_dataloader:
                             frames = frames.to(device)
                             targets = targets.to(device)
 
-                            outputs = model(frames)
+                            # Extract DINOv2 features
+                            features = dinov2.forward_features(frames)
+                            patch_tokens = features["x_norm_patchtokens"]
+                            B = patch_tokens.shape[0]
+                            patch_tokens = patch_tokens.permute(0, 2, 1)
+                            patch_tokens = patch_tokens.reshape(B, 1536, 16, 16)
+
+                            outputs = decoder(patch_tokens)
                             outputs = torch.sigmoid(outputs)
                             loss = criterion(outputs, targets)
 
@@ -1387,9 +1730,9 @@ class AlignmentService:
 
                 # Check for improvement
                 if loss_for_comparison < best_val_loss:
-                    # Improvement - save best model state
+                    # Improvement - save best decoder state
                     best_val_loss = loss_for_comparison
-                    best_model_state = copy.deepcopy(model.state_dict())
+                    best_model_state = copy.deepcopy(decoder.state_dict())
                     best_epoch = epoch + 1
                     epochs_without_improvement = 0
                     lr_reduced_this_plateau = False
@@ -1465,16 +1808,16 @@ class AlignmentService:
                 self._training_progress.epochs_without_improvement = epochs_without_improvement
                 self._training_progress.lr_reduced_this_plateau = lr_reduced_this_plateau
 
-            # Save best model weights (not final)
+            # Save best decoder weights (not final)
             model_path = self.get_model_path(project_path)
             if best_model_state is not None:
-                model.load_state_dict(best_model_state)
+                decoder.load_state_dict(best_model_state)
                 logger.info(
-                    f"train_model_sync: restoring best model from epoch {best_epoch} "
+                    f"train_model_sync: restoring best decoder from epoch {best_epoch} "
                     f"(val_loss={best_val_loss:.6f})"
                 )
-            torch.save(model.state_dict(), model_path)
-            logger.info(f"train_model_sync: saved model weights to {model_path}")
+            torch.save(decoder.state_dict(), model_path)
+            logger.info(f"train_model_sync: saved decoder weights to {model_path}")
 
             # Clear cached model so next predict loads the new weights
             self._model = None
@@ -1508,13 +1851,13 @@ class AlignmentService:
             logger.debug("train_model_sync: is_training set to False")
 
     def _load_model(self, project_path: Path) -> nn.Module:
-        """Load the model from disk, using cache if available.
+        """Load the decoder from disk, using cache if available.
 
         Args:
             project_path: Path to project folder
 
         Returns:
-            Loaded model in eval mode
+            Loaded decoder in eval mode
 
         Raises:
             FileNotFoundError: If model weights file doesn't exist
@@ -1523,39 +1866,34 @@ class AlignmentService:
 
         # Check if we need to reload
         if self._model is not None and self._model_path == model_path:
-            logger.debug(f"_load_model: using cached model from {model_path}")
+            logger.debug(f"_load_model: using cached decoder from {model_path}")
             return self._model
 
         if not model_path.exists():
             raise FileNotFoundError(f"Model weights not found: {model_path}")
 
-        logger.info(f"_load_model: loading model from {model_path}")
+        logger.info(f"_load_model: loading decoder from {model_path}")
 
         # Setup device
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"_load_model: using device={device}")
 
-        # Create model architecture
-        model = smp.Unet(
-            encoder_name="resnet152",
-            encoder_weights=None,  # We'll load our own weights
-            in_channels=3,
-            classes=2,
-        )
+        # Create decoder architecture
+        decoder = AlignmentDecoder(in_channels=1536, num_keypoints=2)
 
         # Load weights
         state_dict = torch.load(model_path, map_location=device)
-        model.load_state_dict(state_dict)
-        model = model.to(device)
-        model.eval()
+        decoder.load_state_dict(state_dict)
+        decoder = decoder.to(device)
+        decoder.eval()
 
         # Cache for future use
-        self._model = model
+        self._model = decoder
         self._model_path = model_path
         self._device = device
 
-        logger.info(f"_load_model: model loaded and cached")
-        return model
+        logger.info(f"_load_model: decoder loaded and cached")
+        return decoder
 
     def predict_sync(
         self,
@@ -1563,6 +1901,9 @@ class AlignmentService:
         frame: np.ndarray,
     ) -> np.ndarray:
         """Run inference on a frame to predict front/rear keypoint heatmaps.
+
+        Uses frozen DINOv2 for feature extraction and trainable decoder for
+        heatmap prediction.
 
         Args:
             project_path: Path to project folder
@@ -1575,35 +1916,40 @@ class AlignmentService:
         orig_h, orig_w = frame.shape[:2]
         logger.info(f"predict_sync: input frame size={orig_w}x{orig_h}")
 
-        # Load model (uses cache)
-        model = self._load_model(project_path)
+        # Load decoder (uses cache)
+        decoder = self._load_model(project_path)
         device = self._device
+
+        # Load DINOv2 (uses global cache)
+        dinov2 = _load_dinov2(device)
 
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Resize to model input size
-        frame_resized = cv2.resize(
-            frame_rgb, (ALIGNMENT_INPUT_SIZE, ALIGNMENT_INPUT_SIZE),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        # Normalize to [0, 1] and convert to (C, H, W) tensor
-        frame_tensor = torch.from_numpy(frame_resized).float() / 255.0
-        frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+        # Preprocess for DINOv2 (rescale, pad, normalize)
+        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame_rgb)
         frame_tensor = frame_tensor.unsqueeze(0)  # Add batch dimension
         frame_tensor = frame_tensor.to(device)
 
-        # Run inference
-        with torch.no_grad():
-            output = model(frame_tensor)
+        # Run inference with bfloat16 autocast for speed
+        use_amp = device.type == 'cuda'
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+            # Extract DINOv2 features
+            features = dinov2.forward_features(frame_tensor)
+            patch_tokens = features["x_norm_patchtokens"]  # (1, 256, 1536)
+            patch_tokens = patch_tokens.permute(0, 2, 1)  # (1, 1536, 256)
+            patch_tokens = patch_tokens.reshape(1, 1536, 16, 16)  # (1, 1536, 16, 16)
+
+            # Pass through decoder
+            output = decoder(patch_tokens)
             output = torch.sigmoid(output)  # Ensure [0, 1] range
 
-        # Convert to numpy: (1, 2, H, W) -> (H, W, 2)
-        heatmap = output[0].cpu().numpy()  # (2, H, W)
-        heatmap = np.transpose(heatmap, (1, 2, 0))  # (H, W, 2)
+        # Convert to numpy: (1, 2, 64, 64) -> (64, 64, 2)
+        # Cast to float32 first since numpy doesn't support bfloat16
+        heatmap = output[0].float().cpu().numpy()  # (2, 64, 64)
+        heatmap = np.transpose(heatmap, (1, 2, 0))  # (64, 64, 2)
 
-        logger.debug(f"predict_sync: model output shape={heatmap.shape}, range=[{heatmap.min():.3f}, {heatmap.max():.3f}]")
+        logger.debug(f"predict_sync: decoder output shape={heatmap.shape}, range=[{heatmap.min():.3f}, {heatmap.max():.3f}]")
 
         # Resize back to original dimensions
         heatmap_resized = cv2.resize(
@@ -1750,15 +2096,6 @@ class AlignmentService:
                     f"{width}x{height}, {fps:.2f} fps, {frame_count} frames"
                 )
 
-                # Create OneEuro filter for temporal smoothing of angle directly
-                angle_filter = OneEuroFilter(freq=fps)
-                # For angle unwrapping (handle -180/180 discontinuity)
-                prev_raw_angle: Optional[float] = None
-                unwrapped_angle: float = 0.0
-                logger.info(
-                    f"apply_alignment_sync: OneEuro angle filter initialized "
-                    f"(min_cutoff={ONE_EURO_MIN_CUTOFF}, beta={ONE_EURO_BETA})"
-                )
 
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
@@ -1810,28 +2147,19 @@ class AlignmentService:
                     # Save prediction for debugging
                     save_prediction(project_path, video.id, frame_idx, heatmap)
 
-                    # Fit gaussians to find keypoints
-                    front_x, front_y = fit_gaussian_to_heatmap(heatmap[:, :, 0])
-                    rear_x, rear_y = fit_gaussian_to_heatmap(heatmap[:, :, 1])
+                    # Find keypoints using DARK post-processing for sub-pixel accuracy
+                    front_heatmap = heatmap[:, :, 0]
+                    rear_heatmap = heatmap[:, :, 1]
+                    front_x_px, front_y_px = dark_postprocess(front_heatmap)
+                    rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
 
-                    # Calculate raw rotation angle (pass dimensions for aspect ratio correction)
-                    raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+                    # Normalize to 0-1
+                    h, w = front_heatmap.shape
+                    front_x, front_y = front_x_px / w, front_y_px / h
+                    rear_x, rear_y = rear_x_px / w, rear_y_px / h
 
-                    # Unwrap angle to handle -180/180 discontinuity
-                    if prev_raw_angle is None:
-                        unwrapped_angle = raw_angle
-                    else:
-                        delta = raw_angle - prev_raw_angle
-                        # Take the shortest path across the boundary
-                        if delta > 180:
-                            delta -= 360
-                        elif delta < -180:
-                            delta += 360
-                        unwrapped_angle += delta
-                    prev_raw_angle = raw_angle
-
-                    # Apply temporal smoothing to the unwrapped angle
-                    angle = angle_filter(unwrapped_angle)
+                    # Calculate rotation angle
+                    angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
 
                     # Rotate frame
                     rotated = rotate_frame(frame, angle)

@@ -258,15 +258,26 @@ def _run_training_in_background(
     labels: list,
     video_name_map: dict,
     epochs: int,
+    augment: bool = True,
+    early_stop_patience: int = 5,
+    lr_patience: int = 3,
 ):
     """Run training synchronously (called from background task)."""
-    service.train_model_sync(project_path, labels, video_name_map, epochs)
+    service.train_model_sync(
+        project_path, labels, video_name_map, epochs,
+        augment=augment,
+        early_stop_patience=early_stop_patience,
+        lr_patience=lr_patience,
+    )
 
 
 @router.post("/projects/{project_id}/alignment/train")
 async def train_alignment_model(
     project_id: int,
     epochs: int = 100,
+    augment: bool = True,
+    early_stop_patience: int = 5,
+    lr_patience: int = 3,
     project_path: Path = Depends(get_project_folder),
     session: AsyncSession = Depends(get_project_session),
 ):
@@ -306,7 +317,7 @@ async def train_alignment_model(
 
     # Start training in background thread (fire-and-forget)
     # Use asyncio.to_thread but don't await it - let it run in background
-    logger.info(f"POST /alignment/train: starting training in background...")
+    logger.info(f"POST /alignment/train: starting training in background (augment={augment})...")
     asyncio.create_task(
         asyncio.to_thread(
             _run_training_in_background,
@@ -315,11 +326,14 @@ async def train_alignment_model(
             labels,
             video_name_map,
             epochs,
+            augment,
+            early_stop_patience,
+            lr_patience,
         )
     )
 
     logger.info(f"POST /alignment/train: training started, returning immediately")
-    return {"message": "Training started", "max_epochs": epochs}
+    return {"message": "Training started", "max_epochs": epochs, "augment": augment}
 
 
 @router.get("/projects/{project_id}/alignment/training/status")
