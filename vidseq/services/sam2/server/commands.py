@@ -242,13 +242,15 @@ def handle_segment_videos_batch(
     """
     Segment multiple videos in batch.
 
-    This command sends multiple responses via response_callback for progress updates.
+    Sends initial response with job IDs, then processes videos. Progress is tracked
+    via job status updates in the database (UI polls for updates). TCP progress
+    callbacks are avoided to prevent blocking when client disconnects.
 
     Args:
         params: Command params with videos, project_id, project_path
         predictor: SAM2 predictor instance
         sessions: Dict of video_id -> (inference_state, loader)
-        response_callback: Callback to send intermediate responses
+        response_callback: Callback for initial response only
 
     Returns:
         Final response dict
@@ -374,6 +376,9 @@ def handle_segment_videos_batch(
                 )
 
             # Progress callback for this video
+            # NOTE: Only updates DB, not TCP. The client disconnects after receiving
+            # the initial response, so TCP progress updates would block on full buffer.
+            # UI polls job status from DB instead.
             def progress_update(frame_idx):
                 with Session(registry_engine) as session:
                     session.execute(
@@ -390,15 +395,6 @@ def handle_segment_videos_batch(
                     )
                     session.commit()
 
-                response_callback({
-                    "type": "batch_progress",
-                    "request_id": request_id,
-                    "job_id": job_id,
-                    "video_id": video_id,
-                    "current_frame": frame_idx,
-                    "total_frames": num_frames,
-                })
-
             # Propagate through all frames
             _, _, stats = propagate_video(
                 predictor=predictor,
@@ -411,6 +407,7 @@ def handle_segment_videos_batch(
                 height=height,
                 width=width,
                 progress_callback=progress_update,
+                clear_old_frames=True,  # Prevent OOM on long videos
             )
 
             # Close session to free memory
@@ -449,13 +446,8 @@ def handle_segment_videos_batch(
                 session.commit()
 
             log(f"Successfully processed video {video_id}")
-            response_callback({
-                "type": "batch_video_complete",
-                "request_id": request_id,
-                "job_id": job_id,
-                "video_id": video_id,
-                "status": "completed",
-            })
+            # NOTE: Don't send TCP response here - client may have disconnected.
+            # Job status in DB is sufficient for UI polling.
             processed_count += 1
 
         except Exception as ve:
@@ -494,14 +486,8 @@ def handle_segment_videos_batch(
                 )
                 session.commit()
 
-            response_callback({
-                "type": "batch_video_complete",
-                "request_id": request_id,
-                "job_id": job_id,
-                "video_id": video_id,
-                "status": "failed",
-                "error": error_msg,
-            })
+            # NOTE: Don't send TCP response here - client may have disconnected.
+            # Job status in DB is sufficient for UI polling.
         finally:
             if log_file:
                 log_file.close()

@@ -27,6 +27,7 @@ def propagate_video(
     height: int,
     width: int,
     progress_callback: Optional[Callable[[int], None]] = None,
+    clear_old_frames: bool = False,
 ) -> tuple[int, list[int], dict]:
     """
     Run SAM2 propagation and save masks/scores.
@@ -47,6 +48,8 @@ def propagate_video(
         height: Video height
         width: Video width
         progress_callback: Optional callback called every 10 frames with frame_idx
+        clear_old_frames: If True, periodically clear old non-conditioning frame
+            outputs to prevent OOM on long videos. Only use in batch mode.
 
     Returns:
         Tuple of (frame_count, frame_indices, stats_dict)
@@ -59,6 +62,10 @@ def propagate_video(
     score_buffer: list[tuple[int, float]] = []
     # has_mask buffer for batch writes
     has_mask_buffer: list[int] = []
+
+    # Memory cleanup constants (for long video OOM prevention)
+    CLEANUP_INTERVAL = 1000  # Clear old frames every N frames
+    FRAMES_TO_KEEP = 10      # Keep this many recent frames
 
     # Get sync database session for score writes
     db_manager = DatabaseManager.get_instance()
@@ -111,6 +118,10 @@ def propagate_video(
                 frame_indices.append(frame_idx)
                 frame_count += 1
 
+                # Periodically clear old frames to prevent OOM on long videos
+                if clear_old_frames and frame_count % CLEANUP_INTERVAL == 0:
+                    _clear_old_non_cond_frames(inference_state, frame_idx, FRAMES_TO_KEEP)
+
                 if progress_callback and frame_count % 10 == 0:
                     progress_callback(frame_idx)
             # === END HOT LOOP ===
@@ -142,3 +153,29 @@ def _compute_score_stats(predictor) -> dict:
                 "p95": float(np.percentile(scores_arr, 95)),
             }
     return stats
+
+
+def _clear_old_non_cond_frames(
+    inference_state: dict, current_frame: int, frames_to_keep: int
+) -> None:
+    """
+    Clear old non-conditioning frame outputs to prevent OOM on long videos.
+
+    Only clears frames older than (current_frame - frames_to_keep).
+    Preserves cond_frame_outputs (user prompts).
+
+    Args:
+        inference_state: SAM2 inference state dict
+        current_frame: Current frame index being processed
+        frames_to_keep: Number of recent frames to retain
+    """
+    cutoff = current_frame - frames_to_keep
+    if cutoff <= 0:
+        return
+
+    for obj_output_dict in inference_state["output_dict_per_obj"].values():
+        non_cond_outputs = obj_output_dict["non_cond_frame_outputs"]
+        # Find frames to remove (older than cutoff)
+        frames_to_remove = [f for f in non_cond_outputs.keys() if f < cutoff]
+        for f in frames_to_remove:
+            del non_cond_outputs[f]
