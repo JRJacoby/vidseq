@@ -1216,3 +1216,71 @@ export async function getARHMMAnalysis(projectId: number): Promise<ARHMMAnalysis
     }
     return response.json()
 }
+
+// --- Crowd Movies ---
+
+export interface CrowdMovieProgress {
+    is_running: boolean
+    status: 'idle' | 'generating' | 'completed' | 'failed'
+    total_syllables: number
+    completed_syllables: number
+    skipped_syllables: number
+    current_syllable: number
+    error: string | null
+}
+
+export interface CrowdMovieEntry {
+    syllable: number
+    instance_count: number
+    sampled: number
+}
+
+export async function generateCrowdMovies(projectId: number): Promise<{ status: string }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/generate`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to start crowd movie generation'))
+    }
+    return response.json()
+}
+
+export async function stopCrowdMovies(projectId: number): Promise<{ status: string }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/stop`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to stop crowd movie generation'))
+    }
+    return response.json()
+}
+
+export async function getCrowdMovieStatus(projectId: number): Promise<CrowdMovieProgress> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/status`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get crowd movie status'))
+    }
+    return response.json()
+}
+
+export async function getCrowdMovieList(projectId: number): Promise<CrowdMovieEntry[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/list`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get crowd movie list'))
+    }
+    return response.json()
+}
+
+export function getCrowdMovieStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/stream`
+}
+
+export function getCrowdMovieVideoUrl(projectId: number, syllable: number): string {
+    return `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/${syllable}/video`
+}

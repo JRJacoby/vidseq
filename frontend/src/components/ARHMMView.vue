@@ -7,8 +7,16 @@ import {
     stopARHMM,
     getARHMMStreamUrl,
     getARHMMAnalysis,
+    generateCrowdMovies,
+    stopCrowdMovies,
+    getCrowdMovieStatus,
+    getCrowdMovieList,
+    getCrowdMovieStreamUrl,
+    getCrowdMovieVideoUrl,
     type ARHMMProgress,
     type ARHMMAnalysis,
+    type CrowdMovieProgress,
+    type CrowdMovieEntry,
 } from '@/services/api'
 import { Chart, registerables } from 'chart.js'
 import zoomPlugin from 'chartjs-plugin-zoom'
@@ -30,6 +38,14 @@ const frequencyChartCanvas = ref<HTMLCanvasElement | null>(null)
 let durationChart: Chart | null = null
 let frequencyChart: Chart | null = null
 
+// Crowd movies
+const crowdMovieProgress = ref<CrowdMovieProgress | null>(null)
+const crowdMovieList = ref<CrowdMovieEntry[]>([])
+const selectedSyllable = ref<number | null>(null)
+const crowdMovieError = ref<string | null>(null)
+const crowdMovieVideoRef = ref<HTMLVideoElement | null>(null)
+let crowdMovieEventSource: EventSource | null = null
+
 // Load initial status
 async function loadStatus() {
     if (!projectId.value) return
@@ -41,6 +57,7 @@ async function loadStatus() {
         }
         if (progress.value.status === 'completed') {
             loadAnalysis()
+            loadCrowdMovies()
         }
     } catch (e) {
         console.error('Failed to load ARHMM status:', e)
@@ -70,6 +87,7 @@ function connectToStream() {
             eventSource = null
             if (data.status === 'completed') {
                 loadAnalysis()
+                loadCrowdMovies()
             }
         }
     }
@@ -227,12 +245,112 @@ function initFrequencyChart() {
 function resetDurationZoom() { durationChart?.resetZoom() }
 function resetFrequencyZoom() { frequencyChart?.resetZoom() }
 
+// --- Crowd Movies ---
+
+async function loadCrowdMovies() {
+    if (!projectId.value) return
+    try {
+        const movies = await getCrowdMovieList(projectId.value)
+        crowdMovieList.value = movies
+        const first = movies[0]
+        if (first && selectedSyllable.value === null) {
+            selectedSyllable.value = first.syllable
+        }
+        // Also load current generation status
+        crowdMovieProgress.value = await getCrowdMovieStatus(projectId.value)
+        if (crowdMovieProgress.value.is_running) {
+            connectToCrowdMovieStream()
+        }
+    } catch (e) {
+        console.error('Failed to load crowd movies:', e)
+    }
+}
+
+function connectToCrowdMovieStream() {
+    if (!projectId.value) return
+
+    if (crowdMovieEventSource) {
+        crowdMovieEventSource.close()
+        crowdMovieEventSource = null
+    }
+
+    const url = getCrowdMovieStreamUrl(projectId.value)
+    crowdMovieEventSource = new EventSource(url)
+
+    crowdMovieEventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as CrowdMovieProgress
+        crowdMovieProgress.value = data
+
+        if (['completed', 'failed'].includes(data.status)) {
+            crowdMovieEventSource?.close()
+            crowdMovieEventSource = null
+            if (data.status === 'completed') {
+                loadCrowdMovies()
+            }
+        }
+    }
+
+    crowdMovieEventSource.onerror = () => {
+        crowdMovieEventSource?.close()
+        crowdMovieEventSource = null
+    }
+}
+
+async function handleGenerateCrowdMovies() {
+    if (!projectId.value) return
+    crowdMovieError.value = null
+    try {
+        await generateCrowdMovies(projectId.value)
+        await new Promise(r => setTimeout(r, 300))
+        crowdMovieProgress.value = await getCrowdMovieStatus(projectId.value)
+        connectToCrowdMovieStream()
+    } catch (e: any) {
+        crowdMovieError.value = e.message || 'Failed to start crowd movie generation'
+    }
+}
+
+async function handleStopCrowdMovies() {
+    if (!projectId.value) return
+    crowdMovieError.value = null
+    try {
+        await stopCrowdMovies(projectId.value)
+    } catch (e: any) {
+        crowdMovieError.value = e.message || 'Failed to stop crowd movie generation'
+    }
+}
+
+const crowdMovieVideoUrl = computed(() => {
+    if (!projectId.value || selectedSyllable.value === null) return ''
+    return getCrowdMovieVideoUrl(projectId.value, selectedSyllable.value)
+})
+
+const crowdMovieProgressPercent = computed(() => {
+    if (!crowdMovieProgress.value || crowdMovieProgress.value.total_syllables === 0) return 0
+    return (crowdMovieProgress.value.completed_syllables / crowdMovieProgress.value.total_syllables) * 100
+})
+
+const isCrowdMovieActive = computed(() => {
+    return crowdMovieProgress.value?.status === 'generating'
+})
+
+function onSyllableChange(event: Event) {
+    const target = event.target as HTMLSelectElement
+    selectedSyllable.value = parseInt(target.value, 10)
+    // Reload video when syllable changes
+    nextTick(() => {
+        if (crowdMovieVideoRef.value) {
+            crowdMovieVideoRef.value.load()
+        }
+    })
+}
+
 onMounted(() => {
     loadStatus()
 })
 
 onUnmounted(() => {
     eventSource?.close()
+    crowdMovieEventSource?.close()
     durationChart?.destroy()
     frequencyChart?.destroy()
 })
@@ -241,6 +359,8 @@ onUnmounted(() => {
 watch(() => projectId.value, () => {
     eventSource?.close()
     eventSource = null
+    crowdMovieEventSource?.close()
+    crowdMovieEventSource = null
     loadStatus()
 })
 
@@ -463,6 +583,98 @@ const resultIcon = (result: string) => {
                         <div class="chart-wrapper">
                             <canvas ref="frequencyChartCanvas"></canvas>
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Crowd Movies -->
+            <section class="section" v-if="progress && progress.status === 'completed'">
+                <h2 class="section-title">Crowd Movies</h2>
+                <div class="crowd-movies-panel">
+                    <!-- Controls -->
+                    <div class="action-row">
+                        <button
+                            class="action-btn action-btn-primary"
+                            @click="handleGenerateCrowdMovies"
+                            :disabled="isCrowdMovieActive"
+                        >
+                            Generate Crowd Movies
+                        </button>
+                        <button
+                            class="action-btn action-btn-danger"
+                            @click="handleStopCrowdMovies"
+                            :disabled="!isCrowdMovieActive"
+                        >
+                            Stop
+                        </button>
+                    </div>
+
+                    <div v-if="crowdMovieError" class="error-message">{{ crowdMovieError }}</div>
+                    <div v-if="crowdMovieProgress?.error" class="error-message">{{ crowdMovieProgress.error }}</div>
+
+                    <!-- Progress -->
+                    <div
+                        v-if="crowdMovieProgress && crowdMovieProgress.status === 'generating'"
+                        class="crowd-progress"
+                    >
+                        <div class="stat-row">
+                            <span class="label">Syllable:</span>
+                            <span class="value mono">{{ crowdMovieProgress.current_syllable }}</span>
+                        </div>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div
+                                    class="progress-fill crowd-fill"
+                                    :style="{ width: `${crowdMovieProgressPercent}%` }"
+                                ></div>
+                            </div>
+                            <span class="progress-text">{{ Math.round(crowdMovieProgressPercent) }}%</span>
+                        </div>
+                        <div class="crowd-stats">
+                            {{ crowdMovieProgress.completed_syllables }} / {{ crowdMovieProgress.total_syllables }} syllables
+                            <span v-if="crowdMovieProgress.skipped_syllables > 0">
+                                ({{ crowdMovieProgress.skipped_syllables }} skipped)
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- Syllable selector + video -->
+                    <div v-if="crowdMovieList.length > 0" class="crowd-viewer">
+                        <div class="syllable-selector">
+                            <label for="syllable-select">Syllable:</label>
+                            <select
+                                id="syllable-select"
+                                :value="selectedSyllable"
+                                @change="onSyllableChange"
+                            >
+                                <option
+                                    v-for="entry in crowdMovieList"
+                                    :key="entry.syllable"
+                                    :value="entry.syllable"
+                                >
+                                    {{ entry.syllable }} ({{ entry.instance_count }} instances, {{ entry.sampled }} sampled)
+                                </option>
+                            </select>
+                        </div>
+
+                        <div class="video-container" v-if="selectedSyllable !== null">
+                            <video
+                                ref="crowdMovieVideoRef"
+                                :key="selectedSyllable"
+                                controls
+                                loop
+                                class="crowd-video"
+                            >
+                                <source :src="crowdMovieVideoUrl" type="video/mp4" />
+                            </video>
+                        </div>
+                    </div>
+
+                    <div
+                        v-else-if="!isCrowdMovieActive && crowdMovieProgress?.status !== 'generating'"
+                        class="no-movies-message"
+                    >
+                        No crowd movies generated yet. Click "Generate Crowd Movies" to create them.
                     </div>
                 </div>
             </section>
@@ -774,5 +986,71 @@ h1 {
     font-size: 0.85em;
     color: #999;
     margin-top: 8px;
+}
+
+/* Crowd Movies */
+.crowd-movies-panel {
+    background: #f8f8f8;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.crowd-progress {
+    margin-top: 12px;
+}
+
+.crowd-fill {
+    background: #3b82f6;
+}
+
+.crowd-stats {
+    margin-top: 4px;
+    font-size: 0.85em;
+    color: #555;
+}
+
+.crowd-viewer {
+    margin-top: 16px;
+}
+
+.syllable-selector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.syllable-selector label {
+    font-size: 0.9em;
+    font-weight: 500;
+    color: #333;
+}
+
+.syllable-selector select {
+    padding: 6px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 0.9em;
+    background: white;
+    min-width: 280px;
+}
+
+.video-container {
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.crowd-video {
+    display: block;
+    width: 100%;
+    max-height: 500px;
+    object-fit: contain;
+}
+
+.no-movies-message {
+    margin-top: 12px;
+    font-size: 0.9em;
+    color: #888;
 }
 </style>

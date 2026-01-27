@@ -228,6 +228,14 @@ class ARHMMService:
             # Clean up checkpoint files (no longer needed)
             self._cleanup_checkpoints(project_path)
 
+            # Generate crowd movies
+            from vidseq.services.crowd_movie_service import CrowdMovieService
+
+            crowd_service = CrowdMovieService.get_instance()
+            if not crowd_service.is_running():
+                logger.info("[ARHMM] Starting crowd movie generation")
+                crowd_service.generate_crowd_movies_sync(project_path, fps)
+
             self._progress.status = "completed"
             logger.info("[ARHMM] Pipeline completed successfully")
 
