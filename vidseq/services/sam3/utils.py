@@ -124,20 +124,24 @@ def init_state_with_lazy_loader(model, loader) -> dict:
         Inference state dictionary with keys including:
         image_size, num_frames, orig_height, orig_width, constants, etc.
     """
-    import sam3.model.io_utils as io_utils
+    # Must patch the reference in the module that CALLS the function,
+    # not just the module that defines it. sam3_video_inference.py does:
+    #   from sam3.model.io_utils import load_resource_as_video_frames
+    # which creates a local binding that won't see patches to io_utils.
+    import sam3.model.sam3_video_inference as video_inference_module
 
-    original_fn = io_utils.load_resource_as_video_frames
+    original_fn = video_inference_module.load_resource_as_video_frames
 
     def patched_load(resource_path, image_size, offload_video_to_cpu, img_mean, img_std, **kwargs):
         return loader, loader._video_height, loader._video_width
 
-    io_utils.load_resource_as_video_frames = patched_load
+    video_inference_module.load_resource_as_video_frames = patched_load
     try:
         inference_state = model.init_state(
             resource_path=str(loader.video_path),
             offload_video_to_cpu=loader.offload_to_cpu,
         )
     finally:
-        io_utils.load_resource_as_video_frames = original_fn
+        video_inference_module.load_resource_as_video_frames = original_fn
 
     return inference_state
