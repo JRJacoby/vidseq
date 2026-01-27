@@ -26,13 +26,13 @@ class LazyVideoFrameLoader:
     """
     Lazy frame loader that provides frames on-demand from a video file.
     
-    Implements __getitem__ and __len__ to be compatible with SAM2's 
+    Implements __getitem__ and __len__ to be compatible with SAM3's
     inference_state["images"] access pattern.
     """
     
-    IMAGE_SIZE = 1024
-    IMG_MEAN = (0.485, 0.456, 0.406)
-    IMG_STD = (0.229, 0.224, 0.225)
+    IMAGE_SIZE = 1008
+    IMG_MEAN = (0.5, 0.5, 0.5)
+    IMG_STD = (0.5, 0.5, 0.5)
     
     def __init__(
         self,
@@ -95,7 +95,7 @@ class LazyVideoFrameLoader:
         """
         Load and preprocess frame(s).
         
-        SAM2 accesses frames as: inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
+        SAM3 accesses frames as: inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
         So we return a tensor of shape (3, IMAGE_SIZE, IMAGE_SIZE) that can be .to(), .float(), .unsqueeze()
         
         Args:
@@ -115,7 +115,7 @@ class LazyVideoFrameLoader:
         return self._load_and_preprocess_frame(frame_idx)
     
     def _load_and_preprocess_frame(self, frame_idx: int) -> torch.Tensor:
-        """Load a frame from video and preprocess for SAM2."""
+        """Load a frame from video and preprocess for SAM3."""
         if self.offload_to_cpu:
             return self._load_and_preprocess_cpu(frame_idx)
         
