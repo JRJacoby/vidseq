@@ -1,5 +1,5 @@
 """
-SAM2 TCP Server Worker.
+SAM3 TCP Server Worker.
 
 Runs as standalone TCP server process. Accepts multiple connections,
 queues all commands, processes them sequentially for GPU safety.
@@ -40,11 +40,11 @@ from vidseq.services.sam3.config import (
     write_pid_file,
     write_port_file,
 )
-from vidseq.services.model_manager import ensure_model, SAM2_TINY_MODEL
+from vidseq.services.model_manager import ensure_sam3_model
 
 
-class SAM2TCPServer:
-    """TCP server for SAM2 worker with sequential command processing."""
+class SAM3TCPServer:
+    """TCP server for SAM3 worker with sequential command processing."""
 
     def __init__(self, port: Optional[int] = None):
         """
@@ -63,12 +63,11 @@ class SAM2TCPServer:
         self.running = False
         self._is_processing = False
 
-        # SAM2 state
-        self.predictor = None
+        # SAM3 state
+        self.model = None
         self.sessions: dict[int, tuple[dict, Any]] = {}
 
         # Config paths
-        self.config_name = "configs/sam2.1/sam2.1_hiera_t.yaml"
         self.checkpoint_path: Optional[Path] = None  # Set in start() after ensuring model exists
 
     def _recover_stale_in_progress_states(self) -> None:
@@ -108,24 +107,24 @@ class SAM2TCPServer:
 
                                 proj_session.commit()
                                 print(
-                                    f"[SAM2 Worker] Recovered {len(in_progress_videos)} stale "
+                                    f"[SAM3 Worker] Recovered {len(in_progress_videos)} stale "
                                     f"'in_progress' videos in project {project.name}"
                                 )
                     except Exception as e:
-                        print(f"[SAM2 Worker] Warning: Failed to recover project {project.name}: {e}")
+                        print(f"[SAM3 Worker] Warning: Failed to recover project {project.name}: {e}")
                         continue
 
                 if recovered_count > 0:
-                    print(f"[SAM2 Worker] Total recovered videos: {recovered_count}")
+                    print(f"[SAM3 Worker] Total recovered videos: {recovered_count}")
         except Exception as e:
-            print(f"[SAM2 Worker] Warning: Failed to recover stale states: {e}")
+            print(f"[SAM3 Worker] Warning: Failed to recover stale states: {e}")
 
     def start(self) -> None:
         """Start the TCP server."""
         # Ensure model checkpoint is downloaded before starting
-        print("[SAM2 Worker] Ensuring model checkpoint is available...")
-        self.checkpoint_path = ensure_model(SAM2_TINY_MODEL)
-        print(f"[SAM2 Worker] Model checkpoint: {self.checkpoint_path}")
+        print("[SAM3 Worker] Ensuring model checkpoint is available...")
+        self.checkpoint_path = ensure_sam3_model()
+        print(f"[SAM3 Worker] Model checkpoint: {self.checkpoint_path}")
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -134,7 +133,7 @@ class SAM2TCPServer:
         self.server_socket.settimeout(1.0)
         self.running = True
 
-        print(f"[SAM2 Worker] TCP server started on localhost:{self.port}")
+        print(f"[SAM3 Worker] TCP server started on localhost:{self.port}")
 
         # Write port and PID files
         write_port_file(self.port)
@@ -155,7 +154,7 @@ class SAM2TCPServer:
                 with self.connection_lock:
                     conn_count = len(self.active_connections)
                 if conn_count == 0:
-                    print(f"[SAM2 Worker] First client connected from {addr}")
+                    print(f"[SAM3 Worker] First client connected from {addr}")
                 client_thread = threading.Thread(
                     target=self._handle_client,
                     args=(conn, addr),
@@ -181,7 +180,7 @@ class SAM2TCPServer:
 
         # Only log if this is the first connection
         if conn_count == 1:
-            print(f"[SAM2 Worker] Client connected from {addr}")
+            print(f"[SAM3 Worker] Client connected from {addr}")
 
         try:
             # Set a short timeout for initial read to detect quick disconnects
@@ -214,7 +213,7 @@ class SAM2TCPServer:
         except Exception as e:
             # Only log actual errors, not quick disconnects
             if "timed out" not in str(e).lower():
-                print(f"[SAM2 Worker] Error handling client {addr}: {e}")
+                print(f"[SAM3 Worker] Error handling client {addr}: {e}")
         finally:
             # Connection closed
             with self.connection_lock:
@@ -223,7 +222,7 @@ class SAM2TCPServer:
                 # If no connections left, schedule shutdown
                 if len(self.active_connections) == 0:
                     if was_last:
-                        print(f"[SAM2 Worker] Last client disconnected from {addr}")
+                        print(f"[SAM3 Worker] Last client disconnected from {addr}")
                     self._schedule_shutdown()
             try:
                 conn.close()
@@ -261,7 +260,7 @@ class SAM2TCPServer:
             # Connection may have closed, remove it
             with self.connection_lock:
                 self.active_connections.discard(conn)
-            print(f"[SAM2 Worker] Error sending response: {e}")
+            print(f"[SAM3 Worker] Error sending response: {e}")
 
     def _process_commands(self) -> None:
         """Process commands sequentially from queue."""
@@ -275,7 +274,7 @@ class SAM2TCPServer:
                 self._is_processing = True
                 self._handle_command(cmd, response_callback)
             except Exception as e:
-                print(f"[SAM2 Worker] Error processing command: {e}")
+                print(f"[SAM3 Worker] Error processing command: {e}")
                 import traceback
 
                 traceback.print_exc()
@@ -299,33 +298,32 @@ class SAM2TCPServer:
 
         try:
             if cmd_type == "load_model":
-                result, self.predictor = handle_load_model(
-                    self.config_name,
+                result, self.model = handle_load_model(
                     self.checkpoint_path,
                 )
 
             elif cmd_type == "init_session":
-                result = handle_init_session(cmd, self.predictor, self.sessions)
+                result = handle_init_session(cmd, self.model, self.sessions)
 
             elif cmd_type == "add_point_prompt":
-                result = handle_add_prompt(cmd, self.predictor, self.sessions)
+                result = handle_add_prompt(cmd, self.model, self.sessions)
 
             elif cmd_type == "generate_training_masks":
-                result = handle_generate_training_masks(cmd, self.predictor, self.sessions)
+                result = handle_generate_training_masks(cmd, self.model, self.sessions)
 
             elif cmd_type == "segment_videos_batch":
                 result = handle_segment_videos_batch(
                     cmd,
-                    self.predictor,
+                    self.model,
                     self.sessions,
                     response_callback,
                 )
 
             elif cmd_type == "reset_state":
-                result = handle_reset_state(cmd, self.predictor, self.sessions)
+                result = handle_reset_state(cmd, self.model, self.sessions)
 
             elif cmd_type == "clear_frame_prompts":
-                result = handle_clear_frame_prompts(cmd, self.predictor, self.sessions)
+                result = handle_clear_frame_prompts(cmd, self.model, self.sessions)
 
             elif cmd_type == "close_session":
                 result = handle_close_session(cmd, self.sessions)
@@ -335,7 +333,7 @@ class SAM2TCPServer:
                 self.running = False
 
             else:
-                print(f"[SAM2 Worker] Unknown command type: {cmd_type}")
+                print(f"[SAM3 Worker] Unknown command type: {cmd_type}")
                 result = {
                     "type": "error",
                     "error": f"Unknown command type: {cmd_type}",
@@ -348,7 +346,7 @@ class SAM2TCPServer:
             response_callback(result)
 
         except Exception as e:
-            print(f"[SAM2 Worker] Error in command {cmd_type}: {e}")
+            print(f"[SAM3 Worker] Error in command {cmd_type}: {e}")
             import traceback
 
             traceback.print_exc()
@@ -368,9 +366,9 @@ class SAM2TCPServer:
             time.sleep(self.shutdown_timeout)
             with self.connection_lock:
                 if len(self.active_connections) == 0 and not self._is_processing:
-                    print("[SAM2 Worker] No connections and not processing, shutting down...")
+                    print("[SAM3 Worker] No connections and not processing, shutting down...")
                     self.stop()
-                    print("[SAM2 Worker] Exiting process...")
+                    print("[SAM3 Worker] Exiting process...")
                     os._exit(0)
 
         if self.shutdown_timer:
@@ -408,12 +406,12 @@ class SAM2TCPServer:
                 pass
         self.sessions.clear()
 
-        # Free GPU memory by deleting predictor and clearing CUDA cache
-        if self.predictor is not None:
-            del self.predictor
-            self.predictor = None
+        # Free GPU memory by deleting model and clearing CUDA cache
+        if self.model is not None:
+            del self.model
+            self.model = None
             torch.cuda.empty_cache()
-            print("[SAM2 Worker] GPU memory cleared")
+            print("[SAM3 Worker] GPU memory cleared")
 
         cleanup_port_files()
 
@@ -422,7 +420,7 @@ def main():
     """Main entry point for standalone server."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="SAM2 TCP Worker Server")
+    parser = argparse.ArgumentParser(description="SAM3 TCP Worker Server")
     parser.add_argument(
         "--port",
         type=int,
@@ -431,10 +429,10 @@ def main():
     )
     args = parser.parse_args()
 
-    server = SAM2TCPServer(port=args.port)
+    server = SAM3TCPServer(port=args.port)
 
     def signal_handler(signum, frame):
-        print("\n[SAM2 Worker] Received shutdown signal, cleaning up...")
+        print("\n[SAM3 Worker] Received shutdown signal, cleaning up...")
         server.stop()
         sys.exit(0)
 
@@ -444,7 +442,7 @@ def main():
     try:
         server.start()
     except KeyboardInterrupt:
-        print("\n[SAM2 Worker] Interrupted, shutting down...")
+        print("\n[SAM3 Worker] Interrupted, shutting down...")
         server.stop()
     finally:
         cleanup_port_files()

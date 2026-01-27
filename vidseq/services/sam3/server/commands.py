@@ -1,13 +1,12 @@
-"""SAM2 TCP command handlers.
+"""SAM3 TCP command handlers.
 
 Each function handles one command type. Functions take only the arguments they need.
 """
 
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import numpy as np
-import torch
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
@@ -16,54 +15,38 @@ from vidseq.models.video import Video
 from vidseq.models.utils import utc_now
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.sam3.inference.propagate import propagate_video
-from vidseq.services.sam3.utils import encode_mask_rle, extract_mask, init_state_with_lazy_loader
+from vidseq.services.sam3.utils import encode_mask_rle, extract_mask_from_sam3_output, init_state_with_lazy_loader
 
 
-def handle_load_model(
-    config_name: str,
-    checkpoint_path: Path,
-) -> tuple[dict, Any]:
+def handle_load_model(checkpoint_path: Path) -> tuple[dict, Any]:
     """
-    Load SAM2 model.
+    Load SAM3 model.
 
     Returns:
-        Tuple of (response_dict, predictor)
+        Tuple of (response_dict, model)
     """
-    from sam2.build_sam import build_sam2_video_predictor
+    import torch
+    from sam3.model_builder import build_sam3_video_model
 
-    print("[SAM2 Worker] Loading SAM2 model...")
+    print("[SAM3 Worker] Loading SAM3 model...")
 
     torch.set_float32_matmul_precision("medium")
 
-    predictor = build_sam2_video_predictor(
-        config_file=config_name,
-        ckpt_path=str(checkpoint_path),
+    model = build_sam3_video_model(
+        checkpoint_path=str(checkpoint_path),
+        load_from_HF=False,
+        apply_temporal_disambiguation=True,
+        compile=True,
         device="cuda",
-        vos_optimized=False,
-        hydra_overrides_extra=[
-            "++model.add_all_frames_to_correct_as_cond=true",
-            "++model._target_=vidseq.services.sam3.inference.predictor.CustomSAM2VideoPredictor",
-        ],
     )
-    predictor.to(dtype=torch.bfloat16)
 
-    print("[SAM2 Worker] Compiling image encoder...")
-    print(f"[SAM2 Worker] Image encoder type before compile: {type(predictor.image_encoder)}")
-    predictor.image_encoder = torch.compile(
-        predictor.image_encoder,
-        mode="max-autotune",
-        fullgraph=True,
-    )
-    print(f"[SAM2 Worker] Image encoder type after compile: {type(predictor.image_encoder)}")
-    print(f"[SAM2 Worker] Image encoder forward type: {type(predictor.image_encoder.forward)}")
-
-    print("[SAM2 Worker] SAM2 model loaded and compiled!")
-    return {"type": "status", "status": "ready"}, predictor
+    print("[SAM3 Worker] SAM3 model loaded!")
+    return {"type": "status", "status": "ready"}, model
 
 
 def handle_init_session(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
 ) -> dict:
     """
@@ -71,7 +54,7 @@ def handle_init_session(
 
     Args:
         params: Command params with video_id, video_path
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
 
     Returns:
@@ -82,9 +65,9 @@ def handle_init_session(
     video_id = params["video_id"]
     video_path = Path(params["video_path"])
 
-    print(f"[SAM2 Worker] Initializing session for video {video_id}...")
+    print(f"[SAM3 Worker] Initializing session for video {video_id}...")
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     # Return existing session if already initialized
@@ -95,12 +78,12 @@ def handle_init_session(
             "status": "ok",
             "video_id": video_id,
             "num_frames": inference_state["num_frames"],
-            "height": inference_state["video_height"],
-            "width": inference_state["video_width"],
+            "height": inference_state["orig_height"],
+            "width": inference_state["orig_width"],
         }
 
     loader = LazyVideoFrameLoader(video_path, offload_to_cpu=False, device="cuda")
-    inference_state = init_state_with_lazy_loader(predictor, loader)
+    inference_state = init_state_with_lazy_loader(model, loader)
     sessions[video_id] = (inference_state, loader)
 
     return {
@@ -108,14 +91,14 @@ def handle_init_session(
         "status": "ok",
         "video_id": video_id,
         "num_frames": inference_state["num_frames"],
-        "height": inference_state["video_height"],
-        "width": inference_state["video_width"],
+        "height": inference_state["orig_height"],
+        "width": inference_state["orig_width"],
     }
 
 
 def handle_add_prompt(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
 ) -> dict:
     """
@@ -123,7 +106,7 @@ def handle_add_prompt(
 
     Args:
         params: Command params with video_id, frame_idx, points, labels, box, obj_id
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
 
     Returns:
@@ -136,40 +119,49 @@ def handle_add_prompt(
     box = params.get("box")
     obj_id = params.get("obj_id", 1)
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     if video_id not in sessions:
         raise RuntimeError(f"No session for video {video_id}")
 
     inference_state, loader = sessions[video_id]
-    height = inference_state["video_height"]
-    width = inference_state["video_width"]
-
-    points_arr = None
-    labels_arr = None
-    box_arr = None
+    height = inference_state["orig_height"]
+    width = inference_state["orig_width"]
 
     if points is not None and labels is not None:
-        points_arr = np.array(points, dtype=np.float32)
-        points_arr[:, 0] *= width
-        points_arr[:, 1] *= height
-        labels_arr = np.array(labels, dtype=np.int32)
-
-    if box is not None:
-        box_arr = np.array(box, dtype=np.float32)
-
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        _, out_obj_ids, video_res_masks = predictor.add_new_points_or_box(
-            inference_state=inference_state,
+        # Points are already in [0,1] normalized coords from frontend
+        # SAM3 add_prompt with points goes to tracker (instance-level)
+        _, postprocessed_out = model.add_prompt(
+            inference_state,
             frame_idx=frame_idx,
+            points=np.array(points, dtype=np.float32),
+            point_labels=np.array(labels, dtype=np.int32),
             obj_id=obj_id,
-            points=points_arr,
-            labels=labels_arr,
-            box=box_arr,
-            clear_old_points=False if box is None else True,
+            rel_coordinates=True,
         )
-        mask = extract_mask(video_res_masks, out_obj_ids, height, width)
+    elif box is not None:
+        # box is [x1, y1, x2, y2] in pixel coords from frontend
+        # Convert to normalized [0,1] XYWH for SAM3 detector
+        x1, y1, x2, y2 = box
+        norm_x = x1 / width
+        norm_y = y1 / height
+        norm_w = (x2 - x1) / width
+        norm_h = (y2 - y1) / height
+        boxes_xywh = np.array([[norm_x, norm_y, norm_w, norm_h]], dtype=np.float32)
+        box_labels = np.array([1], dtype=np.int64)  # positive
+
+        _, postprocessed_out = model.add_prompt(
+            inference_state,
+            frame_idx=frame_idx,
+            boxes_xywh=boxes_xywh,
+            box_labels=box_labels,
+        )
+    else:
+        raise RuntimeError("Either points+labels or box must be provided")
+
+    # Extract mask from postprocessed output
+    mask = extract_mask_from_sam3_output(postprocessed_out, height, width)
 
     return {
         "type": "add_point_prompt_result",
@@ -183,7 +175,7 @@ def handle_add_prompt(
 
 def handle_generate_training_masks(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
 ) -> dict:
     """
@@ -191,7 +183,7 @@ def handle_generate_training_masks(
 
     Args:
         params: Command params with video_id, start_frame_idx, max_frames, etc.
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
 
     Returns:
@@ -205,7 +197,7 @@ def handle_generate_training_masks(
     height = params["height"]
     width = params["width"]
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     if video_id not in sessions:
@@ -214,7 +206,7 @@ def handle_generate_training_masks(
     inference_state, loader = sessions[video_id]
 
     frame_count, frame_indices, _ = propagate_video(
-        predictor=predictor,
+        model=model,
         inference_state=inference_state,
         video_id=video_id,
         start_frame_idx=start_frame_idx,
@@ -235,7 +227,7 @@ def handle_generate_training_masks(
 
 def handle_segment_videos_batch(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
     response_callback: Callable[[dict], None],
 ) -> dict:
@@ -248,7 +240,7 @@ def handle_segment_videos_batch(
 
     Args:
         params: Command params with videos, project_id, project_path
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
         response_callback: Callback for initial response only
 
@@ -262,7 +254,7 @@ def handle_segment_videos_batch(
     project_path = Path(params["project_path"])
     request_id = params["request_id"]
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     # Create jobs for all videos in registry DB
@@ -330,7 +322,7 @@ def handle_segment_videos_batch(
             log_file = open(log_path, "a")
 
             def log(msg):
-                print(f"[SAM2 Worker] {msg}")
+                print(f"[SAM3 Worker] {msg}")
                 if log_file:
                     log_file.write(f"{msg}\n")
                     log_file.flush()
@@ -361,19 +353,25 @@ def handle_segment_videos_batch(
 
             # Init new session
             loader = LazyVideoFrameLoader(video_path, offload_to_cpu=False, device="cuda")
-            inference_state = init_state_with_lazy_loader(predictor, loader)
+            inference_state = init_state_with_lazy_loader(model, loader)
             sessions[video_id] = (inference_state, loader)
 
             # Add bbox on frame 0
-            box_arr = np.array(bbox, dtype=np.float32)
-            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                predictor.add_new_points_or_box(
-                    inference_state=inference_state,
-                    frame_idx=0,
-                    obj_id=1,
-                    box=box_arr,
-                    clear_old_points=True,
-                )
+            # Convert XYXY pixel bbox to normalized [0,1] XYWH
+            x1, y1, x2, y2 = bbox
+            norm_x = x1 / width
+            norm_y = y1 / height
+            norm_w = (x2 - x1) / width
+            norm_h = (y2 - y1) / height
+            boxes_xywh = np.array([[norm_x, norm_y, norm_w, norm_h]], dtype=np.float32)
+            box_labels = np.array([1], dtype=np.int64)
+
+            model.add_prompt(
+                inference_state,
+                frame_idx=0,
+                boxes_xywh=boxes_xywh,
+                box_labels=box_labels,
+            )
 
             # Progress callback for this video
             # NOTE: Only updates DB, not TCP. The client disconnects after receiving
@@ -397,7 +395,7 @@ def handle_segment_videos_batch(
 
             # Propagate through all frames
             _, _, stats = propagate_video(
-                predictor=predictor,
+                model=model,
                 inference_state=inference_state,
                 video_id=video_id,
                 start_frame_idx=0,
@@ -407,7 +405,6 @@ def handle_segment_videos_batch(
                 height=height,
                 width=width,
                 progress_callback=progress_update,
-                clear_old_frames=True,  # Prevent OOM on long videos
             )
 
             # Close session to free memory
@@ -459,7 +456,7 @@ def handle_segment_videos_batch(
                 log_file.write(traceback.format_exc())
                 log_file.flush()
 
-            print(f"[SAM2 Worker] Error processing video {video_id}: {ve}")
+            print(f"[SAM3 Worker] Error processing video {video_id}: {ve}")
             import traceback
 
             traceback.print_exc()
@@ -492,7 +489,7 @@ def handle_segment_videos_batch(
             if log_file:
                 log_file.close()
 
-    print(f"[SAM2 Worker] Batch complete: {processed_count}/{len(video_configs)} videos processed")
+    print(f"[SAM3 Worker] Batch complete: {processed_count}/{len(video_configs)} videos processed")
 
     return {
         "type": "segment_videos_batch_result",
@@ -504,7 +501,7 @@ def handle_segment_videos_batch(
 
 def handle_reset_state(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
 ) -> dict:
     """
@@ -512,7 +509,7 @@ def handle_reset_state(
 
     Args:
         params: Command params with video_id
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
 
     Returns:
@@ -520,33 +517,35 @@ def handle_reset_state(
     """
     video_id = params["video_id"]
 
-    print(f"[SAM2 Worker] Resetting state for video {video_id}...")
+    print(f"[SAM3 Worker] Resetting state for video {video_id}...")
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     if video_id not in sessions:
         return {"type": "reset_state_result", "status": "ok"}
 
     inference_state, loader = sessions[video_id]
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        predictor.reset_state(inference_state)
+    model.reset_state(inference_state)
 
-    print(f"[SAM2 Worker] State reset for video {video_id}")
+    print(f"[SAM3 Worker] State reset for video {video_id}")
     return {"type": "reset_state_result", "status": "ok"}
 
 
 def handle_clear_frame_prompts(
     params: dict,
-    predictor,
+    model,
     sessions: dict,
 ) -> dict:
     """
     Clear prompts for a specific frame.
 
+    SAM3 doesn't expose clear_all_prompts_in_frame through the video model API.
+    Use model.reset_state() as a simpler approach (clears ALL prompts).
+
     Args:
         params: Command params with video_id, frame_idx, obj_id
-        predictor: SAM2 predictor instance
+        model: SAM3 model instance
         sessions: Dict of video_id -> (inference_state, loader)
 
     Returns:
@@ -556,24 +555,20 @@ def handle_clear_frame_prompts(
     frame_idx = params["frame_idx"]
     obj_id = params.get("obj_id", 1)
 
-    print(f"[SAM2 Worker] Clearing prompts for video {video_id}, frame {frame_idx}, obj {obj_id}...")
+    print(f"[SAM3 Worker] Clearing prompts for video {video_id}, frame {frame_idx}, obj {obj_id}...")
 
-    if predictor is None:
+    if model is None:
         raise RuntimeError("Model not loaded")
 
     if video_id not in sessions:
         return {"type": "clear_frame_prompts_result", "status": "ok"}
 
     inference_state, loader = sessions[video_id]
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        predictor.clear_all_prompts_in_frame(
-            inference_state=inference_state,
-            frame_idx=frame_idx,
-            obj_id=obj_id,
-            need_output=False,
-        )
+    # SAM3 doesn't have per-frame prompt clearing via the video model API.
+    # Reset the entire state as a fallback.
+    model.reset_state(inference_state)
 
-    print(f"[SAM2 Worker] Cleared prompts for video {video_id}, frame {frame_idx}")
+    print(f"[SAM3 Worker] Cleared prompts for video {video_id}, frame {frame_idx}")
     return {"type": "clear_frame_prompts_result", "status": "ok"}
 
 
@@ -593,7 +588,7 @@ def handle_close_session(
     """
     video_id = params["video_id"]
 
-    print(f"[SAM2 Worker] Closing session for video {video_id}...")
+    print(f"[SAM3 Worker] Closing session for video {video_id}...")
 
     if video_id in sessions:
         inference_state, loader = sessions.pop(video_id)
@@ -612,7 +607,7 @@ def handle_shutdown(sessions: dict) -> dict:
     Returns:
         Response dict
     """
-    print("[SAM2 Worker] Shutting down...")
+    print("[SAM3 Worker] Shutting down...")
 
     for video_id, (inference_state, loader) in list(sessions.items()):
         try:

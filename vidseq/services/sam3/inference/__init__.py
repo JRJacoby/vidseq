@@ -1,1 +1,1 @@
-"""SAM2 inference package."""
+"""SAM3 inference package."""

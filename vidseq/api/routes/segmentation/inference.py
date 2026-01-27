@@ -95,7 +95,7 @@ async def propagate_mask(
     """
     Propagate segmentation mask forward from the given frame.
 
-    Requires an active SAM2 session with a tracked object (add a point prompt first).
+    Requires an active SAM3 session with a tracked object (add a point prompt first).
     Saves only masks to HDF5. Does NOT mark frames as training or compute bounding boxes.
     Use mark-training endpoint to explicitly mark frames for YOLO training.
     """

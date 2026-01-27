@@ -1,7 +1,7 @@
-"""SAM2 service package."""
+"""SAM3 service package."""
 
 from vidseq.services.sam3.service import (
-    SAM2Service,
+    SAM3Service,
     close_session,
     get_all_prompts,
     get_prompts_for_frame,
@@ -17,7 +17,7 @@ from vidseq.services.sam3.service import (
 )
 
 __all__ = [
-    "SAM2Service",
+    "SAM3Service",
     "close_session",
     "get_all_prompts",
     "get_prompts_for_frame",

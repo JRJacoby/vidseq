@@ -27,10 +27,10 @@ async def train_model(
     if service.is_training():
         raise HTTPException(status_code=400, detail="Training already in progress")
     
-    # Shutdown SAM2 to free GPU memory before training
+    # Shutdown SAM3 to free GPU memory before training
     sam3_status = sam3_service.get_status()
     if sam3_status["status"] == "ready":
-        print("[YOLO API] Shutting down SAM2 to free GPU memory for training...")
+        print("[YOLO API] Shutting down SAM3 to free GPU memory for training...")
         sam3_service.shutdown_worker()
     
     try:

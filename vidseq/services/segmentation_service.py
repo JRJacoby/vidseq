@@ -1,4 +1,4 @@
-"""Segmentation service - orchestrates SAM2 inference with mask storage."""
+"""Segmentation service - orchestrates SAM3 inference with mask storage."""
 
 import base64
 import io
@@ -96,7 +96,7 @@ def clear_mask(
     """
     Clear (zero out) a mask for a specific frame.
 
-    Does not reset SAM2 tracking state.
+    Does not reset SAM3 tracking state.
 
     Args:
         project_path: Path to the project folder
@@ -118,7 +118,7 @@ async def clear_video(
     """
     Clear all masks and frame data for a video.
 
-    SAM2 tracking state reset is handled separately via sam3_service.reset_state().
+    SAM3 tracking state reset is handled separately via sam3_service.reset_state().
 
     Args:
         project_path: Path to the project folder

@@ -62,13 +62,13 @@ async def segment_all_videos_route(
 
 @router.get("/segmentation/status")
 async def get_segmentation_status():
-    """Get the current SAM2 model loading status."""
+    """Get the current SAM3 model loading status."""
     return sam3_service.get_status()
 
 
 @router.get("/segmentation/status/stream")
 async def stream_segmentation_status():
-    """SSE endpoint for real-time SAM2 status updates."""
+    """SSE endpoint for real-time SAM3 status updates."""
     async def event_generator():
         last_status_str = None
         while True:
@@ -93,7 +93,7 @@ async def stream_segmentation_status():
 
 @router.post("/segmentation/preload")
 async def preload_segmentation():
-    """Start loading SAM2 model in background."""
+    """Start loading SAM3 model in background."""
     sam3_service.start_loading_in_background()
     return {"message": "Loading started"}
 
@@ -104,11 +104,11 @@ async def init_video_session(
     video: Video = Depends(get_video),
 ):
     """
-    Initialize a SAM2 session for a video.
+    Initialize a SAM3 session for a video.
 
     Creates the tracker state and frame loader.
     Call this when entering the video detail view.
-    Returns 503 if SAM2 model isn't loaded yet.
+    Returns 503 if SAM3 model isn't loaded yet.
     """
     video_path = Path(video.path)
 
@@ -131,7 +131,7 @@ async def close_video_session(
     video_id: int,
 ):
     """
-    Close a SAM2 session for a video.
+    Close a SAM3 session for a video.
 
     Frees GPU memory. Call this when leaving the video detail view.
     """

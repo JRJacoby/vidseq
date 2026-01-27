@@ -6,8 +6,8 @@ New code should import directly from vidseq.services.sam3.
 
 from vidseq.services.sam3.service import *
 from vidseq.services.sam3.service import (
-    SAM2Service,
-    SAM2Status,
+    SAM3Service,
+    SAM3Status,
     VideoSessionInfo,
     close_session,
     get_all_prompts,

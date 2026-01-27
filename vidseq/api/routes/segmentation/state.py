@@ -28,7 +28,7 @@ async def reset_frame(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM2 prompts.
+    Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM3 prompts.
     """
     sam3_service.clear_prompts_for_frame(frame_idx)
     sam3_service.clear_frame_prompts(project_id, video.id, frame_idx)
@@ -62,7 +62,7 @@ async def reset_video(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset entire video: clear all masks, conditioning frames, frame type labels, and SAM2 tracking state.
+    Reset entire video: clear all masks, conditioning frames, frame type labels, and SAM3 tracking state.
     """
     # Clear masks from HDF5 and frame data from SQLite
     await segmentation_service.clear_video(

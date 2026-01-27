@@ -1,1 +1,1 @@
-"""SAM2 TCP server package."""
+"""SAM3 TCP server package."""
