@@ -96,7 +96,9 @@ const {
   seekToFrame,
   togglePositivePointTool,
   toggleNegativePointTool,
+  toggleBboxTool,
   handlePointComplete,
+  handleBboxComplete,
   handleResetFrame,
   handleResetVideo,
   clearMaskCache,
@@ -262,6 +264,7 @@ onMounted(async () => {
                 :show-bbox="true"
                 :show-prompts="showPrompts"
                 @point-complete="handlePointComplete"
+                @bbox-complete="handleBboxComplete"
               />
             </div>
           </div>
@@ -320,6 +323,15 @@ onMounted(async () => {
           >
             <span class="tool-icon">⊖</span>
             <span class="tool-label">Negative Point</span>
+          </button>
+          <button
+            class="tool-button bounding-box"
+            :class="{ active: activeTool === 'bounding_box' }"
+            @click="toggleBboxTool"
+            :disabled="isSegmenting || !segmentationIsReady"
+          >
+            <span class="tool-icon">▢</span>
+            <span class="tool-label">Bounding Box</span>
           </button>
           <button
             class="tool-button reset-button"
@@ -630,6 +642,12 @@ onMounted(async () => {
   background-color: #fee2e2;
   border-color: #ef4444;
   color: #b91c1c;
+}
+
+.tool-button.bounding-box.active {
+  background-color: #dbeafe;
+  border-color: #3b82f6;
+  color: #1d4ed8;
 }
 
 .tool-button.toggle-button {
