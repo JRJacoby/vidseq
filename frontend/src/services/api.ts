@@ -1104,3 +1104,115 @@ export async function checkPCAScoresExist(
     const data = await response.json()
     return data.exists
 }
+
+// --- ARHMM ---
+
+export interface ARHMMSearchEntry {
+    step: number
+    kappa: number
+    log_kappa: number
+    median_duration_ms: number
+    result: 'too_low' | 'too_high' | 'found'
+}
+
+export interface ARHMMProgress {
+    is_running: boolean
+    status: 'idle' | 'searching' | 'fitting' | 'completed' | 'failed'
+    phase: 'search' | 'final_fit'
+    search_history: ARHMMSearchEntry[]
+    log_low: number
+    log_high: number
+    current_kappa: number
+    current_iteration: number
+    total_iterations: number
+    chosen_kappa: number
+    final_median_duration_ms: number
+    fps: number
+    num_videos: number
+    total_frames: number
+    started_at: number | null
+    error: string | null
+    elapsed_seconds: number
+    iterations_per_second: number
+    eta_seconds: number
+}
+
+export interface ARHMMResults {
+    kappa: number
+    median_duration_ms: number
+    num_videos: number
+    total_frames: number
+    fps: number
+    search_history: ARHMMSearchEntry[]
+    n_components: number
+}
+
+export async function startARHMM(projectId: number): Promise<{ status: string }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/run`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to start ARHMM'))
+    }
+    return response.json()
+}
+
+export async function stopARHMM(projectId: number): Promise<{ status: string }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/stop`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to stop ARHMM'))
+    }
+    return response.json()
+}
+
+export async function getARHMMStatus(projectId: number): Promise<ARHMMProgress> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/status`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get ARHMM status'))
+    }
+    return response.json()
+}
+
+export async function getARHMMResults(projectId: number): Promise<ARHMMResults> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/results`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get ARHMM results'))
+    }
+    return response.json()
+}
+
+export function getARHMMStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/arhmm/stream`
+}
+
+export interface ARHMMAnalysis {
+    duration_histogram: {
+        bin_edges: number[]
+        bin_centers: number[]
+        counts: number[]
+    }
+    syllable_frequencies: {
+        syllables: number[]
+        counts: number[]
+    }
+    total_runs: number
+    median_duration_ms: number
+}
+
+export async function getARHMMAnalysis(projectId: number): Promise<ARHMMAnalysis> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/arhmm/analysis`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get ARHMM analysis'))
+    }
+    return response.json()
+}

@@ -9,6 +9,7 @@ import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
 import PCAView from '../components/PCAView.vue'
 import Alignment from '../components/Alignment.vue'
+import ARHMMView from '../components/ARHMMView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -61,6 +62,11 @@ const router = createRouter({
           path: 'alignment',
           name: 'alignment',
           component: Alignment
+        },
+        {
+          path: 'arhmm',
+          name: 'arhmm',
+          component: ARHMMView
         }
       ]
     }

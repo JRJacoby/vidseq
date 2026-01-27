@@ -36,6 +36,12 @@ const navigateToAlignment = () => {
   }
 }
 
+const navigateToARHMM = () => {
+  if (projectStore.currentProjectId) {
+    router.push(`/project/${projectStore.currentProjectId}/arhmm`)
+  }
+}
+
 const isActiveRoute = (routeName: string) => {
   return route.name === routeName
 }
@@ -75,6 +81,14 @@ const isActiveRoute = (routeName: string) => {
         :disabled="!projectStore.currentProjectId"
       >
         Alignment
+      </button>
+      <button
+        class="navbar-button"
+        :class="{ 'navbar-button-active': isActiveRoute('arhmm') }"
+        @click="navigateToARHMM"
+        :disabled="!projectStore.currentProjectId"
+      >
+        ARHMM
       </button>
     </div>
     <div class="navbar-bottom">
