@@ -384,6 +384,75 @@ class SAM3Service:
 
         return mask
 
+    def delete_box_prompts_for_frame(self, frame_idx: int) -> None:
+        """Delete only bounding box prompts for a specific frame (keeps point prompts)."""
+        if frame_idx in self._prompts:
+            self._prompts[frame_idx] = [
+                p for p in self._prompts[frame_idx]
+                if p["type"] != "bounding_box"
+            ]
+            if not self._prompts[frame_idx]:
+                del self._prompts[frame_idx]
+
+    def add_box_prompt(
+        self,
+        project_id: int,
+        video_id: int,
+        video_path: Path,
+        frame_idx: int,
+        box: list[float],
+    ) -> np.ndarray:
+        """
+        Add bounding box prompt and get the segmentation mask.
+
+        Args:
+            project_id: ID of the project
+            video_id: ID of the video
+            video_path: Path to video file
+            frame_idx: Frame index to segment
+            box: [x1, y1, x2, y2] in pixel coordinates
+
+        Returns:
+            Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+        """
+        session = self.get_session(project_id, video_id)
+        if session is None:
+            session = self.init_session(project_id, video_id, video_path)
+
+        result = self._send_and_wait({
+            "type": "add_prompt",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "box": box,
+            "obj_id": OBJ_ID,
+        }, timeout=120.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to add box prompt"))
+
+        session.has_object = True
+
+        mask_rle = result["mask_rle"]
+        mask_shape = tuple(result["mask_shape"])
+        mask_dtype = result.get("mask_dtype", "uint8")
+        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+
+        # Store box prompt info (clear previous box prompts first)
+        self.delete_box_prompts_for_frame(frame_idx)
+        prompt = {
+            "type": "bounding_box",
+            "x1": box[0],
+            "y1": box[1],
+            "x2": box[2],
+            "y2": box[3],
+            "frame_idx": frame_idx,
+        }
+        if frame_idx not in self._prompts:
+            self._prompts[frame_idx] = []
+        self._prompts[frame_idx].append(prompt)
+
+        return mask
+
     def reset_state(self, project_id: int, video_id: int) -> bool:
         """
         Reset the tracking state for a video.
@@ -686,6 +755,24 @@ def get_all_prompts() -> dict[int, list[dict]]:
 def clear_prompts_for_frame(frame_idx: int) -> None:
     """Clear prompts for a specific frame."""
     SAM3Service.get_instance().clear_prompts_for_frame(frame_idx)
+
+
+def delete_box_prompts_for_frame(frame_idx: int) -> None:
+    """Delete only bounding box prompts for a specific frame."""
+    SAM3Service.get_instance().delete_box_prompts_for_frame(frame_idx)
+
+
+def add_box_prompt(
+    project_id: int,
+    video_id: int,
+    video_path: Path,
+    frame_idx: int,
+    box: list[float],
+) -> np.ndarray:
+    """Add bounding box prompt and get the segmentation mask."""
+    return SAM3Service.get_instance().add_box_prompt(
+        project_id, video_id, video_path, frame_idx, box
+    )
 
 
 async def segment_all_videos(

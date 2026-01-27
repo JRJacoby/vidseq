@@ -33,26 +33,37 @@ async def run_segmentation(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Run segmentation with a point prompt.
+    Run segmentation with a point or bounding box prompt.
 
     Point coords should be normalized [0,1].
-    First point creates the tracked object, subsequent points refine it.
-    Marks the frame as a conditioning frame.
-    Returns the mask as PNG.
+    Bounding box coords are in pixel space [x1, y1, x2, y2].
     """
     video_path = Path(video.path)
 
-    label = 1 if segment_request.type == "positive_point" else 0
-
     try:
-        mask = sam3_service.add_point_prompt(
-            project_id=project_id,
-            video_id=video.id,
-            video_path=video_path,
-            frame_idx=segment_request.frame_idx,
-            points=[[segment_request.details["x"], segment_request.details["y"]]],
-            labels=[label],
-        )
+        if segment_request.type == "bounding_box":
+            mask = sam3_service.add_box_prompt(
+                project_id=project_id,
+                video_id=video.id,
+                video_path=video_path,
+                frame_idx=segment_request.frame_idx,
+                box=[
+                    segment_request.details["x1"],
+                    segment_request.details["y1"],
+                    segment_request.details["x2"],
+                    segment_request.details["y2"],
+                ],
+            )
+        else:
+            label = 1 if segment_request.type == "positive_point" else 0
+            mask = sam3_service.add_point_prompt(
+                project_id=project_id,
+                video_id=video.id,
+                video_path=video_path,
+                frame_idx=segment_request.frame_idx,
+                points=[[segment_request.details["x"], segment_request.details["y"]]],
+                labels=[label],
+            )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
