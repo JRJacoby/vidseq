@@ -13,7 +13,7 @@ import {
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
-export type ToolType = 'none' | 'positive_point' | 'negative_point'
+export type ToolType = 'none' | 'positive_point' | 'negative_point' | 'bounding_box'
 
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
@@ -25,7 +25,9 @@ export interface UseSegmentationReturn {
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
     toggleNegativePointTool: () => void
+    toggleBboxTool: () => void
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
+    handleBboxComplete: (bbox: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
     clearMaskCache: (startFrame?: number, endFrame?: number) => void
@@ -185,6 +187,10 @@ export function useSegmentation(
         activeTool.value = activeTool.value === 'negative_point' ? 'none' : 'negative_point'
     }
 
+    const toggleBboxTool = () => {
+        activeTool.value = activeTool.value === 'bounding_box' ? 'none' : 'bounding_box'
+    }
+
     const seekToFrame = (frameIdx: number) => {
         intendedFrameIdx.value = frameIdx
         loadFrameData(frameIdx)
@@ -216,6 +222,37 @@ export function useSegmentation(
             await fetchPromptsForFrame(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to add point:', e)
+        } finally {
+            isSegmenting.value = false
+        }
+    }
+
+    const handleBboxComplete = async (bbox: { x1: number; y1: number; x2: number; y2: number }) => {
+        if (!projectId.value || !videoId.value) return
+
+        isSegmenting.value = true
+
+        try {
+            const maskBlob = await runSegmentation(
+                projectId.value,
+                videoId.value,
+                currentFrameIdx.value,
+                'bounding_box',
+                { x1: bbox.x1, y1: bbox.y1, x2: bbox.x2, y2: bbox.y2 }
+            )
+
+            const bitmap = await createImageBitmap(maskBlob)
+            currentMask.value = bitmap
+
+            const bboxResult = await getBbox(projectId.value, videoId.value, currentFrameIdx.value)
+            currentBbox.value = bboxResult
+
+            maskCache.set(currentFrameIdx.value, bitmap)
+            bboxCache.set(currentFrameIdx.value, bboxResult)
+
+            await fetchPromptsForFrame(currentFrameIdx.value)
+        } catch (e) {
+            console.error('Failed to add bbox:', e)
         } finally {
             isSegmenting.value = false
         }
@@ -364,7 +401,9 @@ export function useSegmentation(
         seekToFrame,
         togglePositivePointTool,
         toggleNegativePointTool,
+        toggleBboxTool,
         handlePointComplete,
+        handleBboxComplete,
         handleResetFrame,
         handleResetVideo,
         clearMaskCache,

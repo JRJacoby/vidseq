@@ -151,8 +151,8 @@ export async function runSegmentation(
     projectId: number,
     videoId: number,
     frameIdx: number,
-    type: 'positive_point' | 'negative_point',
-    details: { x: number; y: number }
+    type: 'positive_point' | 'negative_point' | 'bounding_box',
+    details: { x: number; y: number } | { x1: number; y1: number; x2: number; y2: number }
 ): Promise<Blob> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/segment`,
@@ -423,8 +423,8 @@ export async function generateTrainingMasks(
 }
 
 export interface StoredPrompt {
-    type: 'positive_point' | 'negative_point'
-    details: { x: number; y: number }
+    type: 'positive_point' | 'negative_point' | 'bounding_box'
+    details: { x: number; y: number } | { x1: number; y1: number; x2: number; y2: number }
     createdAt: string
 }
 
@@ -441,17 +441,25 @@ export async function getPromptsForFrame(
     }
     const prompts = await response.json()
     // Map backend format to frontend StoredPrompt format
-    return prompts.map((p: { type: string; x: number; y: number }) => ({
-        type: p.type as 'positive_point' | 'negative_point',
-        details: { x: p.x, y: p.y },
-        createdAt: new Date().toISOString(), // Backend doesn't store timestamps
-    }))
+    return prompts.map((p: Record<string, any>) => {
+        if (p.type === 'bounding_box') {
+            return {
+                type: 'bounding_box' as const,
+                details: { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 },
+                createdAt: new Date().toISOString(),
+            }
+        }
+        return {
+            type: p.type as 'positive_point' | 'negative_point',
+            details: { x: p.x, y: p.y },
+            createdAt: new Date().toISOString(),
+        }
+    })
 }
 
 interface BackendPrompt {
     type: string
-    x: number
-    y: number
+    [key: string]: any
 }
 
 type PromptsDict = Record<string, BackendPrompt[]>
@@ -473,11 +481,20 @@ export async function getAllPrompts(
         const frameIdx = parseInt(frameIdxStr, 10)
         result.set(
             frameIdx,
-            prompts.map((p) => ({
-                type: p.type as 'positive_point' | 'negative_point',
-                details: { x: p.x, y: p.y },
-                createdAt: new Date().toISOString(),
-            }))
+            prompts.map((p) => {
+                if (p.type === 'bounding_box') {
+                    return {
+                        type: 'bounding_box' as const,
+                        details: { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 },
+                        createdAt: new Date().toISOString(),
+                    }
+                }
+                return {
+                    type: p.type as 'positive_point' | 'negative_point',
+                    details: { x: p.x, y: p.y },
+                    createdAt: new Date().toISOString(),
+                }
+            })
         )
     }
     return result
