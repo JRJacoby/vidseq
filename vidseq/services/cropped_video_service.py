@@ -3,6 +3,7 @@
 Extracts cropped videos centered on the mask centroid with non-mask pixels zeroed out.
 """
 
+import json
 import random
 import subprocess
 import threading
@@ -14,6 +15,72 @@ import imageio_ffmpeg
 import numpy as np
 
 from vidseq.services import mask_storage
+
+
+# =============================================================================
+# Crop Size Persistence
+# =============================================================================
+
+def _get_crop_size_path(project_path: Path) -> Path:
+    """Get the path to the crop size config file."""
+    return project_path / "crop_config.json"
+
+
+def get_saved_crop_size(project_path: Path) -> int | None:
+    """Load the saved crop size for a project, if it exists.
+
+    Args:
+        project_path: Path to the project folder
+
+    Returns:
+        Saved crop size, or None if not saved yet
+    """
+    config_path = _get_crop_size_path(project_path)
+    if not config_path.exists():
+        return None
+
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        return config.get("crop_size")
+    except Exception as e:
+        print(f"[Cropped Video] Warning: Failed to load crop config: {e}")
+        return None
+
+
+def save_crop_size(project_path: Path, crop_size: int) -> None:
+    """Save the crop size for a project.
+
+    Args:
+        project_path: Path to the project folder
+        crop_size: Crop size to save
+    """
+    config_path = _get_crop_size_path(project_path)
+    config = {"crop_size": crop_size}
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"[Cropped Video] Saved crop size {crop_size} to {config_path}")
+
+
+def clear_crop_size(project_path: Path) -> bool:
+    """Clear the saved crop size for a project.
+
+    Use this to force recomputation of crop size on next cropping run.
+
+    Args:
+        project_path: Path to the project folder
+
+    Returns:
+        True if a config was deleted, False if none existed
+    """
+    config_path = _get_crop_size_path(project_path)
+    if config_path.exists():
+        config_path.unlink()
+        print(f"[Cropped Video] Cleared saved crop size from {config_path}")
+        return True
+    return False
 
 
 def _reencode_to_h264(input_path: Path, output_path: Path) -> bool:
@@ -331,13 +398,20 @@ def process_single_video(
         cropped_h5_file.close()
 
     # Re-encode to H.264 for browser compatibility
+    # Write to a _tmp file first, then atomically rename so that
+    # existence checks only see fully-written files.
     print(f"[Cropped Video] Re-encoding to H.264: {output_path.name}")
-    if not _reencode_to_h264(temp_path, output_path):
+    tmp_output_path = output_path.with_name(output_path.stem + "_tmp.mp4")
+    if not _reencode_to_h264(temp_path, tmp_output_path):
         print(f"[Cropped Video] Failed to re-encode video {video.id}")
         temp_path.unlink(missing_ok=True)
+        tmp_output_path.unlink(missing_ok=True)
         return False
 
-    # Clean up temp file
+    # Atomic rename to final path
+    tmp_output_path.rename(output_path)
+
+    # Clean up mp4v temp file
     temp_path.unlink(missing_ok=True)
     print(f"[Cropped Video] Completed video {video.id}: {output_path}")
     return True
@@ -411,7 +485,6 @@ class CroppedVideoService:
         from sqlalchemy.orm import Session
 
         from vidseq.models.registry import Job
-        from vidseq.models.video import Video
         from vidseq.models.utils import utc_now
         from vidseq.services.database_manager import DatabaseManager
 
@@ -452,9 +525,15 @@ class CroppedVideoService:
 
         def _extract():
             try:
-                # Pass 1: Compute global crop size
-                print(f"[Cropped Video] Computing global crop size from {len(videos)} videos...")
-                crop_size = compute_global_crop_size(project_path, videos)
+                # Pass 1: Get or compute global crop size
+                saved_crop_size = get_saved_crop_size(project_path)
+                if saved_crop_size is not None:
+                    crop_size = saved_crop_size
+                    print(f"[Cropped Video] Using saved crop size: {crop_size}")
+                else:
+                    print(f"[Cropped Video] Computing global crop size from {len(videos)} videos...")
+                    crop_size = compute_global_crop_size(project_path, videos)
+                    save_crop_size(project_path, crop_size)
 
                 # Pass 2: Process each video
                 for config in video_configs:
@@ -518,15 +597,6 @@ class CroppedVideoService:
                                 )
                                 session.commit()
 
-                            # Update cropping_status in project database
-                            project_engine = db_manager.get_project_engine(project_path)
-                            with Session(project_engine) as session:
-                                session.execute(
-                                    update(Video)
-                                    .where(Video.id == video.id)
-                                    .values(cropping_status="completed")
-                                )
-                                session.commit()
                         else:
                             raise RuntimeError("Processing failed")
 

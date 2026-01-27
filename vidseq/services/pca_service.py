@@ -26,115 +26,151 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 @jax.jit
-def _compute_mini_batch_stats(mini_batch):
-    """Compute sufficient statistics for a single mini-batch."""
-    n_samples = mini_batch.shape[0]
-    sum_x = jnp.sum(mini_batch, axis=0)
-    sum_xx = mini_batch.T @ mini_batch
-    return n_samples, sum_x, sum_xx
-
-
-@partial(jax.jit, static_argnames=['padding_size'])
-def _pad_chunk(chunk, padding_size):
-    """Add zero padding to chunk."""
-    n_features = chunk.shape[1]
-    padding = jnp.zeros((padding_size, n_features), dtype=chunk.dtype)
-    return jnp.vstack([chunk, padding])
-
-
-@partial(jax.jit, static_argnames=['mini_batch_size'])
-def _reshape_to_mini_batches(chunk_padded, mini_batch_size):
-    """Reshape chunk into mini-batches."""
-    num_mini_batches = chunk_padded.shape[0] // mini_batch_size
-    return chunk_padded.reshape(num_mini_batches, mini_batch_size, chunk_padded.shape[1])
-
-
-@jax.jit
-def _fix_last_count(counts, remainder):
-    """Fix the count of the last mini-batch to account for padding."""
-    return counts.at[-1].set(remainder)
-
-
-@jax.jit
-def _sum_mini_batch_results(counts, sum_xs, sum_xxs):
-    """Sum results across mini-batches."""
-    chunk_sum_x = jnp.sum(sum_xs, axis=0)
-    chunk_sum_xx = jnp.sum(sum_xxs, axis=0)
-    chunk_count = jnp.sum(counts)
-    return chunk_count, chunk_sum_x, chunk_sum_xx
-
-
-@jax.jit
-def _accumulate_statistics(total_count, sum_x, sum_xx, chunk_count, chunk_sum_x, chunk_sum_xx):
-    """Accumulate chunk statistics into global totals."""
-    new_total_count = total_count + chunk_count
-    new_sum_x = sum_x + chunk_sum_x
-    new_sum_xx = sum_xx + chunk_sum_xx
-    return new_total_count, new_sum_x, new_sum_xx
-
-
-@partial(jax.jit, static_argnames=['n_components', 'oversampling', 'n_iter'])
-def _randomized_eigh(matrix, n_components, oversampling=10, n_iter=2, key=None):
+def _incremental_mean_and_var(
+    X: jnp.ndarray,
+    last_mean: jnp.ndarray,
+    last_var: jnp.ndarray,
+    last_count: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Randomized eigendecomposition for symmetric matrices.
+    Chan-Golub-LeVeque numerically stable mean/variance update.
 
     Args:
-        matrix: Symmetric matrix (n x n)
-        n_components: Number of top eigenvectors to compute
-        oversampling: Extra samples for accuracy (default 10)
-        n_iter: Number of power iterations (default 2)
-        key: Random key for JAX (if None, uses a fixed seed)
+        X: New batch of data (n_samples, n_features)
+        last_mean: Previous mean (n_features,)
+        last_var: Previous variance (n_features,)
+        last_count: Previous sample count (scalar)
 
     Returns:
-        eigenvalues: Top n_components eigenvalues (sorted descending)
-        eigenvectors: Corresponding eigenvectors (n x n_components)
+        Tuple of (updated_mean, updated_var, n_total)
     """
-    n = matrix.shape[0]
-    k = n_components + oversampling
+    n_samples = X.shape[0]
+    n_total = last_count + n_samples
 
-    if key is None:
-        key = jax.random.PRNGKey(0)
+    # New batch statistics
+    new_sum = jnp.sum(X, axis=0)
+    new_mean = new_sum / n_samples
+    new_unnorm_var = jnp.sum((X - new_mean) ** 2, axis=0)
 
-    omega = jax.random.normal(key, (n, k), dtype=matrix.dtype)
-    Y = matrix @ omega
+    # Combine old and new statistics
+    last_sum = last_mean * last_count
+    updated_mean = (last_sum + new_sum) / n_total
 
-    for _ in range(n_iter):
-        Q, _ = jnp.linalg.qr(Y)
-        Y = matrix @ Q
+    # Variance update with correction term for combining distributions
+    delta = last_mean - new_mean
+    updated_unnorm_var = (
+        last_var * last_count
+        + new_unnorm_var
+        + (last_count * n_samples / n_total) * delta ** 2
+    )
+    updated_var = updated_unnorm_var / n_total
 
-    Q, _ = jnp.linalg.qr(Y)
-    B = Q.T @ matrix @ Q
+    return updated_mean, updated_var, n_total
 
-    eigenvalues_small, eigenvectors_small = jnp.linalg.eigh(B)
 
-    idx = jnp.argsort(eigenvalues_small)[::-1]
-    eigenvalues_small = eigenvalues_small[idx]
-    eigenvectors_small = eigenvectors_small[:, idx]
+@jax.jit
+def _svd_flip_v(Vt: jnp.ndarray) -> jnp.ndarray:
+    """
+    Apply sklearn sign convention (make max abs value positive per row).
 
-    eigenvalues = eigenvalues_small[:n_components]
-    eigenvectors = Q @ eigenvectors_small[:, :n_components]
+    Args:
+        Vt: Right singular vectors (k, n_features)
 
-    return eigenvalues, eigenvectors
+    Returns:
+        Sign-flipped Vt
+    """
+    max_abs_idx = jnp.argmax(jnp.abs(Vt), axis=1)
+    signs = jnp.sign(Vt[jnp.arange(Vt.shape[0]), max_abs_idx])
+    return Vt * signs[:, None]
 
 
 @partial(jax.jit, static_argnames=['n_components'])
-def _compute_final_pca(sum_x, sum_xx, total_count, n_components):
-    """Compute final PCA from accumulated statistics using randomized eigendecomposition."""
-    mean = sum_x / total_count
-    mean_outer = jnp.outer(mean, mean)
+def _fit_first_batch(
+    X: jnp.ndarray,
+    n_components: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    JIT-compiled first batch fitting: center, SVD, extract top k components.
 
-    cov_matrix = (sum_xx - total_count * mean_outer) / (total_count - 1)
+    Args:
+        X: Batch of data (n_samples, n_features)
+        n_components: Number of components to keep
 
-    eigenvalues, eigenvectors = _randomized_eigh(cov_matrix, n_components)
+    Returns:
+        Tuple of (components, singular_values, mean, var)
+    """
+    n_samples = X.shape[0]
+    batch_mean = jnp.mean(X, axis=0)
+    X_centered = X - batch_mean
 
-    components = eigenvectors.T
-    singular_values = jnp.sqrt(eigenvalues * (total_count - 1))
-    explained_variance = eigenvalues
+    # SVD on centered data
+    U, S, Vt = jnp.linalg.svd(X_centered, full_matrices=False)
+    Vt = _svd_flip_v(Vt)
 
-    total_variance = jnp.trace(cov_matrix)
-    explained_variance_ratio = explained_variance / total_variance
+    # Keep top k components
+    components = Vt[:n_components]
+    singular_values = S[:n_components]
 
-    return mean, components, singular_values, explained_variance, explained_variance_ratio
+    # Variance: sum of squared deviations / n
+    var = jnp.sum((X - batch_mean) ** 2, axis=0) / n_samples
+
+    return components, singular_values, batch_mean, var
+
+
+@partial(jax.jit, static_argnames=['n_components'])
+def _fit_subsequent_batch(
+    X: jnp.ndarray,
+    old_components: jnp.ndarray,
+    old_singular_values: jnp.ndarray,
+    old_mean: jnp.ndarray,
+    old_var: jnp.ndarray,
+    n_old: jnp.ndarray,
+    n_components: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    JIT-compiled subsequent batch fitting: augmented matrix SVD.
+
+    Args:
+        X: Batch of data (n_samples, n_features)
+        old_components: Previous components (k, n_features)
+        old_singular_values: Previous singular values (k,)
+        old_mean: Previous mean (n_features,)
+        old_var: Previous variance (n_features,)
+        n_old: Previous sample count (scalar)
+        n_components: Number of components to keep
+
+    Returns:
+        Tuple of (components, singular_values, mean, var)
+    """
+    n_samples = X.shape[0]
+    n_total = n_old + n_samples
+
+    # Center to batch mean
+    batch_mean = jnp.mean(X, axis=0)
+    X_centered = X - batch_mean
+
+    # Update mean and variance (Chan-Golub-LeVeque)
+    new_mean, new_var, _ = _incremental_mean_and_var(X, old_mean, old_var, n_old)
+
+    # Mean correction vector
+    mean_correction = jnp.sqrt((n_old * n_samples) / n_total) * (old_mean - batch_mean)
+
+    # Construct augmented matrix
+    augmented = jnp.vstack([
+        old_singular_values[:, None] * old_components,  # (k, n_features)
+        X_centered,                                      # (batch, n_features)
+        mean_correction[None, :],                        # (1, n_features)
+    ])
+
+    # SVD on augmented matrix
+    U, S, Vt = jnp.linalg.svd(augmented, full_matrices=False)
+    Vt = _svd_flip_v(Vt)
+
+    # Keep top k components
+    components = Vt[:n_components]
+    singular_values = S[:n_components]
+
+    return components, singular_values, new_mean, new_var
 
 
 # =============================================================================
@@ -143,33 +179,81 @@ def _compute_final_pca(sum_x, sum_xx, total_count, n_components):
 
 class GPUPCA:
     """
-    Parallel GPU-optimized PCA using sufficient statistics.
+    GPU-optimized Incremental PCA using JAX.
 
-    Uses vmap to process mini-batches in parallel for better GPU utilization.
+    Uses the incremental SVD algorithm from Ross et al. (2008) to maintain
+    O(n_features * n_components) memory instead of O(n_features^2).
     Supports partial fitting for out-of-memory datasets.
     """
 
-    def __init__(self, n_components: int, batch_size: int = 10_000, mini_batch_size: int = 500):
+    def __init__(self, n_components: int, batch_size: int = 2000, mini_batch_size: int = 500):
+        """
+        Initialize IncrementalPCA.
+
+        Args:
+            n_components: Number of principal components to keep
+            batch_size: Number of samples to process per SVD update
+            mini_batch_size: Kept for API compatibility, unused in new algorithm
+        """
         self.n_components = n_components
         self.batch_size = batch_size
-        self.mini_batch_size = mini_batch_size
+        self.mini_batch_size = mini_batch_size  # Kept for API compatibility
 
+        # Public attributes (set after finalize_fit)
         self.components_ = None
         self.singular_values_ = None
         self.mean_ = None
         self.explained_variance_ratio_ = None
         self.n_samples_seen_ = None
 
-        # Accumulated statistics for partial fitting
-        self._total_count = None
-        self._sum_x = None
-        self._sum_xx = None
+        # Private state for incremental fitting
+        self._components = None      # (k, n_features) JAX array
+        self._singular_values = None  # (k,) JAX array
+        self._mean = None            # (n_features,) JAX array
+        self._var = None             # (n_features,) JAX array
+        self._n_samples_seen = 0     # int
         self._n_features = None
         self._fitted = False
 
+    def _partial_fit_batch(self, X: jnp.ndarray) -> None:
+        """
+        Process a single batch through incremental SVD.
+
+        Args:
+            X: Batch of data as JAX array (n_samples, n_features)
+        """
+        n_samples = X.shape[0]
+
+        if self._n_samples_seen == 0:
+            # First batch: JIT-compiled centered SVD
+            components, singular_values, mean, var = _fit_first_batch(
+                X, self.n_components
+            )
+            self._components = components
+            self._singular_values = singular_values
+            self._mean = mean
+            self._var = var
+            self._n_samples_seen = n_samples
+        else:
+            # Subsequent batches: JIT-compiled augmented SVD
+            components, singular_values, mean, var = _fit_subsequent_batch(
+                X,
+                self._components,
+                self._singular_values,
+                self._mean,
+                self._var,
+                jnp.array(self._n_samples_seen, dtype=jnp.float32),
+                self.n_components,
+            )
+            self._components = components
+            self._singular_values = singular_values
+            self._mean = mean
+            self._var = var
+            self._n_samples_seen = self._n_samples_seen + n_samples
+
     def partial_fit(self, X, show_progress: bool = False):
         """
-        Incrementally fit PCA by updating accumulated statistics.
+        Incrementally fit PCA using batched SVD updates.
 
         Args:
             X: Input data array of shape (n_samples, n_features)
@@ -178,84 +262,66 @@ class GPUPCA:
         Returns:
             self
         """
-        N = X.shape[0]
-        n_features = X.shape[1]
+        n_samples, n_features = X.shape
 
-        # Initialize accumulators on first call
-        if self._total_count is None:
+        # Validate dimensions
+        if self._n_features is None:
             self._n_features = n_features
-            self._total_count = jnp.array(0, dtype=jnp.int32)
-            self._sum_x = jnp.zeros(n_features, dtype=jnp.float32)
-            self._sum_xx = jnp.zeros((n_features, n_features), dtype=jnp.float32)
-        else:
-            if n_features != self._n_features:
-                raise ValueError(f"Inconsistent feature count: expected {self._n_features}, got {n_features}")
+        elif n_features != self._n_features:
+            raise ValueError(f"Inconsistent feature count: expected {self._n_features}, got {n_features}")
 
-        num_chunks = int(np.ceil(N / self.batch_size))
+        # Process in chunks of batch_size
+        num_chunks = int(np.ceil(n_samples / self.batch_size))
         iterator = range(num_chunks)
         if show_progress:
-            iterator = tqdm(iterator, desc='Fitting PCA', unit='Batch')
+            iterator = tqdm(iterator, desc='Fitting PCA', unit='batch')
 
         for chunk_idx in iterator:
-            start_idx = chunk_idx * self.batch_size
-            end_idx = min(start_idx + self.batch_size, N)
-            chunk_np = X[start_idx:end_idx]
-
-            chunk = jax.device_put(jnp.array(chunk_np, dtype=jnp.float32))
-
-            chunk_size = chunk.shape[0]
-            remainder = chunk_size % self.mini_batch_size
-
-            if remainder != 0:
-                padding_size = self.mini_batch_size - remainder
-                chunk_padded = _pad_chunk(chunk, padding_size)
-            else:
-                chunk_padded = chunk
-
-            mini_batches = _reshape_to_mini_batches(chunk_padded, self.mini_batch_size)
-            counts, sum_xs, sum_xxs = jax.vmap(_compute_mini_batch_stats)(mini_batches)
-
-            if remainder != 0:
-                counts = _fix_last_count(counts, remainder)
-
-            chunk_count, chunk_sum_x, chunk_sum_xx = _sum_mini_batch_results(counts, sum_xs, sum_xxs)
-
-            self._total_count, self._sum_x, self._sum_xx = _accumulate_statistics(
-                self._total_count, self._sum_x, self._sum_xx, chunk_count, chunk_sum_x, chunk_sum_xx
-            )
+            start = chunk_idx * self.batch_size
+            end = min(start + self.batch_size, n_samples)
+            chunk = jax.device_put(jnp.array(X[start:end], dtype=jnp.float32))
+            self._partial_fit_batch(chunk)
 
         return self
 
     def finalize_fit(self):
         """
-        Compute final PCA components from accumulated statistics.
+        Finalize PCA fitting and convert to numpy arrays for pickling.
 
         Returns:
             self
         """
-        if self._total_count is None:
+        if self._n_samples_seen == 0:
             raise ValueError("No data has been fit. Call partial_fit first.")
 
-        mean, components, singular_values, explained_variance, explained_variance_ratio = _compute_final_pca(
-            self._sum_x, self._sum_xx, self._total_count, self.n_components
-        )
+        # Compute explained variance ratio
+        total_var = jnp.sum(self._var) * self._n_samples_seen
+        explained_var_ratio = self._singular_values ** 2 / total_var
 
-        self.n_samples_seen_ = int(self._total_count)
-        self.mean_ = np.array(mean)
-        self.components_ = np.array(components)
-        self.singular_values_ = np.array(singular_values)
-        self.explained_variance_ratio_ = np.array(explained_variance_ratio)
+        # Convert JAX arrays to numpy for pickling
+        self.components_ = np.array(self._components)
+        self.singular_values_ = np.array(self._singular_values)
+        self.mean_ = np.array(self._mean)
+        self.explained_variance_ratio_ = np.array(explained_var_ratio)
+        self.n_samples_seen_ = self._n_samples_seen
 
-        self.components_ = self._svd_flip_v_based(self.components_)
+        # Clear JAX state to free GPU memory
+        self._components = None
+        self._singular_values = None
+        self._mean = None
+        self._var = None
 
         self._fitted = True
         return self
 
     def fit(self, X):
         """Fit PCA on the input data X."""
-        self._total_count = None
-        self._sum_x = None
-        self._sum_xx = None
+        # Reset all state
+        self._components = None
+        self._singular_values = None
+        self._mean = None
+        self._var = None
+        self._n_samples_seen = 0
         self._n_features = None
         self._fitted = False
 
@@ -268,12 +334,6 @@ class GPUPCA:
         if not self._fitted:
             raise ValueError("Model has not been fitted.")
         return (X - self.mean_) @ self.components_.T
-
-    def _svd_flip_v_based(self, components):
-        """Apply scikit-learn's sign convention."""
-        max_abs_indices = np.argmax(np.abs(components), axis=1)
-        signs = np.sign(components[np.arange(len(components)), max_abs_indices])
-        return components * signs[:, np.newaxis]
 
 
 # =============================================================================
@@ -429,8 +489,8 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
         height, width = mask_shape[1], mask_shape[2]
         logger.info(f"[PCA] Mask dimensions: {height}x{width} ({height * width} features)")
 
-    # Initialize PCA
-    pca = GPUPCA(n_components=n_components)
+    # Initialize PCA (batch_size=2000 keeps vmap parallelism while limiting memory)
+    pca = GPUPCA(n_components=n_components, batch_size=2000)
 
     # Process each video file
     total_frames = 0

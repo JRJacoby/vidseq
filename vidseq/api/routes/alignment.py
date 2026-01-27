@@ -21,6 +21,7 @@ from vidseq.services.alignment_service import (
     load_prediction,
     predictions_exist,
 )
+from vidseq.services.cropped_video_service import cropped_video_exists
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -104,11 +105,18 @@ async def get_alignment_status(
     is_training = service.is_training()
     is_applying = service.is_applying()
 
-    # Check if all videos have cropping completed
+    # Check if all videos have cropping completed (filesystem check)
     result = await session.execute(select(Video))
     videos = list(result.scalars().all())
     video_count = len(videos)
-    cropped_count = sum(1 for v in videos if v.cropping_status == "completed")
+
+    def _count_cropped() -> int:
+        return sum(
+            1 for v in videos
+            if cropped_video_exists(project_path, v.name)
+        )
+
+    cropped_count = await asyncio.to_thread(_count_cropped)
     all_cropped = video_count > 0 and cropped_count == video_count
 
     logger.info(
@@ -132,13 +140,14 @@ async def get_alignment_status(
 async def get_random_frame(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
 ) -> RandomFrameResponse:
     """Get a random unlabeled frame from cropped videos."""
     logger.info(f"GET /alignment/random-frame: project_id={project_id}")
 
     service = AlignmentService.get_instance()
 
-    result = await service.get_random_unlabeled_frame(session)
+    result = await service.get_random_unlabeled_frame(session, project_path)
     if result is None:
         logger.warning(f"GET /alignment/random-frame: no unlabeled frames available")
         raise HTTPException(

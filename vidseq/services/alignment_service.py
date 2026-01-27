@@ -4,6 +4,7 @@ Provides training and inference for keypoint detection (front/rear of animal)
 using a U-Net model with ResNet18 encoder.
 """
 
+import asyncio
 import collections
 import copy
 import io
@@ -37,7 +38,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
-from vidseq.services.cropped_video_service import get_cropped_video_path
+from vidseq.services.cropped_video_service import cropped_video_exists, get_cropped_video_path
 
 # Constants
 DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
@@ -1073,11 +1074,6 @@ def calculate_rotation_angle(
     # But since positive rotation is CW (decreases angle), we use the angle directly
     rotation_degrees = np.degrees(angle_rad)
 
-    logger.debug(
-        f"calculate_rotation_angle: front=({front_x:.3f}, {front_y:.3f}), "
-        f"rear=({rear_x:.3f}, {rear_y:.3f}), dims={width}x{height}, angle={rotation_degrees:.1f}°"
-    )
-
     return rotation_degrees
 
 
@@ -1351,15 +1347,11 @@ class AlignmentService:
 
     def get_model_path(self, project_path: Path) -> Path:
         """Get path to the alignment model weights file."""
-        path = project_path / "alignment_model.pt"
-        logger.debug(f"get_model_path: {path}")
-        return path
+        return project_path / "alignment_model.pt"
 
     def is_model_trained(self, project_path: Path) -> bool:
         """Check if alignment model has been trained."""
-        exists = self.get_model_path(project_path).exists()
-        logger.debug(f"is_model_trained: project={project_path.name}, exists={exists}")
-        return exists
+        return self.get_model_path(project_path).exists()
 
     def delete_model(self, project_path: Path) -> bool:
         """Delete the alignment model file and clear cache.
@@ -1511,6 +1503,7 @@ class AlignmentService:
     async def get_random_unlabeled_frame(
         self,
         session: AsyncSession,
+        project_path: Path,
     ) -> Optional[tuple[int, int]]:
         """Get a random unlabeled frame from videos with cropping completed.
 
@@ -1519,11 +1512,12 @@ class AlignmentService:
         """
         logger.info("get_random_unlabeled_frame: starting")
 
-        # Get videos with cropping completed
-        videos_result = await session.execute(
-            select(Video).where(Video.cropping_status == "completed")
+        # Get videos with cropping completed (check filesystem)
+        videos_result = await session.execute(select(Video))
+        all_videos = list(videos_result.scalars().all())
+        videos = await asyncio.to_thread(
+            lambda: [v for v in all_videos if cropped_video_exists(project_path, v.name)]
         )
-        videos = list(videos_result.scalars().all())
         logger.info(f"get_random_unlabeled_frame: found {len(videos)} videos with cropping completed")
 
         if not videos:
@@ -1914,7 +1908,6 @@ class AlignmentService:
 
         # Check if we need to reload
         if self._model is not None and self._model_path == model_path:
-            logger.debug(f"_load_model: using cached decoder from {model_path}")
             return self._model
 
         if not model_path.exists():
@@ -1962,7 +1955,6 @@ class AlignmentService:
             Channel 0 = front probability, Channel 1 = rear probability
         """
         orig_h, orig_w = frame.shape[:2]
-        logger.info(f"predict_sync: input frame size={orig_w}x{orig_h}")
 
         # Load decoder (uses cache)
         decoder = self._load_model(project_path)
@@ -1997,15 +1989,11 @@ class AlignmentService:
         heatmap = output[0].float().cpu().numpy()  # (2, 64, 64)
         heatmap = np.transpose(heatmap, (1, 2, 0))  # (64, 64, 2)
 
-        logger.debug(f"predict_sync: decoder output shape={heatmap.shape}, range=[{heatmap.min():.3f}, {heatmap.max():.3f}]")
-
         # Resize back to original dimensions
         heatmap_resized = cv2.resize(
             heatmap, (orig_w, orig_h),
             interpolation=cv2.INTER_LINEAR
         )
-
-        logger.info(f"predict_sync: output heatmap size={orig_w}x{orig_h}")
 
         return heatmap_resized
 
@@ -2092,19 +2080,36 @@ class AlignmentService:
         last_progress_update = time.time()
 
         try:
-            # Get videos with cropping completed
+            # Get videos with cropping completed (check filesystem)
             with Session(project_engine) as session:
-                result = session.execute(
-                    select(Video).where(Video.cropping_status == "completed")
-                )
-                videos = list(result.scalars().all())
+                result = session.execute(select(Video))
+                all_videos = list(result.scalars().all())
 
-            logger.info(f"apply_alignment_sync: found {len(videos)} videos with cropping completed")
-            self._alignment_progress.total_videos = len(videos)
+            videos = [v for v in all_videos if cropped_video_exists(project_path, v.name)]
+            logger.info(f"apply_alignment_sync: found {len(videos)} cropped videos")
 
             if not videos:
                 logger.warning("apply_alignment_sync: no cropped videos to align")
                 return False
+
+            # Create output directories
+            output_dir = project_path / "aligned_videos"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            aligned_masks_dir = project_path / "aligned_masks"
+            aligned_masks_dir.mkdir(parents=True, exist_ok=True)
+
+            # Filter out videos that already have aligned files on disk
+            videos = [
+                v for v in videos
+                if not (output_dir / f"{get_cropped_video_path(project_path, v.name).stem}_aligned.mp4").exists()
+            ]
+            logger.info(f"apply_alignment_sync: {len(videos)} videos need alignment")
+
+            if not videos:
+                logger.info("apply_alignment_sync: all videos already aligned")
+                self._alignment_progress.status = "completed"
+                self._alignment_progress.is_aligning = False
+                return True
 
             # Check that all videos have cropped masks
             cropped_masks_dir = project_path / "cropped_masks"
@@ -2122,12 +2127,7 @@ class AlignmentService:
                 return False
 
             logger.info("apply_alignment_sync: all cropped masks verified")
-
-            # Create output directories
-            output_dir = project_path / "aligned_videos"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            aligned_masks_dir = project_path / "aligned_masks"
-            aligned_masks_dir.mkdir(parents=True, exist_ok=True)
+            self._alignment_progress.total_videos = len(videos)
             logger.info(f"apply_alignment_sync: output_dir={output_dir}, aligned_masks_dir={aligned_masks_dir}")
 
             for video_idx, video in enumerate(videos):
@@ -2194,6 +2194,20 @@ class AlignmentService:
                     chunks=(1, mask_height, mask_width),
                     compression=None,
                 )
+
+                # Open predictions HDF5 for writing (keep open for whole video)
+                predictions_dir = _get_predictions_dir(project_path)
+                predictions_dir.mkdir(parents=True, exist_ok=True)
+                predictions_h5_path = _get_predictions_h5_path(project_path, video.id)
+                predictions_h5 = h5py.File(predictions_h5_path, "w")
+                predictions_h5.create_dataset(
+                    "heatmaps",
+                    shape=(frame_count, height, width, 2),
+                    dtype=np.float32,
+                    chunks=(1, height, width, 2),
+                    compression=None,
+                )
+
                 # Process each frame
                 for frame_idx in range(frame_count):
                     ret, frame = cap.read()
@@ -2205,7 +2219,7 @@ class AlignmentService:
                     heatmap = self.predict_sync(project_path, frame)
 
                     # Save prediction for debugging
-                    save_prediction(project_path, video.id, frame_idx, heatmap)
+                    predictions_h5["heatmaps"][frame_idx] = heatmap
 
                     # Find keypoints using DARK post-processing for sub-pixel accuracy
                     front_heatmap = heatmap[:, :, 0]
@@ -2272,14 +2286,22 @@ class AlignmentService:
                 writer.release()
                 cropped_mask_h5.close()
                 aligned_mask_h5.close()
+                predictions_h5.close()
 
                 # Re-encode to H.264 for browser compatibility
-                if not self._reencode_to_h264(temp_path, output_path):
+                # Write to a _tmp file first, then atomically rename so that
+                # existence checks only see fully-written files.
+                tmp_output_path = output_path.with_name(output_path.stem + "_tmp.mp4")
+                if not self._reencode_to_h264(temp_path, tmp_output_path):
                     logger.error(f"apply_alignment_sync: failed to re-encode video {video.id}")
                     temp_path.unlink(missing_ok=True)
+                    tmp_output_path.unlink(missing_ok=True)
                     continue
 
-                # Clean up temp file
+                # Atomic rename to final path
+                tmp_output_path.rename(output_path)
+
+                # Clean up mp4v temp file
                 temp_path.unlink(missing_ok=True)
 
             # Mark completion

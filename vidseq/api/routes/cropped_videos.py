@@ -1,5 +1,6 @@
 """API routes for cropped video extraction and streaming."""
 
+import asyncio
 import mimetypes
 from io import BytesIO
 from pathlib import Path
@@ -31,13 +32,13 @@ async def extract_cropped_videos(
     Returns: { "job_ids": [1, 2, 3, ...] }
     """
     # Get all videos
-    videos = await video_service.get_all_videos(session)
-    if not videos:
+    all_videos = await video_service.get_all_videos(session)
+    if not all_videos:
         raise HTTPException(status_code=400, detail="No videos found in project")
 
     # Validate all videos are segmented
     unsegmented = []
-    for video in videos:
+    for video in all_videos:
         if video.segmentation_status != "segmented":
             unsegmented.append({"id": video.id, "name": video.name, "status": video.segmentation_status})
 
@@ -49,6 +50,16 @@ async def extract_cropped_videos(
                 "unsegmented_videos": unsegmented,
             },
         )
+
+    # Filter out videos that already have cropped files on disk
+    def _uncropped(v: Video) -> bool:
+        return not cropped_video_service.cropped_video_exists(project_path, v.name)
+
+    videos = await asyncio.to_thread(
+        lambda: [v for v in all_videos if _uncropped(v)]
+    )
+    if not videos:
+        return {"job_ids": [], "message": "All videos already cropped"}
 
     # Start extraction
     service = cropped_video_service.CroppedVideoService.get_instance()
