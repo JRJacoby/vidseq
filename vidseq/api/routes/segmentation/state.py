@@ -10,7 +10,7 @@ from vidseq.models.video import Video
 from vidseq.services import (
     conditioning_service,
     frame_data_service,
-    sam2_service,
+    sam3_service,
     segmentation_service,
 )
 
@@ -30,8 +30,8 @@ async def reset_frame(
     """
     Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM2 prompts.
     """
-    sam2_service.clear_prompts_for_frame(frame_idx)
-    sam2_service.clear_frame_prompts(project_id, video.id, frame_idx)
+    sam3_service.clear_prompts_for_frame(frame_idx)
+    sam3_service.clear_frame_prompts(project_id, video.id, frame_idx)
 
     # Clear mask from per-video HDF5
     segmentation_service.clear_mask(
@@ -76,7 +76,7 @@ async def reset_video(
         video_id=video.id,
     )
 
-    sam2_service.reset_state(project_id, video.id)
+    sam3_service.reset_state(project_id, video.id)
 
     return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
 

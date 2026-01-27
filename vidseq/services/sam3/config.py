@@ -1,4 +1,4 @@
-"""SAM2 worker port and PID management utilities."""
+"""SAM3 worker port and PID management utilities."""
 
 import os
 import socket
@@ -11,8 +11,8 @@ from platformdirs import user_data_dir
 
 
 APP_DATA_DIR = Path(user_data_dir("vidseq"))
-PORT_FILE = APP_DATA_DIR / "sam2.port"
-PID_FILE = APP_DATA_DIR / "sam2.pid"
+PORT_FILE = APP_DATA_DIR / "sam3.port"
+PID_FILE = APP_DATA_DIR / "sam3.pid"
 
 
 def find_free_port() -> int:
@@ -30,10 +30,10 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def get_sam2_port() -> Optional[int]:
+def get_sam3_port() -> Optional[int]:
     """
-    Read SAM2 worker port from port file.
-    
+    Read SAM3 worker port from port file.
+
     Returns:
         Port number if file exists and is readable, None otherwise
     """
@@ -59,17 +59,17 @@ def write_pid_file(pid: int) -> None:
     PID_FILE.write_text(str(pid))
 
 
-def is_sam2_worker_running() -> bool:
+def is_sam3_worker_running() -> bool:
     """
-    Check if SAM2 worker is running by checking port file and PID.
-    
+    Check if SAM3 worker is running by checking port file and PID.
+
     Avoids creating TCP connections for health checks by checking
     port file existence and PID file validity instead.
-    
+
     Returns:
         True if port file exists and PID is valid, False otherwise
     """
-    port = get_sam2_port()
+    port = get_sam3_port()
     if port is None:
         return False
     

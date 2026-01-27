@@ -1,11 +1,11 @@
-"""Backwards-compatible import shim for sam2.service.
+"""Backwards-compatible import shim for sam3.service.
 
 This module re-exports everything from the new location for backwards compatibility.
-New code should import directly from vidseq.services.sam2.
+New code should import directly from vidseq.services.sam3.
 """
 
-from vidseq.services.sam2.service import *
-from vidseq.services.sam2.service import (
+from vidseq.services.sam3.service import *
+from vidseq.services.sam3.service import (
     SAM2Service,
     SAM2Status,
     VideoSessionInfo,

@@ -23,11 +23,11 @@ from typing import Optional
 
 import numpy as np
 
-from vidseq.services.sam2.config import (
-    get_sam2_port,
-    is_sam2_worker_running,
+from vidseq.services.sam3.config import (
+    get_sam3_port,
+    is_sam3_worker_running,
 )
-from vidseq.services.sam2.client import SAM2TCPClient
+from vidseq.services.sam3.client import SAM2TCPClient
 
 
 def _decode_mask_rle(mask_rle: str, shape: tuple[int, ...], dtype: str = "uint8") -> np.ndarray:
@@ -139,7 +139,7 @@ class SAM2Service:
             # If we have a client, assume it's still connected unless we get an error
             # Only check worker if we don't have a client
             if self._tcp_client is None:
-                if not is_sam2_worker_running():
+                if not is_sam3_worker_running():
                     self._status = SAM2Status.NOT_LOADED
                     self._worker_process = None
                     self._sessions.clear()
@@ -152,8 +152,8 @@ class SAM2Service:
     def _start_worker(self) -> None:
         """Start the SAM2 worker process and begin loading the model."""
         # Check if worker is already running
-        if is_sam2_worker_running():
-            port = get_sam2_port()
+        if is_sam3_worker_running():
+            port = get_sam3_port()
             if port:
                 self._tcp_client = SAM2TCPClient()
                 try:
@@ -171,7 +171,7 @@ class SAM2Service:
             kwargs['start_new_session'] = True
         
         self._worker_process = subprocess.Popen(
-            [sys.executable, "-m", "vidseq.services.sam2.server.tcp_server"],
+            [sys.executable, "-m", "vidseq.services.sam3.server.tcp_server"],
             **kwargs
         )
         
@@ -181,7 +181,7 @@ class SAM2Service:
         port = None
         
         while time.time() - start_time < timeout:
-            port = get_sam2_port()
+            port = get_sam3_port()
             if port is not None:
                 break
             time.sleep(0.1)
@@ -237,9 +237,9 @@ class SAM2Service:
         # Only create client if it doesn't exist
         # Don't check is_connected() here - let send_command() handle connection errors
         if self._tcp_client is None:
-            if not is_sam2_worker_running():
+            if not is_sam3_worker_running():
                 raise RuntimeError("SAM2 worker process not running.")
-            port = get_sam2_port()
+            port = get_sam3_port()
             if port:
                 self._tcp_client = SAM2TCPClient()
                 self._tcp_client.connect("localhost", port)

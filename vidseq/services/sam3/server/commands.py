@@ -15,8 +15,8 @@ from vidseq.models.registry import Job
 from vidseq.models.video import Video
 from vidseq.models.utils import utc_now
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.sam2.inference.propagate import propagate_video
-from vidseq.services.sam2.utils import encode_mask_rle, extract_mask, init_state_with_lazy_loader
+from vidseq.services.sam3.inference.propagate import propagate_video
+from vidseq.services.sam3.utils import encode_mask_rle, extract_mask, init_state_with_lazy_loader
 
 
 def handle_load_model(
@@ -42,7 +42,7 @@ def handle_load_model(
         vos_optimized=False,
         hydra_overrides_extra=[
             "++model.add_all_frames_to_correct_as_cond=true",
-            "++model._target_=vidseq.services.sam2.inference.predictor.CustomSAM2VideoPredictor",
+            "++model._target_=vidseq.services.sam3.inference.predictor.CustomSAM2VideoPredictor",
         ],
     )
     predictor.to(dtype=torch.bfloat16)
@@ -77,7 +77,7 @@ def handle_init_session(
     Returns:
         Response dict
     """
-    from vidseq.services.sam2.inference.streaming import LazyVideoFrameLoader
+    from vidseq.services.sam3.inference.streaming import LazyVideoFrameLoader
 
     video_id = params["video_id"]
     video_path = Path(params["video_path"])
@@ -255,7 +255,7 @@ def handle_segment_videos_batch(
     Returns:
         Final response dict
     """
-    from vidseq.services.sam2.inference.streaming import LazyVideoFrameLoader
+    from vidseq.services.sam3.inference.streaming import LazyVideoFrameLoader
 
     videos = params["videos"]
     project_id = params["project_id"]

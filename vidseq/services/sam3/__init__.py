@@ -1,6 +1,6 @@
 """SAM2 service package."""
 
-from vidseq.services.sam2.service import (
+from vidseq.services.sam3.service import (
     SAM2Service,
     close_session,
     get_all_prompts,

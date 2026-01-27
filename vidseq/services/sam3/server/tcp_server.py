@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from vidseq.models.registry import Project
 from vidseq.models.video import Video
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.sam2.server.commands import (
+from vidseq.services.sam3.server.commands import (
     handle_add_prompt,
     handle_clear_frame_prompts,
     handle_close_session,
@@ -34,7 +34,7 @@ from vidseq.services.sam2.server.commands import (
     handle_segment_videos_batch,
     handle_shutdown,
 )
-from vidseq.services.sam2.config import (
+from vidseq.services.sam3.config import (
     cleanup_port_files,
     find_free_port,
     write_pid_file,

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import frame_data_service, sam2_service, video_service
+from vidseq.services import frame_data_service, sam3_service, video_service
 
 router = APIRouter()
 
@@ -50,7 +50,7 @@ async def segment_all_videos_route(
             }
         )
 
-    job_ids = await sam2_service.segment_all_videos(
+    job_ids = await sam3_service.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
@@ -63,7 +63,7 @@ async def segment_all_videos_route(
 @router.get("/segmentation/status")
 async def get_segmentation_status():
     """Get the current SAM2 model loading status."""
-    return sam2_service.get_status()
+    return sam3_service.get_status()
 
 
 @router.get("/segmentation/status/stream")
@@ -72,7 +72,7 @@ async def stream_segmentation_status():
     async def event_generator():
         last_status_str = None
         while True:
-            current_status = sam2_service.get_status()
+            current_status = sam3_service.get_status()
             current_status_str = json.dumps(current_status)
 
             if current_status_str != last_status_str:
@@ -94,7 +94,7 @@ async def stream_segmentation_status():
 @router.post("/segmentation/preload")
 async def preload_segmentation():
     """Start loading SAM2 model in background."""
-    sam2_service.start_loading_in_background()
+    sam3_service.start_loading_in_background()
     return {"message": "Loading started"}
 
 
@@ -113,7 +113,7 @@ async def init_video_session(
     video_path = Path(video.path)
 
     try:
-        session_info = sam2_service.init_session(project_id, video.id, video_path)
+        session_info = sam3_service.init_session(project_id, video.id, video_path)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -135,5 +135,5 @@ async def close_video_session(
 
     Frees GPU memory. Call this when leaving the video detail view.
     """
-    closed = sam2_service.close_session(project_id, video_id)
+    closed = sam3_service.close_session(project_id, video_id)
     return {"closed": closed}

@@ -15,7 +15,7 @@ from vidseq.services import (
     conditioning_service,
     frame_data_service,
     mask_storage,
-    sam2_service,
+    sam3_service,
     segmentation_service,
 )
 
@@ -45,7 +45,7 @@ async def run_segmentation(
     label = 1 if segment_request.type == "positive_point" else 0
 
     try:
-        mask = sam2_service.add_point_prompt(
+        mask = sam3_service.add_point_prompt(
             project_id=project_id,
             video_id=video.id,
             video_path=video_path,
@@ -100,7 +100,7 @@ async def propagate_mask(
     Use mark-training endpoint to explicitly mark frames for YOLO training.
     """
     try:
-        frames_processed = sam2_service.generate_training_masks(
+        frames_processed = sam3_service.generate_training_masks(
             project_id=project_id,
             video_id=video.id,
             start_frame_idx=request.start_frame_idx,
@@ -128,7 +128,7 @@ async def get_prompts_for_frame(
     video: Video = Depends(get_video),
 ):
     """Get all prompts for a specific frame."""
-    prompts = sam2_service.get_prompts_for_frame(frame_idx)
+    prompts = sam3_service.get_prompts_for_frame(frame_idx)
     return prompts
 
 
@@ -139,5 +139,5 @@ async def get_all_prompts(
     video: Video = Depends(get_video),
 ):
     """Get all prompts for all frames."""
-    prompts = sam2_service.get_all_prompts()
+    prompts = sam3_service.get_all_prompts()
     return prompts

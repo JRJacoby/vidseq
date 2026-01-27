@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from vidseq.services import frame_data_service, mask_storage
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.sam2.utils import extract_mask
+from vidseq.services.sam3.utils import extract_mask
 
 
 def propagate_video(

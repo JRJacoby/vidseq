@@ -118,7 +118,7 @@ async def clear_video(
     """
     Clear all masks and frame data for a video.
 
-    SAM2 tracking state reset is handled separately via sam2_service.reset_state().
+    SAM2 tracking state reset is handled separately via sam3_service.reset_state().
 
     Args:
         project_path: Path to the project folder
