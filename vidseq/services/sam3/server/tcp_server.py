@@ -305,7 +305,7 @@ class SAM3TCPServer:
             elif cmd_type == "init_session":
                 result = handle_init_session(cmd, self.model, self.sessions)
 
-            elif cmd_type == "add_point_prompt":
+            elif cmd_type == "add_prompt":
                 result = handle_add_prompt(cmd, self.model, self.sessions)
 
             elif cmd_type == "generate_training_masks":

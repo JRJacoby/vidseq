@@ -351,7 +351,7 @@ class SAM3Service:
             session = self.init_session(project_id, video_id, video_path)
 
         result = self._send_and_wait({
-            "type": "add_point_prompt",
+            "type": "add_prompt",
             "video_id": video_id,
             "frame_idx": frame_idx,
             "points": points,

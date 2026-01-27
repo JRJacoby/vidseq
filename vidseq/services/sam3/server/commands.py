@@ -164,7 +164,7 @@ def handle_add_prompt(
     mask = extract_mask_from_sam3_output(postprocessed_out, height, width)
 
     return {
-        "type": "add_point_prompt_result",
+        "type": "add_prompt_result",
         "status": "ok",
         "mask_rle": encode_mask_rle(mask),
         "mask_shape": mask.shape,
