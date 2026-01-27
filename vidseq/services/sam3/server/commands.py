@@ -114,9 +114,7 @@ def handle_add_prompt(
     """
     video_id = params["video_id"]
     frame_idx = params["frame_idx"]
-    points = params.get("points")
-    labels = params.get("labels")
-    box = params.get("box")
+    all_prompts = params.get("all_prompts", [])
     obj_id = params.get("obj_id", 1)
 
     if model is None:
@@ -129,36 +127,37 @@ def handle_add_prompt(
     height = inference_state["orig_height"]
     width = inference_state["orig_width"]
 
-    if points is not None and labels is not None:
-        # Points are already in [0,1] normalized coords from frontend
-        # SAM3 add_prompt with points goes to tracker (instance-level)
-        _, postprocessed_out = model.add_prompt(
-            inference_state,
-            frame_idx=frame_idx,
-            points=np.array(points, dtype=np.float32),
-            point_labels=np.array(labels, dtype=np.int32),
-            obj_id=obj_id,
-            rel_coordinates=True,
-        )
-    elif box is not None:
-        # box is [x1, y1, x2, y2] in pixel coords from frontend
-        # Convert to normalized [0,1] XYWH for SAM3 detector
-        x1, y1, x2, y2 = box
-        norm_x = x1 / width
-        norm_y = y1 / height
-        norm_w = (x2 - x1) / width
-        norm_h = (y2 - y1) / height
-        boxes_xywh = np.array([[norm_x, norm_y, norm_w, norm_h]], dtype=np.float32)
-        box_labels = np.array([1], dtype=np.int64)  # positive
+    if not all_prompts:
+        raise RuntimeError("No prompts provided")
 
-        _, postprocessed_out = model.add_prompt(
-            inference_state,
-            frame_idx=frame_idx,
-            boxes_xywh=boxes_xywh,
-            box_labels=box_labels,
-        )
-    else:
-        raise RuntimeError("Either points+labels or box must be provided")
+    # Convert all accumulated prompts to tracker point format.
+    # Bboxes become two corner points (labels 2=top-left, 3=bottom-right),
+    # which is the SAM2 tracker convention for box prompts.
+    # This routes everything through the tracker (not detector) so
+    # bbox + point prompts compose correctly.
+    points = []
+    labels = []
+    for p in all_prompts:
+        if p["type"] == "bounding_box":
+            # Pixel coords → normalized [0,1]
+            points.append([p["x1"] / width, p["y1"] / height])
+            points.append([p["x2"] / width, p["y2"] / height])
+            labels.extend([2, 3])
+        elif p["type"] == "positive_point":
+            points.append([p["x"], p["y"]])  # already normalized
+            labels.append(1)
+        elif p["type"] == "negative_point":
+            points.append([p["x"], p["y"]])  # already normalized
+            labels.append(0)
+
+    _, postprocessed_out = model.add_prompt(
+        inference_state,
+        frame_idx=frame_idx,
+        points=np.array(points, dtype=np.float32),
+        point_labels=np.array(labels, dtype=np.int32),
+        obj_id=obj_id,
+        rel_coordinates=True,
+    )
 
     # Extract mask from postprocessed output
     mask = extract_mask_from_sam3_output(postprocessed_out, height, width)

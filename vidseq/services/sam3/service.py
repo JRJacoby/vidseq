@@ -350,12 +350,27 @@ class SAM3Service:
         if session is None:
             session = self.init_session(project_id, video_id, video_path)
 
+        # Store prompt info first
+        for i, point in enumerate(points):
+            prompt_type = "positive_point" if labels[i] == 1 else "negative_point"
+            prompt = {
+                "type": prompt_type,
+                "x": point[0],
+                "y": point[1],
+                "frame_idx": frame_idx,
+            }
+            if frame_idx not in self._prompts:
+                self._prompts[frame_idx] = []
+            self._prompts[frame_idx].append(prompt)
+
+        # Send ALL accumulated prompts for this frame so the tracker
+        # sees the complete state (bbox + all points composed together)
+        all_prompts = self._prompts.get(frame_idx, [])
         result = self._send_and_wait({
             "type": "add_prompt",
             "video_id": video_id,
             "frame_idx": frame_idx,
-            "points": points,
-            "labels": labels,
+            "all_prompts": all_prompts,
             "obj_id": OBJ_ID,
         }, timeout=120.0)
 
@@ -368,19 +383,6 @@ class SAM3Service:
         mask_shape = tuple(result["mask_shape"])
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
-
-        # Store prompt info
-        for i, point in enumerate(points):
-            prompt_type = "positive_point" if labels[i] == 1 else "negative_point"
-            prompt = {
-                "type": prompt_type,
-                "x": point[0],
-                "y": point[1],
-                "frame_idx": frame_idx,
-            }
-            if frame_idx not in self._prompts:
-                self._prompts[frame_idx] = []
-            self._prompts[frame_idx].append(prompt)
 
         return mask
 
@@ -419,24 +421,6 @@ class SAM3Service:
         if session is None:
             session = self.init_session(project_id, video_id, video_path)
 
-        result = self._send_and_wait({
-            "type": "add_prompt",
-            "video_id": video_id,
-            "frame_idx": frame_idx,
-            "box": box,
-            "obj_id": OBJ_ID,
-        }, timeout=120.0)
-
-        if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to add box prompt"))
-
-        session.has_object = True
-
-        mask_rle = result["mask_rle"]
-        mask_shape = tuple(result["mask_shape"])
-        mask_dtype = result.get("mask_dtype", "uint8")
-        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
-
         # Store box prompt info (clear previous box prompts first)
         self.delete_box_prompts_for_frame(frame_idx)
         prompt = {
@@ -450,6 +434,27 @@ class SAM3Service:
         if frame_idx not in self._prompts:
             self._prompts[frame_idx] = []
         self._prompts[frame_idx].append(prompt)
+
+        # Send ALL accumulated prompts for this frame so the tracker
+        # sees the complete state (bbox + all points composed together)
+        all_prompts = self._prompts.get(frame_idx, [])
+        result = self._send_and_wait({
+            "type": "add_prompt",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "all_prompts": all_prompts,
+            "obj_id": OBJ_ID,
+        }, timeout=120.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to add box prompt"))
+
+        session.has_object = True
+
+        mask_rle = result["mask_rle"]
+        mask_shape = tuple(result["mask_shape"])
+        mask_dtype = result.get("mask_dtype", "uint8")
+        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
 
         return mask
 
