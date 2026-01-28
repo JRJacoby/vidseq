@@ -12,7 +12,6 @@ from vidseq.api.dependencies import get_project_folder, get_project_session, get
 from vidseq.models.video import Video
 from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
 from vidseq.services import (
-    conditioning_service,
     frame_data_service,
     mask_storage,
     sam3_service,
@@ -33,37 +32,24 @@ async def run_segmentation(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Run segmentation with a point or bounding box prompt.
+    Run segmentation with a point prompt.
 
     Point coords should be normalized [0,1].
-    Bounding box coords are in pixel space [x1, y1, x2, y2].
     """
     video_path = Path(video.path)
+    label = 1 if segment_request.type == "positive_point" else 0
 
     try:
-        if segment_request.type == "bounding_box":
-            mask = sam3_service.add_box_prompt(
-                project_id=project_id,
-                video_id=video.id,
-                video_path=video_path,
-                frame_idx=segment_request.frame_idx,
-                box=[
-                    segment_request.details["x1"],
-                    segment_request.details["y1"],
-                    segment_request.details["x2"],
-                    segment_request.details["y2"],
-                ],
-            )
-        else:
-            label = 1 if segment_request.type == "positive_point" else 0
-            mask = sam3_service.add_point_prompt(
-                project_id=project_id,
-                video_id=video.id,
-                video_path=video_path,
-                frame_idx=segment_request.frame_idx,
-                points=[[segment_request.details["x"], segment_request.details["y"]]],
-                labels=[label],
-            )
+        mask = sam3_service.add_point_prompt(
+            project_id=project_id,
+            video_id=video.id,
+            video_path=video_path,
+            project_path=project_path,
+            frame_idx=segment_request.frame_idx,
+            x=segment_request.details["x"],
+            y=segment_request.details["y"],
+            label=label,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -83,11 +69,7 @@ async def run_segmentation(
         session, video.id, segment_request.frame_idx, has_content
     )
 
-    await conditioning_service.add_conditioning_frame(
-        session=session,
-        video_id=video.id,
-        frame_idx=segment_request.frame_idx,
-    )
+    # Note: conditioning_service.add_conditioning_frame is now handled by sam3_service
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
@@ -131,24 +113,3 @@ async def propagate_mask(
     return PropagateResponse(frames_processed=frames_processed)
 
 
-@router.get(
-    "/projects/{project_id}/videos/{video_id}/prompts/{frame_idx}",
-)
-async def get_prompts_for_frame(
-    frame_idx: int,
-    video: Video = Depends(get_video),
-):
-    """Get all prompts for a specific frame."""
-    prompts = sam3_service.get_prompts_for_frame(frame_idx)
-    return prompts
-
-
-@router.get(
-    "/projects/{project_id}/videos/{video_id}/prompts",
-)
-async def get_all_prompts(
-    video: Video = Depends(get_video),
-):
-    """Get all prompts for all frames."""
-    prompts = sam3_service.get_all_prompts()
-    return prompts

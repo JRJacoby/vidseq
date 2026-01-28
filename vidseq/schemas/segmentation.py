@@ -6,9 +6,9 @@ from pydantic import BaseModel, field_validator
 
 
 class SegmentRequest(BaseModel):
-    """Request to run segmentation with a point or bounding box prompt."""
+    """Request to run segmentation with a point prompt."""
     frame_idx: int
-    type: Literal["positive_point", "negative_point", "bounding_box"]
+    type: Literal["positive_point", "negative_point"]
     details: dict[str, Any]
 
     @field_validator("details")
@@ -19,10 +19,6 @@ class SegmentRequest(BaseModel):
             required = {"x", "y"}
             if not required.issubset(v.keys()):
                 raise ValueError(f"point requires {required}")
-        elif prompt_type == "bounding_box":
-            required = {"x1", "y1", "x2", "y2"}
-            if not required.issubset(v.keys()):
-                raise ValueError(f"bounding_box requires {required}")
         return v
 
 
