@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -25,12 +25,13 @@ from vidseq.models.video import Video
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.sam3.server.commands import (
     handle_add_prompt,
-    handle_clear_frame_prompts,
     handle_close_session,
     handle_generate_training_masks,
     handle_init_session,
     handle_load_model,
-    handle_reset_state,
+    handle_propagate,
+    handle_reset_frame,
+    handle_reset_video,
     handle_segment_videos_batch,
     handle_shutdown,
 )
@@ -63,9 +64,8 @@ class SAM3TCPServer:
         self.running = False
         self._is_processing = False
 
-        # SAM3 state
-        self.model = None
-        self.sessions: dict[int, tuple[dict, Any]] = {}
+        # SAM3 state - StreamingSegmentor manages sessions internally
+        self._segmentor = None
 
         # Config paths
         self.checkpoint_path: Optional[Path] = None  # Set in start() after ensuring model exists
@@ -298,38 +298,38 @@ class SAM3TCPServer:
 
         try:
             if cmd_type == "load_model":
-                result, self.model = handle_load_model(
-                    self.checkpoint_path,
-                )
+                result, self._segmentor = handle_load_model(self.checkpoint_path)
 
             elif cmd_type == "init_session":
-                result = handle_init_session(cmd, self.model, self.sessions)
+                result = handle_init_session(cmd, self._segmentor)
 
             elif cmd_type == "add_prompt":
-                result = handle_add_prompt(cmd, self.model, self.sessions)
+                result = handle_add_prompt(cmd, self._segmentor)
+
+            elif cmd_type == "propagate":
+                result = handle_propagate(cmd, self._segmentor)
 
             elif cmd_type == "generate_training_masks":
-                result = handle_generate_training_masks(cmd, self.model, self.sessions)
+                result = handle_generate_training_masks(cmd, self._segmentor)
+
+            elif cmd_type == "reset_frame":
+                result = handle_reset_frame(cmd, self._segmentor)
+
+            elif cmd_type == "reset_video":
+                result = handle_reset_video(cmd, self._segmentor)
 
             elif cmd_type == "segment_videos_batch":
                 result = handle_segment_videos_batch(
                     cmd,
-                    self.model,
-                    self.sessions,
+                    self._segmentor,
                     response_callback,
                 )
 
-            elif cmd_type == "reset_state":
-                result = handle_reset_state(cmd, self.model, self.sessions)
-
-            elif cmd_type == "clear_frame_prompts":
-                result = handle_clear_frame_prompts(cmd, self.model, self.sessions)
-
             elif cmd_type == "close_session":
-                result = handle_close_session(cmd, self.sessions)
+                result = handle_close_session(cmd, self._segmentor)
 
             elif cmd_type == "shutdown":
-                result = handle_shutdown(self.sessions)
+                result = handle_shutdown(self._segmentor)
                 self.running = False
 
             else:
@@ -348,7 +348,6 @@ class SAM3TCPServer:
         except Exception as e:
             print(f"[SAM3 Worker] Error in command {cmd_type}: {e}")
             import traceback
-
             traceback.print_exc()
             result = {
                 "type": f"{cmd_type}_result" if cmd_type else "error",
@@ -398,18 +397,10 @@ class SAM3TCPServer:
             except Exception:
                 pass
 
-        # Clean up sessions
-        for video_id, (inference_state, loader) in list(self.sessions.items()):
-            try:
-                loader.close()
-            except Exception:
-                pass
-        self.sessions.clear()
-
-        # Free GPU memory by deleting model and clearing CUDA cache
-        if self.model is not None:
-            del self.model
-            self.model = None
+        # Free GPU memory by deleting segmentor and clearing CUDA cache
+        if self._segmentor is not None:
+            del self._segmentor
+            self._segmentor = None
             torch.cuda.empty_cache()
             print("[SAM3 Worker] GPU memory cleared")
 
