@@ -9,7 +9,6 @@ Communicates with worker via TCP sockets.
 """
 
 import base64
-import os
 import struct
 import subprocess
 import sys
@@ -114,7 +113,6 @@ class SAM3Service:
         self._error_message: Optional[str] = None
         # Sessions keyed by (project_id, video_id) to avoid collisions across projects
         self._sessions: dict[tuple[int, int], VideoSessionInfo] = {}
-        self._prompts: dict[int, list[dict]] = {}  # frame_idx -> list of prompts
 
         self._initialized = True
 
@@ -247,6 +245,7 @@ class SAM3Service:
     def _send_and_wait(self, cmd: dict, timeout: float = 120.0) -> dict:
         """Send a command to worker and wait for the result."""
         self._ensure_worker_ready()
+        assert self._tcp_client is not None  # Set by _ensure_worker_ready
 
         request_id = str(uuid.uuid4())
         cmd["request_id"] = request_id
@@ -273,19 +272,47 @@ class SAM3Service:
                 # Don't change status - might be temporary connection issue
             raise RuntimeError(f"Failed to communicate with SAM3 worker: {e}") from e
 
-    def init_session(self, project_id: int, video_id: int, video_path: Path) -> VideoSessionInfo:
+    def init_session(self, project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
         """Initialize a segmentation session for a video."""
         session_key = (project_id, video_id)
         if session_key in self._sessions:
             return self._sessions[session_key]
 
-        # Clear prompts when initializing a new session
-        self._prompts = {}
+        # Query conditioning frames and video metadata from database
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+        from vidseq.models.conditioning_frame import ConditioningFrame
+        from vidseq.models.video import Video
+        from vidseq.services.database_manager import DatabaseManager
+
+        db_manager = DatabaseManager.get_instance()
+        project_engine = db_manager.get_project_engine(project_path)
+
+        with Session(project_engine) as db_session:
+            # Get video metadata
+            video = db_session.execute(
+                select(Video).where(Video.id == video_id)
+            ).scalar_one()
+            num_frames = video.num_frames
+            height = video.height
+            width = video.width
+
+            # Get conditioning frames
+            result = db_session.execute(
+                select(ConditioningFrame.frame_idx)
+                .where(ConditioningFrame.video_id == video_id)
+            )
+            cond_frame_indices = list(result.scalars().all())
 
         result = self._send_and_wait({
             "type": "init_session",
             "video_id": video_id,
             "video_path": str(video_path),
+            "project_path": str(project_path),
+            "num_frames": num_frames,
+            "height": height,
+            "width": width,
+            "cond_frame_indices": cond_frame_indices,
         }, timeout=600.0)  # 10 min timeout for first session (torch.compile warmup)
 
         if result.get("status") != "ok":
@@ -293,9 +320,9 @@ class SAM3Service:
 
         session_info = VideoSessionInfo(
             video_id=video_id,
-            num_frames=result["num_frames"],
-            height=result["height"],
-            width=result["width"],
+            num_frames=num_frames,
+            height=height,
+            width=width,
         )
         self._sessions[session_key] = session_info
         return session_info
@@ -326,52 +353,60 @@ class SAM3Service:
         project_id: int,
         video_id: int,
         video_path: Path,
+        project_path: Path,
         frame_idx: int,
-        points: list[list[float]],
-        labels: list[int],
+        x: float,
+        y: float,
+        label: int,
     ) -> np.ndarray:
         """
-        Add point prompts and get the segmentation mask.
-
-        First point creates the tracked object, subsequent points refine it.
+        Add a point prompt and return the mask.
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
             video_path: Path to video file (used to init session if needed)
+            project_path: Path to the project folder
             frame_idx: Frame index to segment
-            points: List of [x, y] coordinates in normalized [0,1] coords
-            labels: List of labels (1=positive, 0=negative)
+            x: X coordinate in normalized [0, 1] coords
+            y: Y coordinate in normalized [0, 1] coords
+            label: Label (1=positive, 0=negative)
 
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
         """
         session = self.get_session(project_id, video_id)
         if session is None:
-            session = self.init_session(project_id, video_id, video_path)
+            session = self.init_session(project_id, video_id, video_path, project_path)
 
-        # Store prompt info first
-        for i, point in enumerate(points):
-            prompt_type = "positive_point" if labels[i] == 1 else "negative_point"
-            prompt = {
-                "type": prompt_type,
-                "x": point[0],
-                "y": point[1],
-                "frame_idx": frame_idx,
-            }
-            if frame_idx not in self._prompts:
-                self._prompts[frame_idx] = []
-            self._prompts[frame_idx].append(prompt)
+        # Add conditioning frame record to database
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+        from vidseq.models.conditioning_frame import ConditioningFrame
+        from vidseq.services.database_manager import DatabaseManager
 
-        # Send ALL accumulated prompts for this frame so the tracker
-        # sees the complete state (bbox + all points composed together)
-        all_prompts = self._prompts.get(frame_idx, [])
+        db_manager = DatabaseManager.get_instance()
+        project_engine = db_manager.get_project_engine(project_path)
+
+        with Session(project_engine) as db_session:
+            # Check if already exists
+            existing = db_session.execute(
+                select(ConditioningFrame)
+                .where(ConditioningFrame.video_id == video_id)
+                .where(ConditioningFrame.frame_idx == frame_idx)
+            ).scalar_one_or_none()
+
+            if existing is None:
+                db_session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
+                db_session.commit()
+
         result = self._send_and_wait({
             "type": "add_prompt",
             "video_id": video_id,
             "frame_idx": frame_idx,
-            "all_prompts": all_prompts,
-            "obj_id": OBJ_ID,
+            "x": x,
+            "y": y,
+            "label": label,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -386,70 +421,35 @@ class SAM3Service:
 
         return mask
 
-    def delete_box_prompts_for_frame(self, frame_idx: int) -> None:
-        """Delete only bounding box prompts for a specific frame (keeps point prompts)."""
-        if frame_idx in self._prompts:
-            self._prompts[frame_idx] = [
-                p for p in self._prompts[frame_idx]
-                if p["type"] != "bounding_box"
-            ]
-            if not self._prompts[frame_idx]:
-                del self._prompts[frame_idx]
-
-    def add_box_prompt(
+    def propagate(
         self,
         project_id: int,
         video_id: int,
-        video_path: Path,
         frame_idx: int,
-        box: list[float],
     ) -> np.ndarray:
         """
-        Add bounding box prompt and get the segmentation mask.
+        Propagate tracking to a single frame and return the mask.
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
-            video_path: Path to video file
-            frame_idx: Frame index to segment
-            box: [x1, y1, x2, y2] in pixel coordinates
+            frame_idx: Frame index to propagate to
 
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
         """
         session = self.get_session(project_id, video_id)
         if session is None:
-            session = self.init_session(project_id, video_id, video_path)
+            raise RuntimeError("No session exists. Initialize session first.")
 
-        # Store box prompt info (clear previous box prompts first)
-        self.delete_box_prompts_for_frame(frame_idx)
-        prompt = {
-            "type": "bounding_box",
-            "x1": box[0],
-            "y1": box[1],
-            "x2": box[2],
-            "y2": box[3],
-            "frame_idx": frame_idx,
-        }
-        if frame_idx not in self._prompts:
-            self._prompts[frame_idx] = []
-        self._prompts[frame_idx].append(prompt)
-
-        # Send ALL accumulated prompts for this frame so the tracker
-        # sees the complete state (bbox + all points composed together)
-        all_prompts = self._prompts.get(frame_idx, [])
         result = self._send_and_wait({
-            "type": "add_prompt",
+            "type": "propagate",
             "video_id": video_id,
             "frame_idx": frame_idx,
-            "all_prompts": all_prompts,
-            "obj_id": OBJ_ID,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to add box prompt"))
-
-        session.has_object = True
+            raise RuntimeError(result.get("error", "Failed to propagate"))
 
         mask_rle = result["mask_rle"]
         mask_shape = tuple(result["mask_shape"])
@@ -458,67 +458,86 @@ class SAM3Service:
 
         return mask
 
-    def reset_state(self, project_id: int, video_id: int) -> bool:
+    def reset_frame(
+        self,
+        project_id: int,
+        video_id: int,
+        project_path: Path,
+        frame_idx: int,
+    ) -> None:
         """
-        Reset the tracking state for a video.
-
-        Clears all object tracking memory. User must re-click to define object.
+        Reset a single frame (clear mask and remove from conditioning frames).
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
-
-        Returns:
-            True if successful
+            project_path: Path to the project folder
+            frame_idx: Frame index to reset
         """
+        # Remove from database
+        from sqlalchemy import delete
+        from sqlalchemy.orm import Session
+        from vidseq.models.conditioning_frame import ConditioningFrame
+        from vidseq.services.database_manager import DatabaseManager
+
+        db_manager = DatabaseManager.get_instance()
+        project_engine = db_manager.get_project_engine(project_path)
+
+        with Session(project_engine) as db_session:
+            db_session.execute(
+                delete(ConditioningFrame)
+                .where(ConditioningFrame.video_id == video_id)
+                .where(ConditioningFrame.frame_idx == frame_idx)
+            )
+            db_session.commit()
+
+        # Tell worker to reset frame
         session = self.get_session(project_id, video_id)
-        if session is None:
-            return True
+        if session is not None:
+            self._send_and_wait({
+                "type": "reset_frame",
+                "video_id": video_id,
+                "frame_idx": frame_idx,
+            }, timeout=30.0)
 
-        result = self._send_and_wait({
-            "type": "reset_state",
-            "video_id": video_id,
-        }, timeout=30.0)
-
-        if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to reset state"))
-
-        session.has_object = False
-        # Clear prompts when resetting state
-        self._prompts = {}
-        return True
-
-    def clear_frame_prompts(self, project_id: int, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
+    def reset_video(
+        self,
+        project_id: int,
+        video_id: int,
+        project_path: Path,
+    ) -> None:
         """
-        Clear all prompts for a specific frame.
-
-        Removes point and mask inputs for the given frame from SAM3's inference state.
-        This is useful when resetting a conditioning frame.
+        Reset entire video (clear all masks and conditioning frames).
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
-            frame_idx: Frame index to clear
-            obj_id: Object ID (default: 1)
-
-        Returns:
-            True if successful
+            project_path: Path to the project folder
         """
+        # Remove all conditioning frames from database
+        from sqlalchemy import delete
+        from sqlalchemy.orm import Session
+        from vidseq.models.conditioning_frame import ConditioningFrame
+        from vidseq.services.database_manager import DatabaseManager
+
+        db_manager = DatabaseManager.get_instance()
+        project_engine = db_manager.get_project_engine(project_path)
+
+        with Session(project_engine) as db_session:
+            db_session.execute(
+                delete(ConditioningFrame)
+                .where(ConditioningFrame.video_id == video_id)
+            )
+            db_session.commit()
+
+        # Tell worker to reset video
         session = self.get_session(project_id, video_id)
-        if session is None:
-            return True
-
-        result = self._send_and_wait({
-            "type": "clear_frame_prompts",
-            "video_id": video_id,
-            "frame_idx": frame_idx,
-            "obj_id": obj_id,
-        }, timeout=30.0)
-
-        if result.get("status") != "ok":
-            raise RuntimeError(result.get("error", "Failed to clear frame prompts"))
-
-        return True
+        if session is not None:
+            self._send_and_wait({
+                "type": "reset_video",
+                "video_id": video_id,
+            }, timeout=30.0)
+            session.has_object = False
 
     def generate_training_masks(
         self,
@@ -624,6 +643,7 @@ class SAM3Service:
             time.sleep(1.0)
 
         self._ensure_worker_ready()
+        assert self._tcp_client is not None  # Set by _ensure_worker_ready
 
         # Send command to worker (which now handles job creation and all DB updates)
         cmd = {
@@ -641,19 +661,6 @@ class SAM3Service:
             return result.get("job_ids", [])
 
         return []
-
-    def get_prompts_for_frame(self, frame_idx: int) -> list[dict]:
-        """Get all prompts for a specific frame."""
-        return self._prompts.get(frame_idx, [])
-
-    def get_all_prompts(self) -> dict[int, list[dict]]:
-        """Get all prompts for all frames."""
-        return self._prompts.copy()
-
-    def clear_prompts_for_frame(self, frame_idx: int) -> None:
-        """Clear prompts for a specific frame."""
-        if frame_idx in self._prompts:
-            del self._prompts[frame_idx]
 
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -683,9 +690,9 @@ def start_loading_in_background() -> None:
     SAM3Service.get_instance().start_loading_in_background()
 
 
-def init_session(project_id: int, video_id: int, video_path: Path) -> VideoSessionInfo:
+def init_session(project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
     """Initialize a segmentation session for a video."""
-    return SAM3Service.get_instance().init_session(project_id, video_id, video_path)
+    return SAM3Service.get_instance().init_session(project_id, video_id, video_path, project_path)
 
 
 def get_session(project_id: int, video_id: int) -> Optional[VideoSessionInfo]:
@@ -702,28 +709,84 @@ def add_point_prompt(
     project_id: int,
     video_id: int,
     video_path: Path,
+    project_path: Path,
     frame_idx: int,
-    points: list[list[float]],
-    labels: list[int],
+    x: float,
+    y: float,
+    label: int,
 ) -> np.ndarray:
     """
-    Add point prompts and get the segmentation mask.
+    Add a point prompt and return the mask.
 
-    First point creates the tracked object, subsequent points refine it.
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        video_path: Path to video file (used to init session if needed)
+        project_path: Path to the project folder
+        frame_idx: Frame index to segment
+        x: X coordinate in normalized [0, 1] coords
+        y: Y coordinate in normalized [0, 1] coords
+        label: Label (1=positive, 0=negative)
+
+    Returns:
+        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
     return SAM3Service.get_instance().add_point_prompt(
-        project_id, video_id, video_path, frame_idx, points, labels
+        project_id, video_id, video_path, project_path, frame_idx, x, y, label
     )
 
 
-def reset_state(project_id: int, video_id: int) -> bool:
-    """Reset the tracking state for a video."""
-    return SAM3Service.get_instance().reset_state(project_id, video_id)
+def propagate(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+) -> np.ndarray:
+    """
+    Propagate tracking to a single frame and return the mask.
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        frame_idx: Frame index to propagate to
+
+    Returns:
+        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+    """
+    return SAM3Service.get_instance().propagate(project_id, video_id, frame_idx)
 
 
-def clear_frame_prompts(project_id: int, video_id: int, frame_idx: int, obj_id: int = 1) -> bool:
-    """Clear all prompts for a specific frame."""
-    return SAM3Service.get_instance().clear_frame_prompts(project_id, video_id, frame_idx, obj_id)
+def reset_frame(
+    project_id: int,
+    video_id: int,
+    project_path: Path,
+    frame_idx: int,
+) -> None:
+    """
+    Reset a single frame (clear mask and remove from conditioning frames).
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        project_path: Path to the project folder
+        frame_idx: Frame index to reset
+    """
+    SAM3Service.get_instance().reset_frame(project_id, video_id, project_path, frame_idx)
+
+
+def reset_video(
+    project_id: int,
+    video_id: int,
+    project_path: Path,
+) -> None:
+    """
+    Reset entire video (clear all masks and conditioning frames).
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        project_path: Path to the project folder
+    """
+    SAM3Service.get_instance().reset_video(project_id, video_id, project_path)
 
 
 def generate_training_masks(
@@ -745,39 +808,6 @@ def generate_training_masks(
 def shutdown_worker() -> None:
     """Shutdown the worker process gracefully."""
     SAM3Service.get_instance().shutdown()
-
-
-def get_prompts_for_frame(frame_idx: int) -> list[dict]:
-    """Get all prompts for a specific frame."""
-    return SAM3Service.get_instance().get_prompts_for_frame(frame_idx)
-
-
-def get_all_prompts() -> dict[int, list[dict]]:
-    """Get all prompts for all frames."""
-    return SAM3Service.get_instance().get_all_prompts()
-
-
-def clear_prompts_for_frame(frame_idx: int) -> None:
-    """Clear prompts for a specific frame."""
-    SAM3Service.get_instance().clear_prompts_for_frame(frame_idx)
-
-
-def delete_box_prompts_for_frame(frame_idx: int) -> None:
-    """Delete only bounding box prompts for a specific frame."""
-    SAM3Service.get_instance().delete_box_prompts_for_frame(frame_idx)
-
-
-def add_box_prompt(
-    project_id: int,
-    video_id: int,
-    video_path: Path,
-    frame_idx: int,
-    box: list[float],
-) -> np.ndarray:
-    """Add bounding box prompt and get the segmentation mask."""
-    return SAM3Service.get_instance().add_box_prompt(
-        project_id, video_id, video_path, frame_idx, box
-    )
 
 
 async def segment_all_videos(

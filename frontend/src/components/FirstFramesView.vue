@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideos, getFrameImage, getBbox, type Video, type Bbox } from '@/services/api'
+import { getVideos, getFrameImage, type Video } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,7 +32,6 @@ const pageVideos = computed(() => {
 
 // Per-cell state (Map keyed by video ID)
 const frameImages = ref<Map<number, ImageBitmap>>(new Map())
-const bboxes = ref<Map<number, Bbox | null>>(new Map())
 const cellCanvases = ref<Map<number, HTMLCanvasElement>>(new Map())
 
 // Page numbers for pagination UI (with ellipsis for large counts)
@@ -104,20 +103,15 @@ const loadPageData = async () => {
   // Cleanup old bitmaps
   frameImages.value.forEach(img => img.close())
   frameImages.value.clear()
-  bboxes.value.clear()
 
   try {
-    // Load all frame images and bboxes for current page in parallel
+    // Load all frame images for current page in parallel
     const loadPromises = pageVideos.value.map(async (video) => {
       try {
-        const [frameBlob, bbox] = await Promise.all([
-          getFrameImage(projectId.value, video.id, 0),
-          getBbox(projectId.value, video.id, 0)
-        ])
+        const frameBlob = await getFrameImage(projectId.value, video.id, 0)
 
         const imageBitmap = await createImageBitmap(frameBlob)
         frameImages.value.set(video.id, imageBitmap)
-        bboxes.value.set(video.id, bbox)
 
         // Draw canvas for this video
         nextTick(() => {
@@ -167,21 +161,6 @@ const drawCell = (videoId: number) => {
 
   // Draw the frame image
   ctx.drawImage(image, 0, 0)
-
-  // Draw bounding box if available
-  const bbox = bboxes.value.get(videoId)
-  if (bbox) {
-    const { x1, y1, x2, y2 } = bbox
-    const clampedX1 = Math.max(0, Math.min(x1, canvas.width))
-    const clampedY1 = Math.max(0, Math.min(y1, canvas.height))
-    const clampedX2 = Math.max(0, Math.min(x2, canvas.width))
-    const clampedY2 = Math.max(0, Math.min(y2, canvas.height))
-
-    ctx.strokeStyle = '#22c55e'
-    ctx.lineWidth = 3
-    ctx.setLineDash([])
-    ctx.strokeRect(clampedX1, clampedY1, clampedX2 - clampedX1, clampedY2 - clampedY1)
-  }
 }
 
 // Page navigation

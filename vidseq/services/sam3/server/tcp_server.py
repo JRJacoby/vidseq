@@ -298,27 +298,43 @@ class SAM3TCPServer:
 
         try:
             if cmd_type == "load_model":
+                if self.checkpoint_path is None:
+                    raise RuntimeError("Checkpoint path not set")
                 result, self._segmentor = handle_load_model(self.checkpoint_path)
 
             elif cmd_type == "init_session":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_init_session(cmd, self._segmentor)
 
             elif cmd_type == "add_prompt":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_add_prompt(cmd, self._segmentor)
 
             elif cmd_type == "propagate":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_propagate(cmd, self._segmentor)
 
             elif cmd_type == "generate_training_masks":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_generate_training_masks(cmd, self._segmentor)
 
             elif cmd_type == "reset_frame":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_reset_frame(cmd, self._segmentor)
 
             elif cmd_type == "reset_video":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_reset_video(cmd, self._segmentor)
 
             elif cmd_type == "segment_videos_batch":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_segment_videos_batch(
                     cmd,
                     self._segmentor,
@@ -326,9 +342,13 @@ class SAM3TCPServer:
                 )
 
             elif cmd_type == "close_session":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_close_session(cmd, self._segmentor)
 
             elif cmd_type == "shutdown":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
                 result = handle_shutdown(self._segmentor)
                 self.running = False
 

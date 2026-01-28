@@ -89,16 +89,13 @@ const fps = computed(() => video.value?.fps ?? 30)
 const {
   activeTool,
   currentMask,
-  currentBbox,
   currentPrompts,
   isSegmenting,
   loadFrameData,
   seekToFrame,
   togglePositivePointTool,
   toggleNegativePointTool,
-  toggleBboxTool,
   handlePointComplete,
-  handleBboxComplete,
   handleResetFrame,
   handleResetVideo,
   clearMaskCache,
@@ -258,13 +255,10 @@ onMounted(async () => {
                 :video-height="videoHeight"
                 :active-tool="activeTool"
                 :mask="currentMask"
-                :bbox="currentBbox"
                 :prompts="currentPrompts"
                 :show-mask="showMask"
-                :show-bbox="true"
                 :show-prompts="showPrompts"
                 @point-complete="handlePointComplete"
-                @bbox-complete="handleBboxComplete"
               />
             </div>
           </div>
@@ -323,15 +317,6 @@ onMounted(async () => {
           >
             <span class="tool-icon">⊖</span>
             <span class="tool-label">Negative Point</span>
-          </button>
-          <button
-            class="tool-button bounding-box"
-            :class="{ active: activeTool === 'bounding_box' }"
-            @click="toggleBboxTool"
-            :disabled="isSegmenting || !segmentationIsReady"
-          >
-            <span class="tool-icon">▢</span>
-            <span class="tool-label">Bounding Box</span>
           </button>
           <button
             class="tool-button reset-button"

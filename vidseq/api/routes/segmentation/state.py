@@ -28,12 +28,12 @@ async def reset_frame(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset a frame: clear the mask, bounding box, conditioning frame record, and SAM3 prompts.
+    Reset a frame: clear the mask, bounding box, and SAM3 state for this frame.
     """
-    sam3_service.clear_prompts_for_frame(frame_idx)
-    sam3_service.clear_frame_prompts(project_id, video.id, frame_idx)
+    # Reset in SAM3 (clears mask in HDF5 and conditioning frame in DB)
+    sam3_service.reset_frame(project_id, video.id, project_path, frame_idx)
 
-    # Clear mask from per-video HDF5
+    # Clear mask from per-video HDF5 (belt and suspenders)
     segmentation_service.clear_mask(
         project_path=project_path,
         video_id=video.id,
@@ -42,12 +42,6 @@ async def reset_frame(
 
     # Clear bbox, frame_type, and score from SQLite
     await frame_data_service.clear_frame_data(session, video.id, frame_idx)
-
-    await conditioning_service.remove_conditioning_frame(
-        session=session,
-        video_id=video.id,
-        frame_idx=frame_idx,
-    )
 
     return {"message": "Frame reset"}
 
@@ -62,23 +56,19 @@ async def reset_video(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Reset entire video: clear all masks, conditioning frames, frame type labels, and SAM3 tracking state.
+    Reset entire video: clear all masks, conditioning frames, and SAM3 tracking state.
     """
-    # Clear masks from HDF5 and frame data from SQLite
+    # Reset in SAM3 (clears all masks in HDF5 and conditioning frames in DB)
+    sam3_service.reset_video(project_id, video.id, project_path)
+
+    # Clear frame data from SQLite (bboxes, scores, types)
     await segmentation_service.clear_video(
         project_path=project_path,
         video_id=video.id,
         session=session,
     )
 
-    deleted_count = await conditioning_service.clear_conditioning_frames(
-        session=session,
-        video_id=video.id,
-    )
-
-    sam3_service.reset_state(project_id, video.id)
-
-    return {"message": "Video reset", "conditioning_frames_cleared": deleted_count}
+    return {"message": "Video reset"}
 
 
 @router.get(

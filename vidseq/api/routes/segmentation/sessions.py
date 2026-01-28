@@ -102,6 +102,7 @@ async def preload_segmentation():
 async def init_video_session(
     project_id: int,
     video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
 ):
     """
     Initialize a SAM3 session for a video.
@@ -113,7 +114,7 @@ async def init_video_session(
     video_path = Path(video.path)
 
     try:
-        session_info = sam3_service.init_session(project_id, video.id, video_path)
+        session_info = sam3_service.init_session(project_id, video.id, video_path, project_path)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 

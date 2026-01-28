@@ -151,8 +151,8 @@ export async function runSegmentation(
     projectId: number,
     videoId: number,
     frameIdx: number,
-    type: 'positive_point' | 'negative_point' | 'bounding_box',
-    details: { x: number; y: number } | { x1: number; y1: number; x2: number; y2: number }
+    type: 'positive_point' | 'negative_point',
+    details: { x: number; y: number }
 ): Promise<Blob> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/segment`,
@@ -254,53 +254,6 @@ export async function getScoresDownsampled(
         throw new Error(await getErrorMessage(response, 'Failed to fetch downsampled scores'))
     }
     return response.json()
-}
-
-export interface Bbox {
-    x1: number
-    y1: number
-    x2: number
-    y2: number
-}
-
-export async function getBbox(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): Promise<Bbox | null> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/bbox/${frameIdx}`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch bbox'))
-    }
-    const data = await response.json()
-    return data === null ? null : data as Bbox
-}
-
-export interface BboxBatchItem {
-    frame_idx: number
-    bbox: [number, number, number, number] | null
-}
-
-export interface BboxBatchResponse {
-    bboxes: BboxBatchItem[]
-}
-
-export async function getBboxesBatch(
-    projectId: number,
-    videoId: number,
-    startFrame: number,
-    count: number = 100
-): Promise<BboxBatchResponse> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/bboxes-batch?start_frame=${startFrame}&count=${count}`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch bboxes batch'))
-    }
-    const data = await response.json()
-    return data
 }
 
 export async function getConditioningFrames(
@@ -420,84 +373,6 @@ export async function generateTrainingMasks(
         throw new Error(await getErrorMessage(response, 'Failed to generate training masks'))
     }
     return response.json()
-}
-
-export interface StoredPrompt {
-    type: 'positive_point' | 'negative_point' | 'bounding_box'
-    details: { x: number; y: number } | { x1: number; y1: number; x2: number; y2: number }
-    createdAt: string
-}
-
-export async function getPromptsForFrame(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): Promise<StoredPrompt[]> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts/${frameIdx}`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
-    }
-    const prompts = await response.json()
-    // Map backend format to frontend StoredPrompt format
-    return prompts.map((p: Record<string, any>) => {
-        if (p.type === 'bounding_box') {
-            return {
-                type: 'bounding_box' as const,
-                details: { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 },
-                createdAt: new Date().toISOString(),
-            }
-        }
-        return {
-            type: p.type as 'positive_point' | 'negative_point',
-            details: { x: p.x, y: p.y },
-            createdAt: new Date().toISOString(),
-        }
-    })
-}
-
-interface BackendPrompt {
-    type: string
-    [key: string]: any
-}
-
-type PromptsDict = Record<string, BackendPrompt[]>
-
-export async function getAllPrompts(
-    projectId: number,
-    videoId: number
-): Promise<Map<number, StoredPrompt[]>> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompts`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch prompts'))
-    }
-    const promptsDict: PromptsDict = await response.json()
-    // Convert dict to Map and map backend format to frontend StoredPrompt format
-    const result = new Map<number, StoredPrompt[]>()
-    for (const [frameIdxStr, prompts] of Object.entries(promptsDict)) {
-        const frameIdx = parseInt(frameIdxStr, 10)
-        result.set(
-            frameIdx,
-            prompts.map((p) => {
-                if (p.type === 'bounding_box') {
-                    return {
-                        type: 'bounding_box' as const,
-                        details: { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 },
-                        createdAt: new Date().toISOString(),
-                    }
-                }
-                return {
-                    type: p.type as 'positive_point' | 'negative_point',
-                    details: { x: p.x, y: p.y },
-                    createdAt: new Date().toISOString(),
-                }
-            })
-        )
-    }
-    return result
 }
 
 export interface YOLOModelStatus {

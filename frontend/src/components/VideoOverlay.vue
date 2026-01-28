@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import type { StoredPrompt } from '@/services/api'
 import type { ToolType } from '@/composables/useSegmentation'
+
+// Simple prompt type for local/ephemeral prompts
+export interface LocalPrompt {
+  x: number
+  y: number
+  type: 'positive_point' | 'negative_point'
+}
 
 const props = defineProps<{
   videoWidth: number
   videoHeight: number
   activeTool: ToolType
   mask: ImageBitmap | null
-  prompts: StoredPrompt[]
+  prompts: LocalPrompt[]
   showMask?: boolean
   showPrompts?: boolean
 }>()
@@ -78,32 +84,29 @@ function render() {
   // Draw prompts (points only)
   if (props.showPrompts === false) return
   for (const prompt of props.prompts) {
-    if (prompt.type === 'positive_point' || prompt.type === 'negative_point') {
-      const details = prompt.details as { x: number; y: number }
-      const px = details.x * canvas.width
-      const py = details.y * canvas.height
-      const radius = 8
+    const px = prompt.x * canvas.width
+    const py = prompt.y * canvas.height
+    const radius = 8
 
-      ctx.beginPath()
-      ctx.arc(px, py, radius, 0, Math.PI * 2)
-      ctx.fillStyle = prompt.type === 'positive_point' ? '#22c55e' : '#ef4444'
-      ctx.fill()
-      ctx.strokeStyle = '#fff'
-      ctx.lineWidth = 2
-      ctx.setLineDash([])
-      ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(px, py, radius, 0, Math.PI * 2)
+    ctx.fillStyle = prompt.type === 'positive_point' ? '#22c55e' : '#ef4444'
+    ctx.fill()
+    ctx.strokeStyle = '#fff'
+    ctx.lineWidth = 2
+    ctx.setLineDash([])
+    ctx.stroke()
 
-      ctx.strokeStyle = '#fff'
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      ctx.moveTo(px - 4, py)
-      ctx.lineTo(px + 4, py)
-      if (prompt.type === 'positive_point') {
-        ctx.moveTo(px, py - 4)
-        ctx.lineTo(px, py + 4)
-      }
-      ctx.stroke()
+    ctx.strokeStyle = '#fff'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(px - 4, py)
+    ctx.lineTo(px + 4, py)
+    if (prompt.type === 'positive_point') {
+      ctx.moveTo(px, py - 4)
+      ctx.lineTo(px, py + 4)
     }
+    ctx.stroke()
   }
 
   // Draw pending point

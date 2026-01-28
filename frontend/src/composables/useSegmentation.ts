@@ -2,32 +2,24 @@ import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
     getMask,
     getMasksBatch,
-    getBbox,
-    getBboxesBatch,
     runSegmentation,
     resetFrame,
     resetVideo,
-    getPromptsForFrame,
-    type StoredPrompt,
-    type Bbox,
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
-export type ToolType = 'none' | 'positive_point' | 'negative_point' | 'bounding_box'
+export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
     currentMask: Ref<ImageBitmap | null>
-    currentBbox: Ref<Bbox | null>
-    currentPrompts: Ref<StoredPrompt[]>
+    currentPrompts: Ref<Array<{ x: number; y: number; type: 'positive_point' | 'negative_point' }>>
     isSegmenting: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
     toggleNegativePointTool: () => void
-    toggleBboxTool: () => void
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
-    handleBboxComplete: (bbox: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
     clearMaskCache: (startFrame?: number, endFrame?: number) => void
@@ -47,38 +39,22 @@ export function useSegmentation(
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
-    const currentBbox = ref<Bbox | null>(null)
     const isSegmenting = ref(false)
     const intendedFrameIdx = ref(0)
 
-    const prompts = ref<Map<number, StoredPrompt[]>>(new Map())
-    
+    // Local prompts tracking (not persisted to server)
+    const localPrompts = ref<Map<number, Array<{ x: number; y: number; type: 'positive_point' | 'negative_point' }>>>(new Map())
+
     const currentPrompts = computed(() => {
-        return prompts.value.get(currentFrameIdx.value) || []
+        return localPrompts.value.get(currentFrameIdx.value) || []
     })
-    
-    const fetchPromptsForFrame = async (frameIdx: number) => {
-        if (!projectId.value || !videoId.value) return
-        try {
-            const fetchedPrompts = await getPromptsForFrame(
-                projectId.value,
-                videoId.value,
-                frameIdx
-            )
-            prompts.value.set(frameIdx, fetchedPrompts)
-        } catch (e) {
-            console.error('Failed to fetch prompts:', e)
-            prompts.value.set(frameIdx, [])
-        }
-    }
 
     let debounceTimeout: number | null = null
-    
+
     const maskCache = new LruCache<number, ImageBitmap>(
         MASK_CACHE_MAX_SIZE,
         (bitmap) => bitmap.close()
     )
-    const bboxCache = new LruCache<number, Bbox | null>(MASK_CACHE_MAX_SIZE)
     let isPrefetching = false
     let prefetchedUpTo = -1
     let animationFrameId: number | null = null
@@ -96,24 +72,16 @@ export function useSegmentation(
     const prefetchMasks = async (startFrame: number) => {
         if (!projectId.value || !videoId.value || isPrefetching) return
         if (startFrame <= prefetchedUpTo) return
-        
+
         isPrefetching = true
         try {
-            const [maskResponse, bboxResponse] = await Promise.all([
-                getMasksBatch(
-                    projectId.value,
-                    videoId.value,
-                    startFrame,
-                    PREFETCH_BATCH_SIZE
-                ),
-                getBboxesBatch(
-                    projectId.value,
-                    videoId.value,
-                    startFrame,
-                    PREFETCH_BATCH_SIZE
-                )
-            ])
-            
+            const maskResponse = await getMasksBatch(
+                projectId.value,
+                videoId.value,
+                startFrame,
+                PREFETCH_BATCH_SIZE
+            )
+
             for (const item of maskResponse.masks) {
                 if (!maskCache.has(item.frame_idx)) {
                     const blob = base64ToBlob(item.png_base64)
@@ -121,19 +89,7 @@ export function useSegmentation(
                     maskCache.set(item.frame_idx, bitmap)
                 }
             }
-            
-            for (const item of bboxResponse.bboxes) {
-                if (!bboxCache.has(item.frame_idx)) {
-                    const bboxValue = item.bbox ? {
-                        x1: item.bbox[0],
-                        y1: item.bbox[1],
-                        x2: item.bbox[2],
-                        y2: item.bbox[3],
-                    } : null
-                    bboxCache.set(item.frame_idx, bboxValue)
-                }
-            }
-            
+
             if (maskResponse.masks.length > 0) {
                 prefetchedUpTo = maskResponse.masks[maskResponse.masks.length - 1]!.frame_idx
             }
@@ -148,21 +104,16 @@ export function useSegmentation(
         if (!projectId.value || !videoId.value) return
 
         const cachedMask = maskCache.get(frameIdx)
-        const cachedBbox = bboxCache.get(frameIdx)
 
         if (cachedMask !== undefined) {
             if (frameIdx === intendedFrameIdx.value) {
                 currentMask.value = cachedMask
-                currentBbox.value = cachedBbox ?? null
             }
             return
         }
 
         try {
-            const [maskBlob, bbox] = await Promise.all([
-                getMask(projectId.value, videoId.value, frameIdx),
-                getBbox(projectId.value, videoId.value, frameIdx)
-            ])
+            const maskBlob = await getMask(projectId.value, videoId.value, frameIdx)
 
             if (frameIdx !== intendedFrameIdx.value) {
                 return
@@ -170,10 +121,8 @@ export function useSegmentation(
 
             const bitmap = await createImageBitmap(maskBlob)
             maskCache.set(frameIdx, bitmap)
-            bboxCache.set(frameIdx, bbox)
 
             currentMask.value = bitmap
-            currentBbox.value = bbox
         } catch (e) {
             console.error('Failed to load frame data:', e)
         }
@@ -185,10 +134,6 @@ export function useSegmentation(
 
     const toggleNegativePointTool = () => {
         activeTool.value = activeTool.value === 'negative_point' ? 'none' : 'negative_point'
-    }
-
-    const toggleBboxTool = () => {
-        activeTool.value = activeTool.value === 'bounding_box' ? 'none' : 'bounding_box'
     }
 
     const seekToFrame = (frameIdx: number) => {
@@ -212,47 +157,15 @@ export function useSegmentation(
 
             const bitmap = await createImageBitmap(maskBlob)
             currentMask.value = bitmap
-            
-            const bbox = await getBbox(projectId.value, videoId.value, currentFrameIdx.value)
-            currentBbox.value = bbox
-            
+
             maskCache.set(currentFrameIdx.value, bitmap)
-            bboxCache.set(currentFrameIdx.value, bbox)
-            
-            await fetchPromptsForFrame(currentFrameIdx.value)
+
+            // Add to local prompts
+            const framePrompts = localPrompts.value.get(currentFrameIdx.value) || []
+            framePrompts.push({ x: point.x, y: point.y, type: point.type })
+            localPrompts.value.set(currentFrameIdx.value, framePrompts)
         } catch (e) {
             console.error('Failed to add point:', e)
-        } finally {
-            isSegmenting.value = false
-        }
-    }
-
-    const handleBboxComplete = async (bbox: { x1: number; y1: number; x2: number; y2: number }) => {
-        if (!projectId.value || !videoId.value) return
-
-        isSegmenting.value = true
-
-        try {
-            const maskBlob = await runSegmentation(
-                projectId.value,
-                videoId.value,
-                currentFrameIdx.value,
-                'bounding_box',
-                { x1: bbox.x1, y1: bbox.y1, x2: bbox.x2, y2: bbox.y2 }
-            )
-
-            const bitmap = await createImageBitmap(maskBlob)
-            currentMask.value = bitmap
-
-            const bboxResult = await getBbox(projectId.value, videoId.value, currentFrameIdx.value)
-            currentBbox.value = bboxResult
-
-            maskCache.set(currentFrameIdx.value, bitmap)
-            bboxCache.set(currentFrameIdx.value, bboxResult)
-
-            await fetchPromptsForFrame(currentFrameIdx.value)
-        } catch (e) {
-            console.error('Failed to add bbox:', e)
         } finally {
             isSegmenting.value = false
         }
@@ -264,10 +177,8 @@ export function useSegmentation(
         try {
             await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
             maskCache.delete(currentFrameIdx.value)
-            bboxCache.delete(currentFrameIdx.value)
+            localPrompts.value.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
-            // Refresh prompts after reset (should be empty)
-            await fetchPromptsForFrame(currentFrameIdx.value)
         } catch (e) {
             console.error('Failed to reset frame:', e)
         }
@@ -278,33 +189,26 @@ export function useSegmentation(
 
         try {
             await resetVideo(projectId.value, videoId.value)
-            prompts.value.clear()
+            localPrompts.value.clear()
             maskCache.clear()
-            bboxCache.clear()
             prefetchedUpTo = -1
             currentMask.value = null
-            currentBbox.value = null
         } catch (e) {
             console.error('Failed to reset video:', e)
         }
     }
 
-    watch(currentFrameIdx, async (newFrameIdx, oldFrameIdx) => {
+    watch(currentFrameIdx, async (newFrameIdx) => {
         if (newFrameIdx === intendedFrameIdx.value) {
             return
         }
-        
+
         intendedFrameIdx.value = newFrameIdx
-        
+
         if (isPlaying.value) {
             return
         }
-        
-        // Fetch prompts for the new frame
-        if (!prompts.value.has(newFrameIdx)) {
-            await fetchPromptsForFrame(newFrameIdx)
-        }
-        
+
         if (debounceTimeout) {
             clearTimeout(debounceTimeout)
         }
@@ -320,10 +224,8 @@ export function useSegmentation(
 
         if (frameIdx !== lastDisplayedFrame) {
             const cachedMask = maskCache.get(frameIdx)
-            const cachedBbox = bboxCache.get(frameIdx)
-            if (cachedMask !== undefined && cachedBbox !== undefined) {
+            if (cachedMask !== undefined) {
                 currentMask.value = cachedMask
-                currentBbox.value = cachedBbox
                 lastDisplayedFrame = frameIdx
             }
 
@@ -351,9 +253,8 @@ export function useSegmentation(
     })
 
     watch(videoId, () => {
-        prompts.value.clear()
+        localPrompts.value.clear()
         maskCache.clear()
-        bboxCache.clear()
         prefetchedUpTo = -1
     })
 
@@ -361,10 +262,6 @@ export function useSegmentation(
         if (pid && vid !== null && frameIdx !== undefined && !isPlaying.value) {
             await prefetchMasks(frameIdx)
             prefetchMasks(frameIdx + PREFETCH_BATCH_SIZE)
-            // Fetch prompts for the current frame
-            if (!prompts.value.has(frameIdx)) {
-                await fetchPromptsForFrame(frameIdx)
-            }
         }
     }, { immediate: true })
 
@@ -382,11 +279,9 @@ export function useSegmentation(
         if (startFrame !== undefined && endFrame !== undefined) {
             for (let i = startFrame; i <= endFrame; i++) {
                 maskCache.delete(i)
-                bboxCache.delete(i)
             }
         } else {
             maskCache.clear()
-            bboxCache.clear()
         }
         prefetchedUpTo = -1
     }
@@ -394,16 +289,13 @@ export function useSegmentation(
     return {
         activeTool,
         currentMask,
-        currentBbox,
         currentPrompts,
         isSegmenting,
         loadFrameData,
         seekToFrame,
         togglePositivePointTool,
         toggleNegativePointTool,
-        toggleBboxTool,
         handlePointComplete,
-        handleBboxComplete,
         handleResetFrame,
         handleResetVideo,
         clearMaskCache,
