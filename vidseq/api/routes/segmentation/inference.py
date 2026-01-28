@@ -13,7 +13,6 @@ from vidseq.models.video import Video
 from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
 from vidseq.services import (
     frame_data_service,
-    mask_storage,
     sam3_service,
     segmentation_service,
 )
@@ -53,15 +52,7 @@ async def run_segmentation(
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    mask_storage.save_mask(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=segment_request.frame_idx,
-        mask=mask,
-        num_frames=video.num_frames,
-        height=video.height,
-        width=video.width,
-    )
+    # Note: mask is already saved to HDF5 by the TCP worker
 
     # Update mask presence index
     has_content = bool(np.any(mask > 0))
