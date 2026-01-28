@@ -93,14 +93,180 @@ FUTURE EXTENSIONS
 
 from __future__ import annotations
 
+import dataclasses
 import sys
+
 sys.path.insert(0, "/n/groups/datta/john/repos/sam3")
 
 import cv2
 import numpy as np
 import torch
 
-from custom_sam3 import preprocess_image, encode, track
+
+# =============================================================================
+# SAM3 inference primitives (from custom_sam3.py)
+# =============================================================================
+
+
+def preprocess_image(
+    image: np.ndarray,
+    *,
+    bgr: bool = False,
+) -> torch.Tensor:
+    """Prepare a raw image for the SAM3 image encoder.
+
+    Steps:
+        1. Convert BGR → RGB if needed.
+        2. Resize to 1008×1008 (the model's expected input size).
+        3. Normalize pixel values from [0, 255] → [0.0, 1.0].
+        4. Standardize with mean=0.5, std=0.5 per channel.
+
+    Args:
+        image: HWC uint8 numpy array (RGB or BGR).
+        bgr: If True, the input is in BGR channel order and will be
+             flipped to RGB.
+
+    Returns:
+        Float32 tensor of shape (3, 1008, 1008), standardized.
+    """
+    if bgr:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    resized = cv2.resize(image, (1008, 1008), interpolation=cv2.INTER_LINEAR)
+
+    tensor = torch.from_numpy(resized).permute(2, 0, 1).float() / 255.0
+
+    mean = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32).view(3, 1, 1)
+    std = torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32).view(3, 1, 1)
+    tensor = (tensor - mean) / std
+
+    return tensor
+
+
+def encode(
+    backbone: torch.nn.Module,
+    image: torch.Tensor,
+    captions: list[str],
+) -> dict:
+    """Run the SAM3 VL backbone: image encoder + FPN neck + text encoder.
+
+    Args:
+        backbone: SAM3VLBackbone instance.
+        image: Preprocessed float32 tensor, either (3, H, W) for a single
+               image or (B, 3, H, W) for a batch.
+        captions: List of text prompts (e.g. ["a dog"]).
+
+    Returns:
+        Dict with keys: backbone_fpn, vision_pos_enc, vision_features,
+        language_features, language_mask, sam2_backbone_out.
+    """
+    if image.ndim == 3:
+        image = image.unsqueeze(0)
+
+    with torch.inference_mode():
+        output = backbone.forward_image(image)
+        device = output["vision_features"].device
+        output.update(backbone.forward_text(captions, device=device))
+
+    return output
+
+
+@dataclasses.dataclass
+class TrackResult:
+    """Output of one frame through the SAM3 tracker."""
+
+    masks: torch.Tensor          # (B, 1, H, W) low-res mask logits
+    masks_high_res: torch.Tensor # (B, 1, H_hi, W_hi) high-res mask logits
+    obj_ptr: torch.Tensor        # (B, C) object pointer for identity tracking
+    score: torch.Tensor          # (B, 1) object-presence score logits
+    frame_output: dict           # full current_out — store in memory dict
+
+
+def track(
+    tracker: torch.nn.Module,
+    backbone_out: dict,
+    image: torch.Tensor,
+    frame_idx: int,
+    memory: dict,
+    *,
+    is_first_frame: bool = False,
+    point_coords: torch.Tensor | None = None,
+    point_labels: torch.Tensor | None = None,
+    mask_input: torch.Tensor | None = None,
+    num_frames: int = 1000,
+) -> TrackResult:
+    """Run one video frame through the SAM3 tracker with memory attention.
+
+    Args:
+        tracker: Sam3TrackerBase (or subclass) instance.
+        backbone_out: Dict returned by encode(). The sam2_backbone_out key
+                      is extracted automatically.
+        image: Preprocessed image tensor — (3, H, W) or (B, 3, H, W).
+        frame_idx: Sequential frame number (0, 1, 2, …).
+        memory: Mutable dict with keys "cond_frame_outputs" and
+                "non_cond_frame_outputs".
+        is_first_frame: If True, memory attention is skipped and the frame
+                        is stored as a conditioning frame.
+        point_coords: Optional point prompts, shape (B, P, 2).
+        point_labels: Optional point labels, shape (B, P). 1=fg, 0=bg.
+        mask_input: Optional mask prompt, shape (B, 1, H, W).
+        num_frames: Total number of frames in the video.
+
+    Returns:
+        TrackResult with masks, object pointer, score, and frame_output.
+    """
+    # Use sam2_backbone_out (separate FPN weights for tracking)
+    sam2_out = backbone_out["sam2_backbone_out"]
+
+    # Clone FPN features to avoid mutating the original
+    fpn = [x.clone() for x in sam2_out["backbone_fpn"]]
+    pos = [x.clone() for x in sam2_out["vision_pos_enc"]]
+
+    # Apply conv_s0/conv_s1 projections for mask decoder
+    fpn[0] = tracker.sam_mask_decoder.conv_s0(fpn[0])
+    fpn[1] = tracker.sam_mask_decoder.conv_s1(fpn[1])
+
+    # Reshape from (B, C, H, W) to (HW, B, C) for track_step
+    feat_sizes = [(x.shape[-2], x.shape[-1]) for x in pos]
+    vision_feats = [x.flatten(2).permute(2, 0, 1) for x in fpn]
+    vision_pos_embeds = [x.flatten(2).permute(2, 0, 1) for x in pos]
+
+    if image.ndim == 3:
+        image = image.unsqueeze(0)
+
+    point_inputs = None
+    if point_coords is not None:
+        point_inputs = {
+            "point_coords": point_coords,
+            "point_labels": point_labels,
+        }
+
+    with torch.inference_mode():
+        current_out = tracker.track_step(
+            frame_idx=frame_idx,
+            is_init_cond_frame=is_first_frame,
+            current_vision_feats=vision_feats,
+            current_vision_pos_embeds=vision_pos_embeds,
+            feat_sizes=feat_sizes,
+            image=image,
+            point_inputs=point_inputs,
+            mask_inputs=mask_input,
+            output_dict=memory,
+            num_frames=num_frames,
+        )
+
+    return TrackResult(
+        masks=current_out["pred_masks"],
+        masks_high_res=current_out["pred_masks_high_res"],
+        obj_ptr=current_out["obj_ptr"],
+        score=current_out["object_score_logits"],
+        frame_output=current_out,
+    )
+
+
+# =============================================================================
+# StreamingSegmentor class
+# =============================================================================
 
 
 class StreamingSegmentor:
