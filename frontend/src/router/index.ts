@@ -10,6 +10,7 @@ import FirstFramesView from '../components/FirstFramesView.vue'
 import PCAView from '../components/PCAView.vue'
 import Alignment from '../components/Alignment.vue'
 import ARHMMView from '../components/ARHMMView.vue'
+import DetectorTraining from '../components/DetectorTraining.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -67,6 +68,11 @@ const router = createRouter({
           path: 'arhmm',
           name: 'arhmm',
           component: ARHMMView
+        },
+        {
+          path: 'detector',
+          name: 'detector',
+          component: DetectorTraining
         }
       ]
     }
