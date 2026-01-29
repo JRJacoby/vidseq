@@ -439,3 +439,96 @@ class DetectorService:
 
         logger.info(f"Gathered {len(frames)} training frames from {project_path}")
         return frames
+
+    def _apply_to_training_data(
+        self,
+        project_path: Path,
+        model: "DINOv2Detector",
+    ) -> None:
+        """Apply trained detector to all training frames and save masks."""
+        logger.info("Applying detector to training data...")
+
+        all_frames = self._gather_training_frames(project_path)
+        self._training_progress.apply_total = len(all_frames)
+        self._training_progress.apply_current = 0
+
+        model.eval()
+
+        # Group frames by video for efficient HDF5 access
+        frames_by_video: dict[int, list[tuple[Path, int]]] = {}
+        for video_path, video_id, frame_idx in all_frames:
+            if video_id not in frames_by_video:
+                frames_by_video[video_id] = []
+            frames_by_video[video_id].append((video_path, frame_idx))
+
+        with torch.no_grad():
+            for video_id, frame_list in frames_by_video.items():
+                h5_path = project_path / "masks" / f"{video_id}.h5"
+
+                with h5py.File(h5_path, "a") as h5_file:
+                    # Get original mask shape
+                    mask_shape = h5_file["masks"].shape  # (N, H, W)
+                    num_frames, orig_h, orig_w = mask_shape
+
+                    # Create or get detector_masks dataset
+                    if "detector_masks" not in h5_file:
+                        h5_file.create_dataset(
+                            "detector_masks",
+                            shape=mask_shape,
+                            dtype=np.uint8,
+                            chunks=(1, orig_h, orig_w),
+                            compression="gzip",
+                        )
+                    detector_masks = h5_file["detector_masks"]
+
+                    for video_path, frame_idx in frame_list:
+                        # Load and preprocess frame
+                        cap = cv2.VideoCapture(str(video_path))
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                        ret, frame = cap.read()
+                        cap.release()
+
+                        if not ret:
+                            continue
+
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        h, w = frame.shape[:2]
+
+                        # Resize preserving aspect ratio
+                        target_size = 518
+                        scale = target_size / max(h, w)
+                        new_h, new_w = int(h * scale), int(w * scale)
+                        frame_resized = cv2.resize(frame, (new_w, new_h))
+
+                        # Trim to multiple of 14
+                        trim_h = (frame_resized.shape[0] // 14) * 14
+                        trim_w = (frame_resized.shape[1] // 14) * 14
+                        frame_resized = frame_resized[:trim_h, :trim_w]
+
+                        # To tensor
+                        frame_tensor = (
+                            torch.from_numpy(frame_resized)
+                            .permute(2, 0, 1)
+                            .float()
+                            / 255.0
+                        )
+                        frame_tensor = frame_tensor.unsqueeze(0).to("cuda")
+
+                        # Inference
+                        logits = model(frame_tensor)
+                        mask_pred = (torch.sigmoid(logits) > 0.5).float()
+
+                        # Resize back to original size
+                        mask_pred = torch.nn.functional.interpolate(
+                            mask_pred,
+                            size=(orig_h, orig_w),
+                            mode="nearest",
+                        )
+                        mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
+
+                        # Save to HDF5
+                        detector_masks[frame_idx] = mask_np
+
+                        self._training_progress.apply_current += 1
+
+        logger.info(f"Applied detector to {len(all_frames)} training frames")
