@@ -12,8 +12,18 @@ import h5py
 import numpy as np
 
 from vidseq.services.sam3.frame_source import VideoFrameSource
-from vidseq.services.sam3.streaming_segmentor import StreamingSegmentor
 from vidseq.services.sam3.utils import encode_mask_rle
+
+# Backend selection - can be switched via environment variable
+import os
+SAM_BACKEND = os.environ.get("SAM_BACKEND", "sam3").lower()
+
+if SAM_BACKEND == "sam2":
+    from vidseq.services.sam2.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
+    print(f"[SAM Worker] Using SAM2 backend")
+else:
+    from vidseq.services.sam3.streaming_segmentor import StreamingSegmentor
+    print(f"[SAM Worker] Using SAM3 backend")
 
 
 @dataclass
@@ -67,7 +77,9 @@ def _ensure_mask_dataset(
 
     mask_path.parent.mkdir(parents=True, exist_ok=True)
 
+    print(f"[DEBUG _ensure_mask_dataset] Opening {mask_path}, exists before={mask_path.exists()}")
     mask_file = h5py.File(mask_path, "a")
+    print(f"[DEBUG _ensure_mask_dataset] Opened, exists after={mask_path.exists()}, filename={mask_file.filename}")
 
     # Binary masks for display (full resolution)
     if "masks" not in mask_file:
@@ -365,6 +377,19 @@ def handle_generate_training_masks(
         progress_interval=50,
     )
 
+    # Flush HDF5 to ensure writes are visible to readers
+    resources = _video_resources[video_id]
+    resources.mask_file.flush()
+
+    # DEBUG: Verify masks were written
+    if frame_indices:
+        sample_idx = frame_indices[0]
+        mask_data = resources.mask_dataset[sample_idx]
+        print(f"[DEBUG] After propagate: frame {sample_idx} mask sum={int(mask_data.sum())}, "
+              f"shape={mask_data.shape}, dtype={mask_data.dtype}, "
+              f"min={mask_data.min()}, max={mask_data.max()}")
+        print(f"[DEBUG] HDF5 file path: {resources.mask_file.filename}")
+
     return {
         "type": "generate_training_masks_result",
         "status": "ok",
@@ -415,13 +440,14 @@ def handle_reset_video(
     """Reset entire video (clear all masks and memory).
 
     Args:
-        params: Command params with video_id
+        params: Command params with video_id, project_path
         segmentor: StreamingSegmentor instance
 
     Returns:
         Response dict
     """
     video_id = params["video_id"]
+    project_path = Path(params["project_path"])
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -430,12 +456,46 @@ def handle_reset_video(
         # Close StreamingSegmentor session
         segmentor.close_video(str(video_id))
 
-        # Clear all masks and logits in HDF5
         resources = _video_resources[video_id]
-        resources.mask_dataset[...] = 0
-        resources.logits_dataset[...] = 0.0
 
-        # Don't close file handles - session may be reopened
+        # Get dimensions before closing
+        num_frames, height, width = resources.mask_dataset.shape
+        mask_path = _get_mask_path(project_path, video_id)
+
+        print(f"[DEBUG reset_video] Before close: mask_path={mask_path}, exists={mask_path.exists()}")
+
+        # Close HDF5 file and delete it
+        resources.mask_file.close()
+
+        print(f"[DEBUG reset_video] After close: mask_path exists={mask_path.exists()}")
+
+        if mask_path.exists():
+            mask_path.unlink()
+            print(f"[DEBUG reset_video] After unlink: mask_path exists={mask_path.exists()}")
+
+        # Recreate empty HDF5 file so session remains valid
+        mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
+            mask_path, num_frames, height, width
+        )
+
+        print(f"[DEBUG reset_video] After _ensure_mask_dataset: mask_path exists={mask_path.exists()}")
+        print(f"[DEBUG reset_video] mask_file.filename={mask_file.filename}")
+
+        resources.mask_file = mask_file
+        resources.mask_dataset = mask_dataset
+        resources.logits_dataset = logits_dataset
+
+        # Re-open StreamingSegmentor session with fresh state
+        segmentor.open_video(
+            video_id=str(video_id),
+            frames=resources.frame_source,
+            masks=mask_dataset,
+            logits=logits_dataset,
+            frame_dims=(height, width),
+            cond_frame_indices=set(),  # No conditioning frames after reset
+        )
+
+        print(f"[DEBUG reset_video] Complete. Final mask_path exists={mask_path.exists()}")
 
     return {
         "type": "reset_video_result",
