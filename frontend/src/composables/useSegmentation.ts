@@ -6,6 +6,7 @@ import {
     refineMaskMultiPoint,
     resetFrame,
     resetVideo,
+    getDetectorMask,
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
@@ -36,7 +37,8 @@ export function useSegmentation(
     currentFrameIdx: Ref<number>,
     isPlaying: Ref<boolean> = ref(false),
     videoRef: Ref<HTMLVideoElement | null> = ref(null),
-    fps: Ref<number> = ref(30)
+    fps: Ref<number> = ref(30),
+    maskViewMode: Ref<'tracker' | 'detector'> = ref('tracker'),
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
@@ -101,6 +103,20 @@ export function useSegmentation(
         }
     }
 
+    const fetchMaskForFrame = async (frameIdx: number): Promise<Blob | null> => {
+        if (!projectId.value || !videoId.value) return null
+
+        try {
+            if (maskViewMode.value === 'detector') {
+                return await getDetectorMask(projectId.value, videoId.value, frameIdx)
+            } else {
+                return await getMask(projectId.value, videoId.value, frameIdx)
+            }
+        } catch {
+            return null
+        }
+    }
+
     const loadFrameData = async (frameIdx: number) => {
         if (!projectId.value || !videoId.value) return
 
@@ -114,16 +130,19 @@ export function useSegmentation(
         }
 
         try {
-            const maskBlob = await getMask(projectId.value, videoId.value, frameIdx)
+            const maskBlob = await fetchMaskForFrame(frameIdx)
 
             if (frameIdx !== intendedFrameIdx.value) {
                 return
             }
 
-            const bitmap = await createImageBitmap(maskBlob)
-            maskCache.set(frameIdx, bitmap)
-
-            currentMask.value = bitmap
+            if (maskBlob) {
+                const bitmap = await createImageBitmap(maskBlob)
+                maskCache.set(frameIdx, bitmap)
+                currentMask.value = bitmap
+            } else {
+                currentMask.value = null
+            }
         } catch (e) {
             console.error('Failed to load frame data:', e)
         }
@@ -277,6 +296,13 @@ export function useSegmentation(
         localPrompts.value.clear()
         maskCache.clear()
         prefetchedUpTo = -1
+    })
+
+    // Clear cache and reload when mask view mode changes
+    watch(maskViewMode, () => {
+        maskCache.clear()
+        prefetchedUpTo = -1
+        loadFrameData(currentFrameIdx.value)
     })
 
     watch([projectId, videoId, currentFrameIdx], async ([pid, vid, frameIdx]) => {
