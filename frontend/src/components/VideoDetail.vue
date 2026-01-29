@@ -114,7 +114,7 @@ const {
   handleResetFrame,
   handleResetVideo,
   clearMaskCache,
-} = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps)
+} = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps, maskViewMode)
 
 const {
   maskedRanges,
