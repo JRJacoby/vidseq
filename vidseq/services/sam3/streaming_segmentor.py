@@ -444,8 +444,13 @@ class StreamingSegmentor:
             (self.INPUT_SIZE, self.INPUT_SIZE),
             interpolation=cv2.INTER_NEAREST
         )
-        mask_tensor = torch.from_numpy(mask_resized > 0).float()
+        # Use same binarization threshold as _encode_stored_mask (> 127)
+        mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
         mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)  # (1, 1, H, W)
+
+        # Determine if this is a bootstrap frame (no existing memory)
+        has_memory = bool(memory["cond_frame_outputs"]) or bool(memory["non_cond_frame_outputs"])
+        is_first_frame = not has_memory
 
         # Run tracking with mask as input prompt
         result = track(
@@ -455,7 +460,7 @@ class StreamingSegmentor:
             frame_idx=frame_idx,
             memory=memory,
             mask_input=mask_tensor,
-            is_first_frame=(frame_idx == 0),
+            is_first_frame=is_first_frame,
             run_mem_encoder=True,
         )
 
