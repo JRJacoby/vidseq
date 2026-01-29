@@ -21,7 +21,8 @@ class VideoResources:
     """File handles for an open video session."""
     frame_source: VideoFrameSource
     mask_file: h5py.File
-    mask_dataset: Any  # h5py.Dataset
+    mask_dataset: Any  # h5py.Dataset - binary masks (uint8)
+    logits_dataset: Any  # h5py.Dataset - low-res logits (float32) for refinement
 
 
 # Global state managed by the worker
@@ -55,16 +56,20 @@ def _ensure_mask_dataset(
     num_frames: int,
     height: int,
     width: int,
-) -> tuple[h5py.File, Any]:
-    """Open or create HDF5 mask file and dataset.
+) -> tuple[h5py.File, Any, Any]:
+    """Open or create HDF5 mask file and datasets.
 
     Returns:
-        (h5py.File, dataset)
+        (h5py.File, mask_dataset, logits_dataset)
     """
+    # SAM3 low-res output size for logits (1008/3.5 = 288)
+    LOGITS_SIZE = 288
+
     mask_path.parent.mkdir(parents=True, exist_ok=True)
 
     mask_file = h5py.File(mask_path, "a")
 
+    # Binary masks for display (full resolution)
     if "masks" not in mask_file:
         mask_file.create_dataset(
             "masks",
@@ -74,7 +79,17 @@ def _ensure_mask_dataset(
             fillvalue=0,
         )
 
-    return mask_file, mask_file["masks"]
+    # Low-res logits for refinement (256x256)
+    if "logits" not in mask_file:
+        mask_file.create_dataset(
+            "logits",
+            shape=(num_frames, LOGITS_SIZE, LOGITS_SIZE),
+            dtype=np.float32,
+            chunks=(1, LOGITS_SIZE, LOGITS_SIZE),
+            fillvalue=0.0,
+        )
+
+    return mask_file, mask_file["masks"], mask_file["logits"]
 
 
 def handle_init_session(
@@ -113,9 +128,9 @@ def handle_init_session(
     # Open frame source
     frame_source = VideoFrameSource(video_path)
 
-    # Open/create mask file
+    # Open/create mask file with both masks and logits datasets
     mask_path = _get_mask_path(project_path, video_id)
-    mask_file, mask_dataset = _ensure_mask_dataset(
+    mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
         mask_path, num_frames, height, width
     )
 
@@ -124,6 +139,7 @@ def handle_init_session(
         frame_source=frame_source,
         mask_file=mask_file,
         mask_dataset=mask_dataset,
+        logits_dataset=logits_dataset,
     )
 
     # Initialize StreamingSegmentor session
@@ -131,6 +147,7 @@ def handle_init_session(
         video_id=str(video_id),
         frames=frame_source,
         masks=mask_dataset,
+        logits=logits_dataset,
         frame_dims=(height, width),
         cond_frame_indices=cond_frame_indices,
     )
@@ -177,6 +194,10 @@ def handle_add_prompt(
     px = x * width
     py = y * height
 
+    # Get mask before for comparison
+    mask_before = np.array(resources.mask_dataset[frame_idx])
+    before_sum = int(mask_before.sum())
+
     # Run segmentation
     segmentor.add_point_prompt(
         video_id=str(video_id),
@@ -185,11 +206,86 @@ def handle_add_prompt(
         label=label,
     )
 
-    # Read back the mask for response
+    # Flush HDF5 to ensure write is visible, then read back the mask
+    resources.mask_file.flush()
     mask = resources.mask_dataset[frame_idx]
+    after_sum = int(mask.sum())
+
+    print(f"[SAM3 Worker] add_prompt frame={frame_idx} label={label} "
+          f"point=({px:.1f}, {py:.1f}) mask_sum: {before_sum} -> {after_sum}")
 
     return {
         "type": "add_prompt_result",
+        "status": "ok",
+        "mask_rle": encode_mask_rle(mask),
+        "mask_shape": mask.shape,
+        "mask_dtype": str(mask.dtype),
+    }
+
+
+def handle_refine_mask(
+    params: dict,
+    segmentor: StreamingSegmentor,
+) -> dict:
+    """Refine an existing mask with point prompt(s).
+
+    Args:
+        params: Command params with video_id, frame_idx, and either:
+                - Single point: x, y, label (backward compat)
+                - Multiple points: points [{x, y}, ...], labels [int, ...]
+        segmentor: StreamingSegmentor instance
+
+    Returns:
+        Response dict with mask_rle
+    """
+    video_id = params["video_id"]
+    frame_idx = params["frame_idx"]
+
+    if segmentor is None:
+        raise RuntimeError("Model not loaded")
+
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+    height, width = resources.mask_dataset.shape[1:]
+
+    # Support both single point (x, y, label) and arrays (points, labels)
+    if "points" in params:
+        # New multi-point format
+        points = params["points"]  # List of {x, y}
+        labels = params["labels"]  # List of int
+        locations = [(p["x"] * width, p["y"] * height) for p in points]
+    else:
+        # Legacy single point format
+        x = params["x"]  # normalized [0, 1]
+        y = params["y"]  # normalized [0, 1]
+        label = params["label"]  # 1=positive, 0=negative
+        locations = [(x * width, y * height)]
+        labels = [label]
+
+    # Get mask before for comparison
+    mask_before = np.array(resources.mask_dataset[frame_idx])
+    before_sum = int(mask_before.sum())
+
+    # Run refinement with all points
+    segmentor.refine_mask(
+        video_id=str(video_id),
+        frame_idx=frame_idx,
+        location=locations,
+        label=labels,
+    )
+
+    # Flush HDF5 to ensure write is visible, then read back the mask
+    resources.mask_file.flush()
+    mask = resources.mask_dataset[frame_idx]
+    after_sum = int(mask.sum())
+
+    print(f"[SAM3 Worker] refine_mask frame={frame_idx} "
+          f"num_points={len(locations)} mask_sum: {before_sum} -> {after_sum}")
+
+    return {
+        "type": "refine_mask_result",
         "status": "ok",
         "mask_rle": encode_mask_rle(mask),
         "mask_shape": mask.shape,
@@ -226,6 +322,8 @@ def handle_propagate(
         frame_idx=frame_idx,
     )
 
+    # Flush HDF5 to ensure write is visible
+    resources.mask_file.flush()
     mask = resources.mask_dataset[frame_idx]
 
     return {
@@ -298,9 +396,10 @@ def handle_reset_frame(
     if video_id in _video_resources:
         segmentor.reset_frame(str(video_id), frame_idx)
 
-        # Clear mask in HDF5
+        # Clear mask and logits in HDF5
         resources = _video_resources[video_id]
         resources.mask_dataset[frame_idx] = 0
+        resources.logits_dataset[frame_idx] = 0.0
 
     return {
         "type": "reset_frame_result",
@@ -331,9 +430,10 @@ def handle_reset_video(
         # Close StreamingSegmentor session
         segmentor.close_video(str(video_id))
 
-        # Clear all masks in HDF5
+        # Clear all masks and logits in HDF5
         resources = _video_resources[video_id]
         resources.mask_dataset[...] = 0
+        resources.logits_dataset[...] = 0.0
 
         # Don't close file handles - session may be reopened
 

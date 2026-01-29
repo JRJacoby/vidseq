@@ -193,6 +193,9 @@ def track(
     point_coords: torch.Tensor | None = None,
     point_labels: torch.Tensor | None = None,
     mask_input: torch.Tensor | None = None,
+    prev_mask_logits: torch.Tensor | None = None,
+    run_mem_encoder: bool = True,
+    use_prev_mem_frame: bool = True,
     num_frames: int = 1000,
 ) -> TrackResult:
     """Run one video frame through the SAM3 tracker with memory attention.
@@ -209,7 +212,15 @@ def track(
                         is stored as a conditioning frame.
         point_coords: Optional point prompts, shape (B, P, 2).
         point_labels: Optional point labels, shape (B, P). 1=fg, 0=bg.
-        mask_input: Optional mask prompt, shape (B, 1, H, W).
+        mask_input: Optional mask prompt, shape (B, 1, H, W). Used when you
+                    want to use the mask directly as output.
+        prev_mask_logits: Optional previous mask logits for iterative refinement,
+                          shape (B, 1, H, W). Used WITH points to refine a mask.
+        run_mem_encoder: Whether to encode this frame into memory. Set to False
+                         during interactive refinement (SAM3's approach).
+        use_prev_mem_frame: Whether to attend to previous memory frames. Set to
+                            False during refinement (SAM3's approach) to rely only
+                            on point prompts + prev_mask_logits.
         num_frames: Total number of frames in the video.
 
     Returns:
@@ -251,8 +262,11 @@ def track(
             image=image,
             point_inputs=point_inputs,
             mask_inputs=mask_input,
+            prev_sam_mask_logits=prev_mask_logits,
             output_dict=memory,
             num_frames=num_frames,
+            run_mem_encoder=run_mem_encoder,
+            use_prev_mem_frame=use_prev_mem_frame,
         )
 
     return TrackResult(
@@ -427,24 +441,27 @@ class StreamingSegmentor:
         self,
         video_id: str,
         frames,  # Indexable returning BGR uint8 (H, W, 3)
-        masks,   # Indexable/assignable for mask storage
+        masks,   # Indexable/assignable for binary mask storage
+        logits,  # Indexable/assignable for logits storage (256x256 float32)
         frame_dims: tuple[int, int],  # (height, width)
         cond_frame_indices: set[int] | list[int] | None = None,
     ) -> None:
-        """Create a session with external frame and mask sources.
+        """Create a session with external frame, mask, and logits sources.
 
         This initializes the session and reconstructs conditioning frame memories
-        from stored masks. Call this before using add_point_prompt or propagate.
+        from stored masks. Call this before using add_point_prompt or refine_mask.
 
-        The caller is responsible for managing the lifecycle of frames and masks
-        (e.g., opening/closing file handles).
+        The caller is responsible for managing the lifecycle of frames, masks,
+        and logits (e.g., opening/closing file handles).
 
         Args:
             video_id: Unique identifier for this video session.
             frames: Indexable frame source returning BGR uint8 arrays (H, W, 3).
                     Must support frames[frame_idx] access.
-            masks: Indexable storage for masks (array or h5 dataset).
+            masks: Indexable storage for binary masks (array or h5 dataset).
                    Will be used for both reading existing masks and writing new ones.
+            logits: Indexable storage for low-res logits (256x256 float32).
+                    Used for iterative refinement with refine_mask().
             frame_dims: Tuple of (height, width) for the video frames.
             cond_frame_indices: Frame indices that have existing user prompts.
                    Their memories will be reconstructed from stored masks.
@@ -466,6 +483,7 @@ class StreamingSegmentor:
         session = {
             "frames": frames,
             "masks": masks,
+            "logits": logits,
             "cond_frame_indices": cond_frame_indices,
             "cond_frame_memories": {},
             "frame_dims": frame_dims,
@@ -507,6 +525,37 @@ class StreamingSegmentor:
 
         del self.sessions[video_id]
         return True
+
+    def _clear_non_cond_mem_around_frame(
+        self,
+        memory: dict,
+        frame_idx: int,
+        cond_indices: set[int],
+    ) -> None:
+        """Clear non-conditioning memories around a frame being refined.
+
+        When users provide correction clicks, surrounding frames' non-conditioning
+        memories can contain outdated object appearance information that could
+        confuse the model. This matches SAM3's _clear_non_cond_mem_around_input.
+
+        Args:
+            memory: Memory dict with cond_frame_outputs and non_cond_frame_outputs.
+            frame_idx: The frame being refined.
+            cond_indices: Set of conditioning frame indices (these are NOT cleared).
+        """
+        # Clear non-cond frames within MEM_WINDOW of the target frame
+        # This prevents stale appearance info from confusing refinement
+        window = self.MEM_WINDOW
+        frame_idx_begin = frame_idx - window
+        frame_idx_end = frame_idx + window
+
+        non_cond = memory.get("non_cond_frame_outputs", {})
+        to_remove = [
+            t for t in non_cond
+            if frame_idx_begin <= t <= frame_idx_end and t not in cond_indices
+        ]
+        for t in to_remove:
+            del non_cond[t]
 
     def _prepare_memory(
         self,
@@ -578,14 +627,17 @@ class StreamingSegmentor:
         location: tuple[float, float] | list[tuple[float, float]],
         label: int | list[int],
     ) -> None:
-        """Add point prompt(s) and update the mask for a frame.
+        """Add point prompt(s) to a BLANK frame and generate initial mask.
 
-        This is the primary method for interactive annotation. It:
+        Use this for frames that don't have an existing mask. For refining
+        an existing mask, use refine_mask() instead.
+
+        This method:
         1. Prepares memory context (cond frames + rolling window of non-cond)
         2. Preprocesses and encodes the target frame
         3. Runs the tracker with the point prompt(s) (attending to memory)
         4. Stores the result as a conditioning frame (in memory and in storage)
-        5. Writes the binary mask to the masks storage
+        5. Writes both the binary mask and low-res logits to storage
 
         Args:
             video_id: The video identifier (must be opened with open_video first).
@@ -598,6 +650,7 @@ class StreamingSegmentor:
 
         Side Effects:
             - Updates masks[frame_idx] with the binary mask (uint8, 0/255)
+            - Updates logits[frame_idx] with low-res logits (for future refinement)
             - Adds frame_idx to cond_frame_indices
             - Stores frame_output in cond_frame_memories
 
@@ -607,6 +660,7 @@ class StreamingSegmentor:
         """
         session = self.sessions[video_id]
         masks_storage = session["masks"]
+        logits_storage = session["logits"]
         frame_dims = session["frame_dims"]
         orig_h, orig_w = frame_dims
 
@@ -655,7 +709,7 @@ class StreamingSegmentor:
         has_memory = bool(memory["cond_frame_outputs"]) or bool(memory["non_cond_frame_outputs"])
         is_first_frame = not has_memory
 
-        # Run tracking with point prompt
+        # Run tracking with point prompt (no mask_input for blank frames)
         result = track(
             tracker=self.tracker,
             backbone_out=backbone_out,
@@ -667,16 +721,153 @@ class StreamingSegmentor:
             point_labels=point_labels,
         )
 
-        # Extract mask: high-res logits -> binary -> resize to original resolution
-        mask_logits = result.masks_high_res[0, 0].float().cpu().numpy()
-        mask_binary = (mask_logits > 0).astype(np.uint8) * 255
+        # Extract and save binary mask (high-res logits -> binary -> resize)
+        mask_logits_highres = result.masks_high_res[0, 0].float().cpu().numpy()
+        mask_binary = (mask_logits_highres > 0).astype(np.uint8) * 255
         mask_resized = cv2.resize(mask_binary, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-
-        # Write mask to storage
         masks_storage[frame_idx] = mask_resized
+
+        # Save low-res logits for future refinement (256x256)
+        logits_lowres = result.masks[0, 0].float().cpu().numpy()
+        logits_storage[frame_idx] = logits_lowres
 
         # Update session: add to cond_frame_indices and store memory
         session["cond_frame_indices"].add(frame_idx)
+        session["cond_frame_memories"][frame_idx] = result.frame_output
+
+    def refine_mask(
+        self,
+        video_id: str,
+        frame_idx: int,
+        location: tuple[float, float] | list[tuple[float, float]],
+        label: int | list[int],
+    ) -> None:
+        """Refine an existing mask with point prompt(s).
+
+        Use this for frames that already have a mask. The previous mask's logits
+        are passed as a dense prompt along with the point(s), allowing SAM3
+        to refine the segmentation.
+
+        This follows SAM3's iterative refinement pattern where points
+        build upon the previous mask state.
+
+        Args:
+            video_id: The video identifier (must be opened with open_video first).
+            frame_idx: Index of the frame to refine. Must have an existing mask.
+            location: Either a single (x, y) point or a list of (x, y) points
+                      in original frame space. Will be scaled to 1008x1008 internally.
+            label: Either a single label or a list of labels (one per point).
+                   1 = positive (foreground), 0 = negative (background).
+
+        Side Effects:
+            - Updates masks[frame_idx] with the refined binary mask
+            - Updates logits[frame_idx] with new low-res logits
+            - Updates cond_frame_memories[frame_idx] with new frame_output
+
+        Raises:
+            KeyError: If video_id is not found.
+            RuntimeError: If frame_idx doesn't have an existing mask/logits.
+            ValueError: If location and label list lengths don't match.
+        """
+        session = self.sessions[video_id]
+        masks_storage = session["masks"]
+        logits_storage = session["logits"]
+        frame_dims = session["frame_dims"]
+        orig_h, orig_w = frame_dims
+
+        # Normalize to lists for uniform handling
+        if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
+            # Single point: (x, y)
+            locations = [location]
+            labels = [label]
+        else:
+            # Multiple points: [(x1, y1), (x2, y2), ...]
+            locations = list(location)
+            labels = list(label) if isinstance(label, (list, tuple)) else [label]
+
+        if len(locations) != len(labels):
+            raise ValueError(f"Number of locations ({len(locations)}) must match number of labels ({len(labels)})")
+
+        # Verify this frame has existing logits to refine
+        prev_logits = logits_storage[frame_idx]
+        if not np.any(prev_logits != 0):
+            raise RuntimeError(
+                f"Frame {frame_idx} has no existing logits. Use add_point_prompt for blank frames."
+            )
+
+        # Prepare memory context and get target frame
+        frame, memory = self._prepare_memory(video_id, frame_idx)
+
+        # Clear non-conditioning memories around the refined frame
+        # This prevents stale appearance info from confusing the refinement
+        # (matches SAM3's _clear_non_cond_mem_around_input behavior)
+        cond_indices = session["cond_frame_indices"]
+        self._clear_non_cond_mem_around_frame(memory, frame_idx, cond_indices)
+
+        # Preprocess: BGR -> RGB, resize to 1008x1008, normalize
+        img_tensor = preprocess_image(frame, bgr=True).to(self.device)
+
+        # Encode through backbone
+        with torch.no_grad():
+            backbone_out = encode(self.backbone, img_tensor, captions=["object"])
+
+        # Scale all points from original coords to model input coords
+        scaled_coords = []
+        for loc in locations:
+            scaled_x, scaled_y = self._scale_point(loc[0], loc[1], orig_w, orig_h)
+            scaled_coords.append([scaled_x, scaled_y])
+
+        # Prepare point prompt tensors
+        point_coords = torch.tensor(
+            [scaled_coords],  # shape: (batch=1, num_points, xy=2)
+            dtype=torch.float32,
+            device=self.device,
+        )
+        point_labels = torch.tensor(
+            [labels],  # shape: (batch=1, num_points)
+            dtype=torch.int32,
+            device=self.device,
+        )
+
+        # Prepare previous logits for refinement
+        # Logits are 288x288, convert to tensor (1, 1, 288, 288)
+        prev_mask_logits = torch.from_numpy(prev_logits).float()
+        prev_mask_logits = prev_mask_logits.unsqueeze(0).unsqueeze(0).to(self.device)
+        # Clamp to avoid numerical issues (following SAM3's approach)
+        prev_mask_logits = torch.clamp(prev_mask_logits, -32.0, 32.0)
+
+        # Run tracking with point prompt AND previous mask logits for refinement
+        # Note: prev_mask_logits is different from mask_input - it's used for
+        # iterative refinement WITH points, not for using a mask directly as output
+        # Key SAM3 settings for refinement:
+        # - run_mem_encoder=False: defer memory encoding
+        # - use_prev_mem_frame=False: don't attend to previous memory, rely only on
+        #   point prompts + prev_mask_logits for refinement
+        result = track(
+            tracker=self.tracker,
+            backbone_out=backbone_out,
+            image=img_tensor,
+            frame_idx=frame_idx,
+            memory=memory,
+            is_first_frame=False,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            prev_mask_logits=prev_mask_logits,
+            run_mem_encoder=False,
+            use_prev_mem_frame=False,  # Don't attend to memory during refinement
+        )
+
+        # Extract and save refined binary mask
+        mask_logits_highres = result.masks_high_res[0, 0].float().cpu().numpy()
+        mask_binary = (mask_logits_highres > 0).astype(np.uint8) * 255
+        mask_resized = cv2.resize(mask_binary, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+        masks_storage[frame_idx] = mask_resized
+
+        # Save updated low-res logits for future refinement
+        logits_lowres = result.masks[0, 0].float().cpu().numpy()
+        logits_storage[frame_idx] = logits_lowres
+
+        # Update session memory
         session["cond_frame_memories"][frame_idx] = result.frame_output
 
     def propagate(

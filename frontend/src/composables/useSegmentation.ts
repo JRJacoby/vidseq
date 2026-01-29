@@ -3,6 +3,7 @@ import {
     getMask,
     getMasksBatch,
     runSegmentation,
+    refineMaskMultiPoint,
     resetFrame,
     resetVideo,
 } from '@/services/api'
@@ -146,26 +147,46 @@ export function useSegmentation(
 
         isSegmenting.value = true
 
+        // Add to local prompts first
+        const framePrompts = localPrompts.value.get(currentFrameIdx.value) || []
+        framePrompts.push({ x: point.x, y: point.y, type: point.type })
+        localPrompts.value.set(currentFrameIdx.value, framePrompts)
+
         try {
-            const maskBlob = await runSegmentation(
-                projectId.value,
-                videoId.value,
-                currentFrameIdx.value,
-                point.type,
-                { x: point.x, y: point.y }
-            )
+            let maskBlob: Blob
+
+            // Check if this frame already has a mask (refinement vs new)
+            const hasExistingMask = maskCache.has(currentFrameIdx.value) && maskCache.get(currentFrameIdx.value) !== null
+
+            if (hasExistingMask && framePrompts.length > 1) {
+                // Refinement with accumulated points - send ALL prompts
+                maskBlob = await refineMaskMultiPoint(
+                    projectId.value,
+                    videoId.value,
+                    currentFrameIdx.value,
+                    framePrompts
+                )
+            } else {
+                // First point on frame - use single-point API
+                maskBlob = await runSegmentation(
+                    projectId.value,
+                    videoId.value,
+                    currentFrameIdx.value,
+                    point.type,
+                    { x: point.x, y: point.y }
+                )
+            }
 
             const bitmap = await createImageBitmap(maskBlob)
             currentMask.value = bitmap
-
             maskCache.set(currentFrameIdx.value, bitmap)
-
-            // Add to local prompts
-            const framePrompts = localPrompts.value.get(currentFrameIdx.value) || []
-            framePrompts.push({ x: point.x, y: point.y, type: point.type })
-            localPrompts.value.set(currentFrameIdx.value, framePrompts)
         } catch (e) {
             console.error('Failed to add point:', e)
+            // Rollback: remove the point we just added
+            framePrompts.pop()
+            if (framePrompts.length === 0) {
+                localPrompts.value.delete(currentFrameIdx.value)
+            }
         } finally {
             isSegmenting.value = false
         }

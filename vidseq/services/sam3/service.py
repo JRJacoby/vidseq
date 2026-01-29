@@ -421,6 +421,49 @@ class SAM3Service:
 
         return mask
 
+    def refine_mask(
+        self,
+        project_id: int,
+        video_id: int,
+        frame_idx: int,
+        points: list[dict],
+        labels: list[int],
+    ) -> np.ndarray:
+        """
+        Refine an existing mask with point prompt(s).
+
+        Args:
+            project_id: ID of the project
+            video_id: ID of the video
+            frame_idx: Frame index to refine (must have existing mask)
+            points: List of points, each {x: float, y: float} in normalized [0, 1] coords
+            labels: List of labels (1=positive, 0=negative), one per point
+
+        Returns:
+            Refined binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+        """
+        session = self.get_session(project_id, video_id)
+        if session is None:
+            raise RuntimeError("No session exists. Initialize session first.")
+
+        result = self._send_and_wait({
+            "type": "refine_mask",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "points": points,
+            "labels": labels,
+        }, timeout=120.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to refine mask"))
+
+        mask_rle = result["mask_rle"]
+        mask_shape = tuple(result["mask_shape"])
+        mask_dtype = result.get("mask_dtype", "uint8")
+        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+
+        return mask
+
     def propagate(
         self,
         project_id: int,
@@ -733,6 +776,31 @@ def add_point_prompt(
     """
     return SAM3Service.get_instance().add_point_prompt(
         project_id, video_id, video_path, project_path, frame_idx, x, y, label
+    )
+
+
+def refine_mask(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+    points: list[dict],
+    labels: list[int],
+) -> np.ndarray:
+    """
+    Refine an existing mask with point prompt(s).
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        frame_idx: Frame index to refine (must have existing mask)
+        points: List of points, each {x: float, y: float} in normalized [0, 1] coords
+        labels: List of labels (1=positive, 0=negative), one per point
+
+    Returns:
+        Refined binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+    """
+    return SAM3Service.get_instance().refine_mask(
+        project_id, video_id, frame_idx, points, labels
     )
 
 

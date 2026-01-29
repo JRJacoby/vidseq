@@ -542,6 +542,30 @@ async def set_has_mask(
     await session.commit()
 
 
+async def get_has_mask(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> bool:
+    """Get the has_mask flag for a specific frame.
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+
+    Returns:
+        True if frame has a mask, False otherwise (or if no record exists)
+    """
+    result = await session.execute(
+        select(FrameData.has_mask)
+        .where(FrameData.video_id == video_id)
+        .where(FrameData.frame_idx == frame_idx)
+    )
+    row = result.scalar_one_or_none()
+    return bool(row) if row is not None else False
+
+
 def set_has_mask_sync(
     session: Session,
     video_id: int,

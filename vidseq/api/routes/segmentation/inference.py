@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.schemas.segmentation import SegmentRequest, PropagateRequest, PropagateResponse
+from vidseq.schemas.segmentation import (
+    SegmentRequest,
+    MultiPointSegmentRequest,
+    PropagateRequest,
+    PropagateResponse,
+)
 from vidseq.services import (
     frame_data_service,
     sam3_service,
@@ -34,21 +39,42 @@ async def run_segmentation(
     Run segmentation with a point prompt.
 
     Point coords should be normalized [0,1].
+
+    If the frame already has a mask, this will refine it using the existing
+    mask as context. Otherwise, it creates a new mask from scratch.
     """
     video_path = Path(video.path)
     label = 1 if segment_request.type == "positive_point" else 0
+    frame_idx = segment_request.frame_idx
+
+    # Check if this frame already has a mask (to decide add_point_prompt vs refine_mask)
+    has_existing_mask = await frame_data_service.get_has_mask(
+        session, video.id, frame_idx
+    )
 
     try:
-        mask = sam3_service.add_point_prompt(
-            project_id=project_id,
-            video_id=video.id,
-            video_path=video_path,
-            project_path=project_path,
-            frame_idx=segment_request.frame_idx,
-            x=segment_request.details["x"],
-            y=segment_request.details["y"],
-            label=label,
-        )
+        if has_existing_mask:
+            # Refine existing mask using previous logits as dense prompt
+            # Convert single point to array format
+            mask = sam3_service.refine_mask(
+                project_id=project_id,
+                video_id=video.id,
+                frame_idx=frame_idx,
+                points=[{"x": segment_request.details["x"], "y": segment_request.details["y"]}],
+                labels=[label],
+            )
+        else:
+            # Create new mask on blank frame
+            mask = sam3_service.add_point_prompt(
+                project_id=project_id,
+                video_id=video.id,
+                video_path=video_path,
+                project_path=project_path,
+                frame_idx=frame_idx,
+                x=segment_request.details["x"],
+                y=segment_request.details["y"],
+                label=label,
+            )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -57,8 +83,18 @@ async def run_segmentation(
     # Update mask presence index
     has_content = bool(np.any(mask > 0))
     await frame_data_service.set_has_mask(
-        session, video.id, segment_request.frame_idx, has_content
+        session, video.id, frame_idx, has_content
     )
+
+    # If refinement resulted in an empty mask, reset the frame's SAM state
+    # to avoid corrupted memory state on next interaction
+    if has_existing_mask and not has_content:
+        sam3_service.reset_frame(
+            project_id=project_id,
+            video_id=video.id,
+            project_path=project_path,
+            frame_idx=frame_idx,
+        )
 
     # Note: conditioning_service.add_conditioning_frame is now handled by sam3_service
 
@@ -102,5 +138,57 @@ async def propagate_mask(
         raise HTTPException(status_code=500, detail=str(e))
 
     return PropagateResponse(frames_processed=frames_processed)
+
+
+@router.post("/projects/{project_id}/videos/{video_id}/refine-mask")
+async def refine_mask_multipoint(
+    project_id: int,
+    request: MultiPointSegmentRequest,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Refine an existing mask with multiple accumulated point prompts.
+
+    All accumulated points are sent together so SAM3 has the full context
+    of user intent (e.g., "this area is foreground, but NOT this part").
+
+    Point coords should be normalized [0,1].
+    """
+    frame_idx = request.frame_idx
+
+    # Convert to backend format
+    points = [{"x": p.x, "y": p.y} for p in request.points]
+    labels = [1 if p.type == "positive_point" else 0 for p in request.points]
+
+    try:
+        mask = sam3_service.refine_mask(
+            project_id=project_id,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            points=points,
+            labels=labels,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Update mask presence index
+    has_content = bool(np.any(mask > 0))
+    await frame_data_service.set_has_mask(
+        session, video.id, frame_idx, has_content
+    )
+
+    # If refinement resulted in an empty mask, reset the frame's SAM state
+    if not has_content:
+        sam3_service.reset_frame(
+            project_id=project_id,
+            video_id=video.id,
+            project_path=project_path,
+            frame_idx=frame_idx,
+        )
+
+    mask_png = segmentation_service.mask_to_png(mask)
+    return Response(content=mask_png, media_type="image/png")
 
 

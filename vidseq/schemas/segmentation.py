@@ -22,6 +22,19 @@ class SegmentRequest(BaseModel):
         return v
 
 
+class PointPrompt(BaseModel):
+    """A single point prompt with normalized coordinates."""
+    x: float
+    y: float
+    type: Literal["positive_point", "negative_point"]
+
+
+class MultiPointSegmentRequest(BaseModel):
+    """Request to refine a mask with multiple accumulated points."""
+    frame_idx: int
+    points: list[PointPrompt]
+
+
 class PropagateRequest(BaseModel):
     start_frame_idx: int
     max_frames: int = 1000

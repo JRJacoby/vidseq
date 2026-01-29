@@ -168,6 +168,32 @@ export async function runSegmentation(
     return response.blob()
 }
 
+export interface PointPrompt {
+    x: number
+    y: number
+    type: 'positive_point' | 'negative_point'
+}
+
+export async function refineMaskMultiPoint(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    points: PointPrompt[]
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/refine-mask`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame_idx: frameIdx, points }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to refine mask'))
+    }
+    return response.blob()
+}
+
 export async function getMask(
     projectId: number,
     videoId: number,
