@@ -44,6 +44,9 @@ from vidseq.services.sam3.config import (
 )
 from vidseq.services.model_manager import ensure_sam3_model
 
+# Check backend selection
+SAM_BACKEND = os.environ.get("SAM_BACKEND", "sam2").lower()
+
 
 class SAM3TCPServer:
     """TCP server for SAM3 worker with sequential command processing."""
@@ -61,7 +64,7 @@ class SAM3TCPServer:
         self.active_connections: set[socket.socket] = set()
         self.connection_lock = threading.Lock()
         self.shutdown_timer: Optional[threading.Timer] = None
-        self.shutdown_timeout = 10.0
+        self.shutdown_timeout = 1.0
         self.running = False
         self._is_processing = False
 
@@ -122,10 +125,16 @@ class SAM3TCPServer:
 
     def start(self) -> None:
         """Start the TCP server."""
-        # Ensure model checkpoint is downloaded before starting
-        print("[SAM3 Worker] Ensuring model checkpoint is available...")
-        self.checkpoint_path = ensure_sam3_model()
-        print(f"[SAM3 Worker] Model checkpoint: {self.checkpoint_path}")
+        backend_name = SAM_BACKEND.upper()
+
+        # Only download SAM3 checkpoint if using SAM3 backend
+        # SAM2 checkpoint is handled by SAM2StreamingSegmentor.__init__()
+        if SAM_BACKEND == "sam3":
+            print(f"[{backend_name} Worker] Ensuring model checkpoint is available...")
+            self.checkpoint_path = ensure_sam3_model()
+            print(f"[{backend_name} Worker] Model checkpoint: {self.checkpoint_path}")
+        else:
+            print(f"[{backend_name} Worker] Checkpoint managed by StreamingSegmentor")
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -134,7 +143,7 @@ class SAM3TCPServer:
         self.server_socket.settimeout(1.0)
         self.running = True
 
-        print(f"[SAM3 Worker] TCP server started on localhost:{self.port}")
+        print(f"[{backend_name} Worker] TCP server started on localhost:{self.port}")
 
         # Write port and PID files
         write_port_file(self.port)
@@ -299,8 +308,8 @@ class SAM3TCPServer:
 
         try:
             if cmd_type == "load_model":
-                if self.checkpoint_path is None:
-                    raise RuntimeError("Checkpoint path not set")
+                # SAM2 handles its own checkpoint; SAM3 uses self.checkpoint_path
+                # handle_load_model doesn't actually use the path (StreamingSegmentor manages it)
                 result, self._segmentor = handle_load_model(self.checkpoint_path)
 
             elif cmd_type == "init_session":

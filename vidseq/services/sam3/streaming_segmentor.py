@@ -299,6 +299,9 @@ class StreamingSegmentor:
     # Model input size (SAM3 expects 1008x1008)
     INPUT_SIZE = 1008
 
+    # Low-res logits size (SAM3 outputs 288x288, i.e. 1008/3.5)
+    LOGITS_SIZE = 288
+
     # Number of non-conditioning frames to include in rolling memory window
     MEM_WINDOW = 7
 
@@ -867,8 +870,11 @@ class StreamingSegmentor:
         logits_lowres = result.masks[0, 0].float().cpu().numpy()
         logits_storage[frame_idx] = logits_lowres
 
-        # Update session memory
-        session["cond_frame_memories"][frame_idx] = result.frame_output
+        # Re-encode the stored mask to get proper memory features
+        # (Since we used run_mem_encoder=False, result.frame_output is incomplete)
+        frames_source = session["frames"]
+        frame_output = self._encode_stored_mask(frames_source, masks_storage, frame_idx, frame_dims)
+        session["cond_frame_memories"][frame_idx] = frame_output
 
     def propagate(
         self,
@@ -1023,6 +1029,11 @@ class StreamingSegmentor:
             mask_resized = cv2.resize(mask_binary, (orig_w, orig_h),
                                       interpolation=cv2.INTER_NEAREST)
             masks_storage[frame_idx] = mask_resized
+
+            # Debug: log object score and mask stats
+            obj_score = result.score[0, 0].item()
+            mask_sum = int(mask_resized.sum() // 255)  # count of non-zero pixels
+            print(f"  Frame {frame_idx}: obj_score={obj_score:.3f}, mask_pixels={mask_sum}")
 
             # Evict old frames from non_cond (keep only last MEM_WINDOW)
             # This prevents memory from growing unbounded

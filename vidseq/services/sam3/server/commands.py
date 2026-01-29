@@ -6,7 +6,7 @@ StreamingSegmentor instance and manages file handles externally.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import h5py
 import numpy as np
@@ -16,7 +16,7 @@ from vidseq.services.sam3.utils import encode_mask_rle
 
 # Backend selection - can be switched via environment variable
 import os
-SAM_BACKEND = os.environ.get("SAM_BACKEND", "sam3").lower()
+SAM_BACKEND = os.environ.get("SAM_BACKEND", "sam2").lower()
 
 if SAM_BACKEND == "sam2":
     from vidseq.services.sam2.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
@@ -40,7 +40,7 @@ _segmentor: StreamingSegmentor | None = None
 _video_resources: dict[int, VideoResources] = {}
 
 
-def handle_load_model(_checkpoint_path: Path) -> tuple[dict, StreamingSegmentor]:
+def handle_load_model(_checkpoint_path: Optional[Path]) -> tuple[dict, StreamingSegmentor]:
     """Load SAM3 model via StreamingSegmentor.
 
     Returns:
@@ -48,11 +48,16 @@ def handle_load_model(_checkpoint_path: Path) -> tuple[dict, StreamingSegmentor]
     """
     global _segmentor
 
-    print("[SAM3 Worker] Loading SAM3 model via StreamingSegmentor...")
+    # Skip if already loaded
+    if _segmentor is not None:
+        print("[SAM Worker] Model already loaded, skipping")
+        return {"type": "status", "status": "ready"}, _segmentor
+
+    print(f"[SAM Worker] Loading model via StreamingSegmentor...")
 
     _segmentor = StreamingSegmentor(device="cuda")
 
-    print("[SAM3 Worker] SAM3 model loaded!")
+    print("[SAM Worker] Model loaded!")
     return {"type": "status", "status": "ready"}, _segmentor
 
 
@@ -66,14 +71,17 @@ def _ensure_mask_dataset(
     num_frames: int,
     height: int,
     width: int,
+    logits_size: int = 288,
 ) -> tuple[h5py.File, Any, Any]:
     """Open or create HDF5 mask file and datasets.
+
+    Args:
+        logits_size: Size of low-res logits (SAM2=256, SAM3=288).
 
     Returns:
         (h5py.File, mask_dataset, logits_dataset)
     """
-    # SAM3 low-res output size for logits (1008/3.5 = 288)
-    LOGITS_SIZE = 288
+    LOGITS_SIZE = logits_size
 
     mask_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -143,7 +151,7 @@ def handle_init_session(
     # Open/create mask file with both masks and logits datasets
     mask_path = _get_mask_path(project_path, video_id)
     mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
-        mask_path, num_frames, height, width
+        mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
     )
 
     # Store resources
@@ -475,7 +483,7 @@ def handle_reset_video(
 
         # Recreate empty HDF5 file so session remains valid
         mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
-            mask_path, num_frames, height, width
+            mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
         )
 
         print(f"[DEBUG reset_video] After _ensure_mask_dataset: mask_path exists={mask_path.exists()}")

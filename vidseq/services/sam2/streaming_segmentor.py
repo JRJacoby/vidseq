@@ -85,6 +85,9 @@ class SAM2StreamingSegmentor:
     # Model input size (SAM2 uses 1024x1024)
     INPUT_SIZE = 1024
 
+    # Low-res logits size (SAM2 outputs 256x256)
+    LOGITS_SIZE = 256
+
     def __init__(self, device: str | None = None):
         """Initialize the segmentor and load the SAM2 model.
 
