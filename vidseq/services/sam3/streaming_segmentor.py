@@ -406,6 +406,71 @@ class StreamingSegmentor:
 
         return inter_area / union_area
 
+    def _add_mask_prompt(
+        self,
+        video_id: str,
+        frame_idx: int,
+        mask: np.ndarray,
+        memory: dict,
+    ) -> tuple[np.ndarray, dict]:
+        """
+        Use a mask as dense prompt for SAM2, letting it refine based on visual features.
+
+        Args:
+            video_id: Video session ID
+            frame_idx: Frame index
+            mask: Binary mask (H, W) at original resolution
+            memory: Current memory dict
+
+        Returns:
+            Tuple of (refined_mask at original resolution, frame_output for memory)
+        """
+        session = self.sessions[video_id]
+        frames = session["frames"]
+        frame_dims = session["frame_dims"]
+        orig_h, orig_w = frame_dims
+
+        # Read and preprocess frame
+        frame = self._read_frame(frames, frame_idx)
+        img_tensor = preprocess_image(frame, bgr=True).to(self.device)
+
+        # Encode frame through backbone
+        with torch.no_grad():
+            backbone_out = encode(self.backbone, img_tensor, captions=["object"])
+
+        # Resize mask to model input size
+        mask_resized = cv2.resize(
+            mask.astype(np.float32),
+            (self.INPUT_SIZE, self.INPUT_SIZE),
+            interpolation=cv2.INTER_NEAREST
+        )
+        mask_tensor = torch.from_numpy(mask_resized > 0).float()
+        mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)  # (1, 1, H, W)
+
+        # Run tracking with mask as input prompt
+        result = track(
+            tracker=self.tracker,
+            backbone_out=backbone_out,
+            image=img_tensor,
+            frame_idx=frame_idx,
+            memory=memory,
+            mask_input=mask_tensor,
+            is_first_frame=(frame_idx == 0),
+            run_mem_encoder=True,
+        )
+
+        # Extract and resize mask back to original resolution
+        pred_mask = result.masks  # Use .masks attribute
+        pred_mask_np = pred_mask.squeeze().cpu().numpy()
+
+        refined_mask = cv2.resize(
+            (pred_mask_np > 0).astype(np.uint8) * 255,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+        return refined_mask, result.frame_output
+
     def _read_frame(self, frames, frame_idx: int) -> np.ndarray:
         """Read a specific frame from the frame source.
 
