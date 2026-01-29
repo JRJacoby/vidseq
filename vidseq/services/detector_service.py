@@ -539,9 +539,10 @@ class DetectorService:
                         new_h, new_w = int(h * scale), int(w * scale)
                         frame_resized = cv2.resize(frame, (new_w, new_h))
 
-                        # Trim to multiple of 14
-                        trim_h = (frame_resized.shape[0] // 14) * 14
-                        trim_w = (frame_resized.shape[1] // 14) * 14
+                        # Trim to multiple of 14 (remember pre-trim size for correct upscaling)
+                        pre_trim_h, pre_trim_w = frame_resized.shape[:2]
+                        trim_h = (pre_trim_h // 14) * 14
+                        trim_w = (pre_trim_w // 14) * 14
                         frame_resized = frame_resized[:trim_h, :trim_w]
 
                         # To tensor
@@ -557,11 +558,20 @@ class DetectorService:
                         logits = model(frame_tensor)
                         mask_pred = (torch.sigmoid(logits) > 0.5).float()
 
-                        # Resize back to original size
+                        # Resize back to original size, accounting for trimmed pixels
+                        # First resize to the region that was actually processed
+                        effective_h = int(orig_h * trim_h / pre_trim_h)
+                        effective_w = int(orig_w * trim_w / pre_trim_w)
                         mask_pred = torch.nn.functional.interpolate(
                             mask_pred,
-                            size=(orig_h, orig_w),
+                            size=(effective_h, effective_w),
                             mode="nearest",
+                        )
+                        # Pad with zeros to reach full original size
+                        pad_bottom = orig_h - effective_h
+                        pad_right = orig_w - effective_w
+                        mask_pred = torch.nn.functional.pad(
+                            mask_pred, (0, pad_right, 0, pad_bottom), mode="constant", value=0
                         )
                         mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
 
@@ -735,9 +745,10 @@ class DetectorService:
                         new_h, new_w = int(h * scale), int(w * scale)
                         frame_resized = cv2.resize(frame, (new_w, new_h))
 
-                        # Trim to multiple of 14
-                        trim_h = (frame_resized.shape[0] // 14) * 14
-                        trim_w = (frame_resized.shape[1] // 14) * 14
+                        # Trim to multiple of 14 (remember pre-trim size for correct upscaling)
+                        pre_trim_h, pre_trim_w = frame_resized.shape[:2]
+                        trim_h = (pre_trim_h // 14) * 14
+                        trim_w = (pre_trim_w // 14) * 14
                         frame_resized = frame_resized[:trim_h, :trim_w]
 
                         # To tensor
@@ -753,11 +764,20 @@ class DetectorService:
                         logits = model(frame_tensor)
                         mask_pred = (torch.sigmoid(logits) > 0.5).float()
 
-                        # Resize back to original size
+                        # Resize back to original size, accounting for trimmed pixels
+                        # First resize to the region that was actually processed
+                        effective_h = int(orig_h * trim_h / pre_trim_h)
+                        effective_w = int(orig_w * trim_w / pre_trim_w)
                         mask_pred = torch.nn.functional.interpolate(
                             mask_pred,
-                            size=(orig_h, orig_w),
+                            size=(effective_h, effective_w),
                             mode="nearest",
+                        )
+                        # Pad with zeros to reach full original size
+                        pad_bottom = orig_h - effective_h
+                        pad_right = orig_w - effective_w
+                        mask_pred = torch.nn.functional.pad(
+                            mask_pred, (0, pad_right, 0, pad_bottom), mode="constant", value=0
                         )
                         mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
 
