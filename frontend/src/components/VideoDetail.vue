@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, type Video, type MaskScore } from '@/services/api'
+import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, detectorMasksExist, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -30,6 +30,21 @@ const showConfidencePlot = ref(true)
 const isMarkingMode = ref(false)
 const maxFrames = ref(1000)
 const confidenceScores = ref<MaskScore[]>([])
+
+// Mask view mode
+type MaskViewMode = 'tracker' | 'detector'
+const maskViewMode = ref<MaskViewMode>('tracker')
+const hasDetectorMasks = ref(false)
+
+const checkDetectorMasks = async () => {
+  if (!projectId.value || !videoId.value) return
+  try {
+    const result = await detectorMasksExist(projectId.value, videoId.value)
+    hasDetectorMasks.value = result.exists
+  } catch {
+    hasDetectorMasks.value = false
+  }
+}
 
 const viewStart = ref(0)
 const viewEnd = ref(0)
@@ -215,6 +230,7 @@ setMetadataCallback(() => {
 onMounted(async () => {
   await loadVideo()
   await refreshFrameRanges()
+  await checkDetectorMasks()
   // Initial fetch without debounce
   await fetchScoresForView()
 })
@@ -375,6 +391,15 @@ onMounted(async () => {
         </p>
         
         <h4 class="action-bar-title">Video Visibility</h4>
+        <div class="mask-view-section">
+          <label class="mask-view-label">Mask Source:</label>
+          <select v-model="maskViewMode" class="mask-view-select">
+            <option value="tracker">Tracker</option>
+            <option value="detector" :disabled="!hasDetectorMasks">
+              Detector {{ hasDetectorMasks ? '' : '(not available)' }}
+            </option>
+          </select>
+        </div>
         <div class="tool-buttons">
           <button
             class="tool-button toggle-button"
@@ -805,5 +830,36 @@ onMounted(async () => {
 
 .action-bar-title:first-child {
   margin-top: 0;
+}
+
+.mask-view-section {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.mask-view-label {
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.mask-view-select {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background-color: white;
+  cursor: pointer;
+}
+
+.mask-view-select:focus {
+  outline: none;
+  border-color: #2196f3;
+}
+
+.mask-view-select option:disabled {
+  color: #999;
 }
 </style>
