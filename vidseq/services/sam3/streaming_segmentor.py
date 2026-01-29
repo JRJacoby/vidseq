@@ -1186,6 +1186,210 @@ class StreamingSegmentor:
             "frame_dims": session["frame_dims"],
         }
 
+    def _propagate_single_frame(
+        self,
+        video_id: str,
+        frame_idx: int,
+        memory: dict,
+    ) -> tuple[np.ndarray, dict]:
+        """Run tracking for a single frame without any correction.
+
+        This is a helper for propagate_with_detector that runs pure tracking
+        (no prompts) for one frame, returning the mask and frame_output.
+
+        Args:
+            video_id: Video session ID.
+            frame_idx: Frame index to track.
+            memory: Memory dict with cond_frame_outputs and non_cond_frame_outputs.
+
+        Returns:
+            Tuple of (mask at original resolution as uint8 0/255, frame_output dict).
+        """
+        session = self.sessions[video_id]
+        frames = session["frames"]
+        frame_dims = session["frame_dims"]
+        orig_h, orig_w = frame_dims
+
+        # Read and preprocess frame
+        frame = self._read_frame(frames, frame_idx)
+        img_tensor = preprocess_image(frame, bgr=True).to(self.device)
+
+        # Encode frame through backbone
+        with torch.no_grad():
+            backbone_out = encode(self.backbone, img_tensor, captions=["object"])
+
+        # Run tracking (no prompt - pure propagation using memory)
+        result = track(
+            tracker=self.tracker,
+            backbone_out=backbone_out,
+            image=img_tensor,
+            frame_idx=frame_idx,
+            memory=memory,
+            is_first_frame=False,
+            run_mem_encoder=True,
+        )
+
+        # Extract and resize mask to original resolution
+        # Use masks (low-res logits), binarize with > 0 threshold
+        pred_mask_np = result.masks[0, 0].float().cpu().numpy()
+
+        mask = cv2.resize(
+            (pred_mask_np > 0).astype(np.uint8) * 255,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        return mask, result.frame_output
+
+    def propagate_with_detector(
+        self,
+        video_id: str,
+        num_frames: int,
+        iou_threshold: float = 0.5,
+        progress_callback=None,
+    ) -> list[int]:
+        """Propagate tracking with detector-based initialization and correction.
+
+        Frame 0: Initialize with detector mask as dense prompt.
+        Frames 1-N: Track, compare bbox IoU, re-prompt if below threshold.
+
+        This method uses detector masks as ground truth guidance:
+        - On frame 0, the detector mask initializes the tracker.
+        - On subsequent frames, if the tracker's bbox IoU with detector < threshold,
+          re-prompt SAM with the detector mask to correct drift.
+
+        Args:
+            video_id: Video session ID.
+            num_frames: Total frames to process.
+            iou_threshold: Re-prompt when bbox IoU falls below this (default 0.5).
+            progress_callback: Optional callback(frame_idx, num_frames) for progress.
+
+        Returns:
+            List of frame indices that were corrected by detector re-prompting.
+
+        Raises:
+            RuntimeError: If no detector masks or frame 0 detector mask is empty.
+        """
+        import sys
+
+        session = self.sessions[video_id]
+        detector_masks = session.get("detector_masks")
+        masks_storage = session["masks"]
+        logits_storage = session["logits"]
+        frame_dims = session["frame_dims"]
+        orig_h, orig_w = frame_dims
+
+        if detector_masks is None:
+            raise RuntimeError("No detector masks available - call open_video with detector_masks")
+
+        corrected_frames = []
+
+        # Create empty memory dict for sequential propagation
+        memory = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
+
+        # Frame 0: Initialize with detector mask
+        detector_mask_0 = np.array(detector_masks[0])
+        # Binarize stored mask with > 127 threshold
+        detector_mask_0_binary = (detector_mask_0 > 127).astype(np.uint8) * 255
+        if not detector_mask_0_binary.any():
+            raise RuntimeError("Detector mask on frame 0 is empty, cannot initialize tracking")
+
+        print(f"  Frame 0: Initializing from detector mask...")
+        sys.stdout.flush()
+
+        refined_mask, frame_output = self._add_mask_prompt(
+            video_id, 0, detector_mask_0_binary, memory
+        )
+        masks_storage[0] = refined_mask
+
+        # Save low-res logits for frame 0
+        # Re-extract from frame_output pred_masks (this is stored in the result)
+        if "pred_masks" in frame_output:
+            logits_lowres = frame_output["pred_masks"][0, 0].float().cpu().numpy()
+            logits_storage[0] = logits_lowres
+
+        # Store as non-cond frame output (not a user prompt, just detector init)
+        memory["non_cond_frame_outputs"][0] = frame_output
+
+        if progress_callback:
+            progress_callback(0, num_frames)
+
+        # Frames 1 to N-1
+        for frame_idx in range(1, num_frames):
+            # Step A: Run normal tracking
+            tracker_mask, tracker_frame_output = self._propagate_single_frame(
+                video_id, frame_idx, memory
+            )
+
+            # Step B: Load detector mask for this frame
+            try:
+                detector_mask = np.array(detector_masks[frame_idx])
+                # Binarize stored mask with > 127 threshold
+                detector_mask_binary = (detector_mask > 127).astype(np.uint8) * 255
+            except (IndexError, KeyError):
+                detector_mask_binary = np.zeros((orig_h, orig_w), dtype=np.uint8)
+
+            # Step C: Decide whether to re-prompt
+            should_reprompt = False
+            detector_has_mask = detector_mask_binary.any()
+            tracker_has_mask = tracker_mask.any()
+
+            if not detector_has_mask:
+                # Detector empty -> trust tracker
+                should_reprompt = False
+            elif not tracker_has_mask:
+                # Tracker empty, detector has mask -> rescue
+                should_reprompt = True
+            else:
+                # Both have masks -> check bbox IoU
+                # Binarize tracker mask with > 127 for bbox comparison
+                iou = self._compute_bbox_iou(tracker_mask > 127, detector_mask_binary > 127)
+                should_reprompt = (iou < iou_threshold)
+
+            # Step D: Re-prompt if needed, otherwise use tracker result
+            if should_reprompt and detector_has_mask:
+                refined_mask, frame_output = self._add_mask_prompt(
+                    video_id, frame_idx, detector_mask_binary, memory
+                )
+                final_mask = refined_mask
+                memory["non_cond_frame_outputs"][frame_idx] = frame_output
+                corrected_frames.append(frame_idx)
+                print(f"  Frame {frame_idx}: Corrected by detector (IoU below threshold)")
+            else:
+                final_mask = tracker_mask
+                memory["non_cond_frame_outputs"][frame_idx] = tracker_frame_output
+
+            # Step E: Save mask
+            masks_storage[frame_idx] = final_mask
+
+            # Save low-res logits
+            frame_out = memory["non_cond_frame_outputs"][frame_idx]
+            if "pred_masks" in frame_out:
+                logits_lowres = frame_out["pred_masks"][0, 0].float().cpu().numpy()
+                logits_storage[frame_idx] = logits_lowres
+
+            # Memory eviction: keep only last MEM_WINDOW non-cond frames
+            cutoff = frame_idx - self.MEM_WINDOW
+            to_remove = [k for k in memory["non_cond_frame_outputs"] if k <= cutoff]
+            for k in to_remove:
+                del memory["non_cond_frame_outputs"][k]
+
+            # Progress reporting
+            if progress_callback:
+                progress_callback(frame_idx, num_frames)
+
+            # Periodic status update
+            if frame_idx % 50 == 0:
+                print(f"    Propagated {frame_idx}/{num_frames} frames "
+                      f"({len(corrected_frames)} corrected so far)...")
+                sys.stdout.flush()
+
+        print(f"    Done. Propagated {num_frames} frames, "
+              f"{len(corrected_frames)} corrected by detector.")
+        sys.stdout.flush()
+
+        return corrected_frames
+
     def reset_frame(self, video_id: str, frame_idx: int) -> bool:
         """Remove a frame from memory banks.
 
