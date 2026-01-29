@@ -541,3 +541,120 @@ class SAM2StreamingSegmentor:
 
         # 13. Return the mask
         return mask_resized
+
+    def refine_mask(
+        self,
+        video_id: str,
+        frame_idx: int,
+        location: tuple[float, float] | list[tuple[float, float]],
+        label: int | list[int],
+    ) -> np.ndarray:
+        """Refine an existing mask with point prompt(s).
+
+        Uses the previous mask logits as context for refinement.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Index of the frame to refine.
+            location: (x, y) point or list of points in original frame coords.
+            label: Label(s) for each point. 1=positive, 0=negative.
+
+        Returns:
+            Refined binary mask array (height, width) with dtype uint8.
+
+        Raises:
+            KeyError: If video_id is not open.
+            RuntimeError: If no previous logits exist for this frame.
+        """
+        # 1. Get session state
+        session = self.sessions[video_id]
+        masks = session["masks"]
+        logits = session["logits"]
+        frame_dims = session["frame_dims"]  # (height, width)
+        output_dict = session["output_dict"]
+
+        # 2. Load previous logits from logits storage
+        prev_logits = logits[frame_idx]
+        if prev_logits is None:
+            raise RuntimeError(
+                f"No previous logits for frame {frame_idx}. "
+                "Use add_point_prompt() for initial mask creation."
+            )
+
+        # 3. Convert to tensor: shape (1, 1, 256, 256), float32, on device
+        # SAM2 low-res logits are 256x256
+        prev_logits_tensor = torch.from_numpy(prev_logits.astype(np.float32))
+        prev_logits_tensor = prev_logits_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
+
+        # 4. Normalize location/label to lists
+        if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
+            # Single point: (x, y)
+            locations = [location]
+        else:
+            locations = list(location)
+
+        if isinstance(label, int):
+            labels = [label]
+        else:
+            labels = list(label)
+
+        # 5. Scale points to INPUT_SIZE (1024) space
+        orig_h, orig_w = frame_dims
+        scaled_points = []
+        for x, y in locations:
+            scaled_x = x * self.INPUT_SIZE / orig_w
+            scaled_y = y * self.INPUT_SIZE / orig_h
+            scaled_points.append([scaled_x, scaled_y])
+
+        # 6. Create point_inputs dict with tensors on device
+        point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
+        point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
+        point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
+        point_labels = point_labels.unsqueeze(0)  # (1, N)
+
+        point_inputs = {
+            "point_coords": point_coords,
+            "point_labels": point_labels,
+        }
+
+        # 7. Get image features and prepare backbone features
+        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+        current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+            self._prepare_backbone_features(backbone_out)
+        )
+
+        # 8. Call track_step with point_inputs and prev_sam_mask_logits
+        # is_init_cond_frame=False because we have existing context (the previous mask)
+        with torch.inference_mode():
+            current_out = self.predictor.track_step(
+                frame_idx=frame_idx,
+                is_init_cond_frame=False,
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=point_inputs,
+                mask_inputs=None,
+                output_dict=output_dict,
+                num_frames=session["num_frames"],
+                prev_sam_mask_logits=prev_logits_tensor,
+            )
+
+        # 9. Extract mask, threshold, resize to original dims
+        pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
+        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_resized = cv2.resize(
+            mask_binary,
+            (orig_w, orig_h),  # (width, height) for cv2.resize
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        # 10. Save mask to masks storage, update logits_storage with new pred_masks
+        masks[frame_idx] = mask_resized
+        pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+        logits[frame_idx] = pred_masks_low_res
+
+        # 11. Update output_dict["cond_frame_outputs"][frame_idx]
+        output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+        # 12. Return the refined mask
+        return mask_resized
