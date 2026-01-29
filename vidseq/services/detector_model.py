@@ -93,11 +93,11 @@ class DINOv2Detector(nn.Module):
         # Trainable decoder
         self.decoder = SegmentationDecoder(in_channels=1536)
 
-        self.to(device)
-
-        # Move normalization tensors to device
+        # Register normalization buffers BEFORE .to(device) so they get moved
         self.register_buffer("mean", self.MEAN.view(1, 3, 1, 1))
         self.register_buffer("std", self.STD.view(1, 3, 1, 1))
+
+        self.to(device)
 
     def preprocess(self, images: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
         """Preprocess images for DINOv2.
