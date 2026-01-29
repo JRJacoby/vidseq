@@ -42,6 +42,11 @@ class DetectorTrainingProgress:
     num_train_frames: int = 0
     num_val_frames: int = 0
 
+    # Batch progress within epoch
+    current_batch: int = 0
+    total_batches: int = 0
+    batch_loss: float = 0.0
+
     # Apply progress
     apply_current: int = 0
     apply_total: int = 0

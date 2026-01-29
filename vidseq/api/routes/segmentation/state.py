@@ -58,14 +58,13 @@ async def reset_video(
     """
     Reset entire video: clear all masks, conditioning frames, and SAM3 tracking state.
     """
-    # Reset in SAM3 (clears all masks in HDF5 and conditioning frames in DB)
-    sam3_service.reset_video(project_id, video.id, project_path)
-
-    # Clear frame data from SQLite (bboxes, scores, types)
+    # clear_video is the master reset: closes SAM3 session, deletes h5, clears database, re-inits session
     await segmentation_service.clear_video(
         project_path=project_path,
         video_id=video.id,
         session=session,
+        project_id=project_id,
+        video_path=Path(video.path),
     )
 
     return {"message": "Video reset"}

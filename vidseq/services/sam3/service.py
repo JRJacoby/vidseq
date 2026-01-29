@@ -156,7 +156,14 @@ class SAM3Service:
                 self._tcp_client = SAM3TCPClient()
                 try:
                     self._tcp_client.connect("localhost", port)
-                    self._status = SAM3Status.READY
+                    # Still need to load model - worker may have been started manually
+                    self._status = SAM3Status.LOADING_MODEL
+                    result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
+                    if result.get("status") == "ready":
+                        self._status = SAM3Status.READY
+                    else:
+                        self._status = SAM3Status.ERROR
+                        self._error_message = result.get("error", "Unknown error loading model")
                     return
                 except Exception as e:
                     print(f"[SAM3 Service] Failed to connect to existing worker: {e}")
@@ -579,6 +586,7 @@ class SAM3Service:
             self._send_and_wait({
                 "type": "reset_video",
                 "video_id": video_id,
+                "project_path": str(project_path),
             }, timeout=30.0)
             session.has_object = False
 
@@ -592,7 +600,7 @@ class SAM3Service:
         num_frames: int,
         height: int,
         width: int,
-    ) -> int:
+    ) -> list[int]:
         """
         Generate training masks by propagating tracking forward and save to H5.
 
@@ -607,7 +615,7 @@ class SAM3Service:
             width: Video width in pixels
 
         Returns:
-            Number of frames processed
+            List of frame indices that were propagated
 
         Raises:
             RuntimeError: If no object has been tracked
@@ -633,7 +641,7 @@ class SAM3Service:
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to generate training masks"))
 
-        return result.get("frames_processed", 0)
+        return result.get("frame_indices", [])
 
     async def segment_all_videos(
         self,
@@ -866,7 +874,7 @@ def generate_training_masks(
     num_frames: int,
     height: int,
     width: int,
-) -> int:
+) -> list[int]:
     """Generate training masks by propagating tracking forward and save to H5."""
     return SAM3Service.get_instance().generate_training_masks(
         project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width

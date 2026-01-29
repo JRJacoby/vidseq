@@ -196,6 +196,12 @@ const lrReductionProgress = computed(() => {
     return (effectiveEpochs / progress.value.lr_patience) * 100
 })
 
+// Batch progress within epoch
+const batchProgressPercent = computed(() => {
+    if (!progress.value || progress.value.total_batches === 0) return 0
+    return (progress.value.current_batch / progress.value.total_batches) * 100
+})
+
 // Apply progress
 const applyProgressPercent = computed(() => {
     if (!progress.value || progress.value.apply_total === 0) return 0
@@ -241,6 +247,20 @@ const applyProgressPercent = computed(() => {
                         <div class="stat">
                             <span class="stat-label">Learning Rate</span>
                             <span class="stat-value">{{ formatLR(progress.current_lr) }}</span>
+                        </div>
+                    </div>
+
+                    <!-- Batch Progress -->
+                    <div class="batch-section" v-if="progress && progress.is_training && progress.total_batches > 0">
+                        <h3>Batch Progress</h3>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill batch-fill" :style="{ width: `${batchProgressPercent}%` }"></div>
+                            </div>
+                            <span class="progress-text">{{ progress.current_batch }}/{{ progress.total_batches }}</span>
+                        </div>
+                        <div class="batch-loss" v-if="progress.batch_loss > 0">
+                            Batch loss: {{ progress.batch_loss.toFixed(4) }}
                         </div>
                     </div>
 
@@ -384,11 +404,23 @@ h3 {
     color: rgb(239, 68, 68);  /* Red - matches chart */
 }
 
+.batch-section,
 .patience-section,
 .apply-section {
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid #ddd;
+}
+
+.batch-fill {
+    background: #10b981;
+}
+
+.batch-loss {
+    margin-top: 6px;
+    font-size: 0.85em;
+    color: #666;
+    font-family: monospace;
 }
 
 .patience-bar {

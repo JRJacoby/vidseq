@@ -175,19 +175,29 @@ def load_mask(
     """
     if h5_file is not None:
         if "masks" not in h5_file:
+            print(f"[DEBUG load_mask] h5_file provided but no 'masks' dataset")
             return np.zeros((height, width), dtype=np.uint8)
-        return np.array(h5_file["masks"][frame_idx])
+        mask = np.array(h5_file["masks"][frame_idx])
+        print(f"[DEBUG load_mask] from h5_file: frame={frame_idx}, sum={int(mask.sum())}")
+        return mask
 
     h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
+    print(f"[DEBUG load_mask] h5_path={h5_path}, exists={h5_path.exists()}")
     if not h5_path.exists():
+        print(f"[DEBUG load_mask] file doesn't exist, returning zeros")
         return np.zeros((height, width), dtype=np.uint8)
 
     try:
         with open_video_h5(project_path, video_id, "r", mask_subdir) as f:
             if "masks" not in f:
+                print(f"[DEBUG load_mask] 'masks' dataset not in file")
                 return np.zeros((height, width), dtype=np.uint8)
-            return np.array(f["masks"][frame_idx])
-    except (OSError, KeyError):
+            mask = np.array(f["masks"][frame_idx])
+            print(f"[DEBUG load_mask] loaded: frame={frame_idx}, sum={int(mask.sum())}, "
+                  f"shape={mask.shape}, dtype={mask.dtype}")
+            return mask
+    except (OSError, KeyError) as e:
+        print(f"[DEBUG load_mask] exception: {e}")
         return np.zeros((height, width), dtype=np.uint8)
 
 

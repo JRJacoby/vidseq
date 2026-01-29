@@ -1227,6 +1227,9 @@ export interface DetectorTrainingProgress {
     early_stop_patience: number
     num_train_frames: number
     num_val_frames: number
+    current_batch: number
+    total_batches: number
+    batch_loss: number
     apply_current: number
     apply_total: number
     error_message: string | null

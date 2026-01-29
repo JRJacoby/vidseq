@@ -110,6 +110,7 @@ async def propagate_mask(
     project_id: int,
     request: PropagateRequest,
     video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
     """
@@ -120,7 +121,7 @@ async def propagate_mask(
     Use mark-training endpoint to explicitly mark frames for YOLO training.
     """
     try:
-        frames_processed = sam3_service.generate_training_masks(
+        frame_indices = sam3_service.generate_training_masks(
             project_id=project_id,
             video_id=video.id,
             start_frame_idx=request.start_frame_idx,
@@ -137,7 +138,11 @@ async def propagate_mask(
         logger.error(f"Unexpected error in propagate mask: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-    return PropagateResponse(frames_processed=frames_processed)
+    # Update has_mask for all propagated frames
+    for frame_idx in frame_indices:
+        await frame_data_service.set_has_mask(session, video.id, frame_idx, True)
+
+    return PropagateResponse(frames_processed=len(frame_indices))
 
 
 @router.post("/projects/{project_id}/videos/{video_id}/refine-mask")

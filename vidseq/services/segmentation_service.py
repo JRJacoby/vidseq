@@ -3,6 +3,7 @@
 import base64
 import io
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from PIL import Image
@@ -44,6 +45,11 @@ def get_mask_png(
         height=video.height,
         width=video.width,
     )
+
+    # DEBUG: Log mask loading
+    print(f"[DEBUG get_mask_png] project={project_path}, video={video.id}, frame={frame_idx}")
+    print(f"[DEBUG get_mask_png] mask sum={int(mask.sum())}, shape={mask.shape}, "
+          f"min={mask.min()}, max={mask.max()}")
 
     return mask_to_png(mask)
 
@@ -114,20 +120,32 @@ async def clear_video(
     project_path: Path,
     video_id: int,
     session: AsyncSession,
+    project_id: Optional[int] = None,
+    video_path: Optional[Path] = None,
 ) -> None:
     """
     Clear all masks and frame data for a video.
 
-    SAM3 tracking state reset is handled separately via sam3_service.reset_state().
+    This is the master reset function that:
+    1. Closes SAM3 session (releases file handle)
+    2. Deletes the HDF5 mask file
+    3. Clears frame data from database
+    4. Re-initializes SAM3 session (recreates h5 file)
 
     Args:
         project_path: Path to the project folder
         video_id: Video ID
         session: Database session for clearing frame data
+        project_id: Project ID (required to re-init SAM3 session)
+        video_path: Path to the video file (required to re-init SAM3 session)
     """
-    from vidseq.services import frame_data_service
+    from vidseq.services import frame_data_service, sam3_service
 
-    # Clear masks from per-video HDF5
+    # Close SAM3 session first to release file handle
+    if project_id is not None:
+        sam3_service.close_session(project_id, video_id)
+
+    # Delete HDF5 mask file
     mask_storage.clear_all_masks(
         project_path=project_path,
         video_id=video_id,
@@ -135,5 +153,9 @@ async def clear_video(
 
     # Clear bboxes, frame_types, and scores from SQLite
     await frame_data_service.clear_all_frame_data(session, video_id)
+
+    # Re-init SAM3 session (recreates h5 file)
+    if project_id is not None and video_path is not None:
+        sam3_service.init_session(project_id, video_id, video_path, project_path)
 
 

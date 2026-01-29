@@ -5,7 +5,10 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from vidseq.services.detector_model import DINOv2Detector
 
 import cv2
 import h5py
@@ -308,7 +311,18 @@ class DetectorService:
             # Training phase
             model.train()
             train_losses = []
-            for images, masks in train_loader:
+            total_batches = len(train_loader)
+            self._training_progress.total_batches = total_batches
+            self._training_progress.current_batch = 0
+
+            from tqdm import tqdm
+            pbar = tqdm(
+                train_loader,
+                desc=f"Epoch {epoch + 1}/{max_epochs}",
+                leave=False,
+                ncols=100,
+            )
+            for batch_idx, (images, masks) in enumerate(pbar):
                 images = images.to("cuda")
                 masks = masks.to("cuda")
 
@@ -318,8 +332,15 @@ class DetectorService:
                 loss.backward()
                 optimizer.step()
 
-                train_losses.append(loss.item())
+                batch_loss = loss.item()
+                train_losses.append(batch_loss)
 
+                # Update batch progress
+                self._training_progress.current_batch = batch_idx + 1
+                self._training_progress.batch_loss = batch_loss
+                pbar.set_postfix(loss=f"{batch_loss:.4f}")
+
+            pbar.close()
             avg_train_loss = sum(train_losses) / len(train_losses)
 
             # Validation phase
@@ -327,13 +348,20 @@ class DetectorService:
             if val_loader is not None:
                 model.eval()
                 val_losses = []
+                val_pbar = tqdm(
+                    val_loader,
+                    desc=f"Epoch {epoch + 1} Val",
+                    leave=False,
+                    ncols=100,
+                )
                 with torch.no_grad():
-                    for images, masks in val_loader:
+                    for images, masks in val_pbar:
                         images = images.to("cuda")
                         masks = masks.to("cuda")
                         logits = model(images)
                         loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
                         val_losses.append(loss.item())
+                val_pbar.close()
                 avg_val_loss = sum(val_losses) / len(val_losses)
 
             # Update progress
@@ -468,7 +496,7 @@ class DetectorService:
                 with h5py.File(h5_path, "a") as h5_file:
                     # Get original mask shape
                     mask_shape = h5_file["masks"].shape  # (N, H, W)
-                    num_frames, orig_h, orig_w = mask_shape
+                    _, orig_h, orig_w = mask_shape
 
                     # Create or get detector_masks dataset
                     if "detector_masks" not in h5_file:

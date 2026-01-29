@@ -14,7 +14,7 @@ dependencies = [
     "torchvision",
     "opencv-python>=4.11.0.86",
     "einops>=0.8.1",
-    "decord>=0.6.0",
+    "eva-decord>=0.6.0",
     "h5py>=3.11.0",
     "pillow>=10.0.0",
     "httpx>=0.28.1",
@@ -26,6 +26,9 @@ dependencies = [
     "jax-moseq[cuda]",
     "joblib>=1.3.0",
     "sam3",
+    "ipython",
+    "pycocotools",
+    "hydra-core>=1.3.2",
 ]
 
 [build-system]
