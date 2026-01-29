@@ -420,3 +420,124 @@ class SAM2StreamingSegmentor:
         del self.sessions[video_id]
 
         return True
+
+    def add_point_prompt(
+        self,
+        video_id: str,
+        frame_idx: int,
+        location: tuple[float, float] | list[tuple[float, float]],
+        label: int | list[int],
+    ) -> np.ndarray:
+        """Add point prompt(s) to a BLANK frame and generate initial mask.
+
+        This method is for adding prompts to frames that don't have existing masks.
+        For refining existing masks with additional points, use refine_mask() instead.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Index of the frame to annotate.
+            location: (x, y) point or list of points in original frame coords.
+            label: Label(s) for each point. 1=positive, 0=negative.
+
+        Returns:
+            Binary mask array (height, width) with dtype uint8, values 0 or 255.
+
+        Raises:
+            KeyError: If video_id is not open.
+        """
+        # 1. Get session state
+        session = self.sessions[video_id]
+        masks = session["masks"]
+        logits = session["logits"]
+        frame_dims = session["frame_dims"]  # (height, width)
+        output_dict = session["output_dict"]
+        cond_frame_indices = session["cond_frame_indices"]
+
+        # 2. Normalize location/label to lists
+        if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
+            # Single point: (x, y)
+            locations = [location]
+        else:
+            locations = list(location)
+
+        if isinstance(label, int):
+            labels = [label]
+        else:
+            labels = list(label)
+
+        # 3. Scale points to INPUT_SIZE (1024) space
+        # Original coords are in frame_dims (height, width), need to scale to 1024x1024
+        orig_h, orig_w = frame_dims
+        scaled_points = []
+        for x, y in locations:
+            # Scale from original frame space to 1024x1024 space
+            scaled_x = x * self.INPUT_SIZE / orig_w
+            scaled_y = y * self.INPUT_SIZE / orig_h
+            scaled_points.append([scaled_x, scaled_y])
+
+        # 4. Create point_inputs dict with tensors on device
+        point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
+        point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
+        point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
+        point_labels = point_labels.unsqueeze(0)  # (1, N)
+
+        point_inputs = {
+            "point_coords": point_coords,
+            "point_labels": point_labels,
+        }
+
+        # 5. Get image features and prepare backbone features
+        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+        current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+            self._prepare_backbone_features(backbone_out)
+        )
+
+        # 6. Determine is_init_cond_frame (True if no existing memory)
+        has_existing_memory = (
+            len(output_dict["cond_frame_outputs"]) > 0
+            or len(output_dict["non_cond_frame_outputs"]) > 0
+        )
+        is_init_cond_frame = not has_existing_memory
+
+        # 7. Call track_step with point_inputs
+        with torch.inference_mode():
+            current_out = self.predictor.track_step(
+                frame_idx=frame_idx,
+                is_init_cond_frame=is_init_cond_frame,
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=point_inputs,
+                mask_inputs=None,
+                output_dict=output_dict,
+                num_frames=session["num_frames"],
+            )
+
+        # 8. Extract mask from pred_masks_high_res
+        # pred_masks_high_res has shape (1, num_objects, H, W), we want first object
+        pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
+
+        # 9. Threshold at 0, convert to uint8 * 255, resize to original dims
+        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_resized = cv2.resize(
+            mask_binary,
+            (orig_w, orig_h),  # (width, height) for cv2.resize
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        # 10. Save mask to masks storage, logits to logits storage
+        masks[frame_idx] = mask_resized
+
+        # Save low-res logits for potential refinement
+        # pred_masks has shape (1, num_objects, H, W) - low res version
+        pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+        logits[frame_idx] = pred_masks_low_res
+
+        # 11. Add frame_idx to cond_frame_indices
+        cond_frame_indices.add(frame_idx)
+
+        # 12. Store compact output in output_dict["cond_frame_outputs"]
+        output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+        # 13. Return the mask
+        return mask_resized
