@@ -16,6 +16,7 @@ import {
   clearAllAlignmentLabels,
   getPCAStatus,
   runPCA,
+  applyDetectorToAll,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -357,6 +358,18 @@ const handleTrainDetector = async () => {
   }
 }
 
+const handleApplyDetectorToAll = async () => {
+  if (!projectId.value || isDetectorTraining.value) return
+  try {
+    await applyDetectorToAll(projectId.value)
+    // Navigate to detector page to see progress
+    router.push(`/project/${projectId.value}/detector`)
+  } catch (e: any) {
+    console.error('Failed to start detector apply:', e)
+    alert(e.message || 'Failed to start detector apply')
+  }
+}
+
 const hasAlignedVideos = computed(() => {
   return Object.values(alignedVideoExists.value).some(exists => exists)
 })
@@ -612,6 +625,14 @@ const formatScore = (score: number | undefined) => {
             @click="router.push(`/project/${projectId}/detector`)"
           >
             <span class="button-label">View Detector Training</span>
+          </button>
+          <button
+            v-if="detectorModelExists"
+            class="sidebar-button apply-detector-button"
+            @click="handleApplyDetectorToAll"
+            :disabled="isDetectorTraining"
+          >
+            <span class="button-label">{{ isDetectorTraining ? 'Applying...' : 'Apply to All Videos' }}</span>
           </button>
 
           <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">

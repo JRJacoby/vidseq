@@ -569,3 +569,177 @@ class DetectorService:
                         self._training_progress.apply_current += 1
 
         logger.info(f"Applied detector to {len(all_frames)} training frames")
+
+    def apply_to_all(self, project_path: Path) -> bool:
+        """Apply detector to all frames of all videos in the project.
+
+        Runs in background thread. Skips frames that already have detector masks.
+        Use get_training_progress() to monitor (reuses apply_current/apply_total).
+
+        Returns:
+            True if started successfully.
+        """
+        if self._is_training:
+            raise RuntimeError("Training or apply already in progress")
+
+        model_path = project_path / "models" / "detector.pt"
+        if not model_path.exists():
+            raise RuntimeError("No trained detector model found. Train first.")
+
+        self._is_training = True
+        self._stop_requested = False
+
+        def _apply_thread():
+            try:
+                self._apply_to_all_sync(project_path)
+            except Exception as e:
+                logger.exception("Apply to all failed")
+                self._training_progress.status = "failed"
+                self._training_progress.error_message = str(e)
+            finally:
+                self._is_training = False
+
+        self._training_thread = threading.Thread(target=_apply_thread, daemon=True)
+        self._training_thread.start()
+        return True
+
+    def _apply_to_all_sync(self, project_path: Path) -> None:
+        """Synchronous implementation of apply to all frames."""
+        from vidseq.services.detector_model import DINOv2Detector
+
+        logger.info("Applying detector to all frames in project...")
+
+        # Load model
+        model = DINOv2Detector(device="cuda")
+        model.load_decoder(str(project_path / "models" / "detector.pt"))
+        model.eval()
+
+        # Get all videos
+        db_manager = DatabaseManager.get_instance()
+        engine = db_manager.get_project_engine(project_path)
+
+        with Session(engine) as session:
+            videos = session.execute(select(Video)).scalars().all()
+            video_list = [(v.id, v.path, v.num_frames) for v in videos]
+
+        # Count total frames to process
+        total_frames = sum(nf for _, _, nf in video_list if nf)
+
+        # Initialize progress
+        self._training_progress = DetectorTrainingProgress(
+            is_training=True,
+            status="applying",
+            started_at=time.time(),
+            apply_current=0,
+            apply_total=total_frames,
+        )
+
+        processed = 0
+        skipped = 0
+
+        # Use bfloat16 for faster inference
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            for video_id, video_path, frame_count in video_list:
+                if self._stop_requested:
+                    logger.info("Apply stopped by user")
+                    self._training_progress.status = "stopped"
+                    break
+
+                if not frame_count:
+                    continue
+
+                h5_path = project_path / "masks" / f"{video_id}.h5"
+                if not h5_path.exists():
+                    # No tracker masks exist, skip this video
+                    self._training_progress.apply_current += frame_count
+                    continue
+
+                # Open video
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    logger.warning(f"Could not open video {video_path}")
+                    self._training_progress.apply_current += frame_count
+                    continue
+
+                with h5py.File(str(h5_path), "a") as h5_file:
+                    # Get original mask shape from tracker masks
+                    mask_shape = h5_file["masks"].shape  # (N, H, W)
+                    num_frames, orig_h, orig_w = mask_shape
+
+                    # Create detector_masks dataset if needed
+                    if "detector_masks" not in h5_file:
+                        h5_file.create_dataset(
+                            "detector_masks",
+                            shape=mask_shape,
+                            dtype=np.uint8,
+                            chunks=(1, orig_h, orig_w),
+                            compression="gzip",
+                        )
+                    detector_masks = h5_file["detector_masks"]
+
+                    for frame_idx in range(num_frames):
+                        if self._stop_requested:
+                            break
+
+                        # Check if mask already exists (non-zero)
+                        existing = detector_masks[frame_idx]
+                        if np.any(existing):
+                            skipped += 1
+                            self._training_progress.apply_current += 1
+                            continue
+
+                        # Read frame
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                        ret, frame = cap.read()
+                        if not ret:
+                            self._training_progress.apply_current += 1
+                            continue
+
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        h, w = frame.shape[:2]
+
+                        # Resize preserving aspect ratio
+                        target_size = 518
+                        scale = target_size / max(h, w)
+                        new_h, new_w = int(h * scale), int(w * scale)
+                        frame_resized = cv2.resize(frame, (new_w, new_h))
+
+                        # Trim to multiple of 14
+                        trim_h = (frame_resized.shape[0] // 14) * 14
+                        trim_w = (frame_resized.shape[1] // 14) * 14
+                        frame_resized = frame_resized[:trim_h, :trim_w]
+
+                        # To tensor
+                        frame_tensor = (
+                            torch.from_numpy(frame_resized)
+                            .permute(2, 0, 1)
+                            .float()
+                            / 255.0
+                        )
+                        frame_tensor = frame_tensor.unsqueeze(0).to("cuda")
+
+                        # Inference
+                        logits = model(frame_tensor)
+                        mask_pred = (torch.sigmoid(logits) > 0.5).float()
+
+                        # Resize back to original size
+                        mask_pred = torch.nn.functional.interpolate(
+                            mask_pred,
+                            size=(orig_h, orig_w),
+                            mode="nearest",
+                        )
+                        mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
+
+                        # Save to HDF5
+                        detector_masks[frame_idx] = mask_np
+                        processed += 1
+
+                        self._training_progress.apply_current += 1
+
+                cap.release()
+
+        if self._training_progress.status != "stopped":
+            self._training_progress.status = "completed"
+
+        self._training_progress.is_training = False
+        logger.info(f"Applied detector to {processed} frames, skipped {skipped} existing")
