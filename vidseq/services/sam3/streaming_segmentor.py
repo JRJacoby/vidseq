@@ -368,6 +368,44 @@ class StreamingSegmentor:
         except (IndexError, KeyError):
             return False
 
+    def _compute_bbox_iou(self, mask1: np.ndarray, mask2: np.ndarray) -> float:
+        """Compute IoU between bounding boxes of two binary masks."""
+        def get_bbox(mask):
+            rows = np.any(mask, axis=1)
+            cols = np.any(mask, axis=0)
+            if not rows.any() or not cols.any():
+                return None
+            y_indices = np.where(rows)[0]
+            x_indices = np.where(cols)[0]
+            y1, y2 = y_indices[0], y_indices[-1] + 1
+            x1, x2 = x_indices[0], x_indices[-1] + 1
+            return (x1, y1, x2, y2)
+
+        box1 = get_bbox(mask1)
+        box2 = get_bbox(mask2)
+
+        if box1 is None or box2 is None:
+            return 0.0
+
+        # Intersection
+        xi1 = max(box1[0], box2[0])
+        yi1 = max(box1[1], box2[1])
+        xi2 = min(box1[2], box2[2])
+        yi2 = min(box1[3], box2[3])
+        inter_width = max(0, xi2 - xi1)
+        inter_height = max(0, yi2 - yi1)
+        inter_area = inter_width * inter_height
+
+        # Union
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union_area = area1 + area2 - inter_area
+
+        if union_area <= 0:
+            return 0.0
+
+        return inter_area / union_area
+
     def _read_frame(self, frames, frame_idx: int) -> np.ndarray:
         """Read a specific frame from the frame source.
 
