@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -162,6 +163,241 @@ class DetectorService:
     def model_exists(self, project_path: Path) -> bool:
         """Check if trained model exists."""
         return (project_path / "models" / "detector.pt").exists()
+
+    def train(
+        self,
+        project_path: Path,
+        max_epochs: int = 1000,
+        batch_size: int = 4,
+        lr: float = 1e-4,
+        lr_patience: int = 10,
+        lr_factor: float = 0.25,
+        early_stop_patience: int = 20,
+    ) -> bool:
+        """Start training in background thread.
+
+        Returns immediately. Use get_training_progress() to monitor.
+        """
+        if self._is_training:
+            raise RuntimeError("Training already in progress")
+
+        self._is_training = True
+        self._stop_requested = False
+
+        def _train_thread():
+            try:
+                self._train_sync(
+                    project_path,
+                    max_epochs,
+                    batch_size,
+                    lr,
+                    lr_patience,
+                    lr_factor,
+                    early_stop_patience,
+                )
+            except Exception as e:
+                logger.exception("Training failed")
+                self._training_progress.status = "failed"
+                self._training_progress.error_message = str(e)
+            finally:
+                self._is_training = False
+
+        self._training_thread = threading.Thread(target=_train_thread, daemon=True)
+        self._training_thread.start()
+        return True
+
+    def _train_sync(
+        self,
+        project_path: Path,
+        max_epochs: int,
+        batch_size: int,
+        lr: float,
+        lr_patience: int,
+        lr_factor: float,
+        early_stop_patience: int,
+    ) -> None:
+        """Synchronous training implementation."""
+        import torch.nn as nn
+        from torch.utils.data import DataLoader
+        from vidseq.services.detector_model import DINOv2Detector
+
+        logger.info(f"Starting detector training: max_epochs={max_epochs}, batch_size={batch_size}")
+
+        # Gather training data
+        all_frames = self._gather_training_frames(project_path)
+        if len(all_frames) == 0:
+            raise RuntimeError("No training frames found. Mark training ranges first.")
+
+        # Train/val split
+        import random
+        random.shuffle(all_frames)
+        use_validation = len(all_frames) >= MIN_FRAMES_FOR_VALIDATION
+
+        if use_validation:
+            split_idx = int(len(all_frames) * 0.8)
+            train_frames = all_frames[:split_idx]
+            val_frames = all_frames[split_idx:]
+        else:
+            train_frames = all_frames
+            val_frames = []
+
+        # Initialize progress
+        self._training_progress = DetectorTrainingProgress(
+            is_training=True,
+            current_epoch=0,
+            max_epochs=max_epochs,
+            current_lr=lr,
+            lr_patience=lr_patience,
+            early_stop_patience=early_stop_patience,
+            status="training",
+            started_at=time.time(),
+            num_train_frames=len(train_frames),
+            num_val_frames=len(val_frames),
+        )
+
+        # Create datasets and loaders
+        train_dataset = DetectorDataset(train_frames, project_path)
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
+        )
+
+        val_loader = None
+        val_dataset = None
+        if use_validation:
+            val_dataset = DetectorDataset(val_frames, project_path)
+            val_loader = DataLoader(
+                val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
+            )
+
+        # Initialize model
+        model = DINOv2Detector(device="cuda")
+        model.train()
+
+        # Loss and optimizer
+        bce_loss = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.AdamW(
+            model.decoder.parameters(), lr=lr, weight_decay=1e-4
+        )
+
+        def dice_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+            probs = torch.sigmoid(logits)
+            intersection = (probs * targets).sum(dim=(2, 3))
+            union = probs.sum(dim=(2, 3)) + targets.sum(dim=(2, 3))
+            dice = (2 * intersection + 1) / (union + 1)
+            return 1 - dice.mean()
+
+        # Training state
+        best_val_loss = float("inf")
+        best_epoch = 0
+        epochs_without_improvement = 0
+        current_lr = lr
+        lr_reduced_this_plateau = False
+        min_lr = 1e-7
+
+        # Ensure model save directory exists
+        (project_path / "models").mkdir(parents=True, exist_ok=True)
+        model_path = project_path / "models" / "detector.pt"
+
+        # Training loop
+        for epoch in range(max_epochs):
+            if self._stop_requested:
+                logger.info("Training stopped by user")
+                self._training_progress.status = "stopped"
+                break
+
+            # Training phase
+            model.train()
+            train_losses = []
+            for images, masks in train_loader:
+                images = images.to("cuda")
+                masks = masks.to("cuda")
+
+                optimizer.zero_grad()
+                logits = model(images)
+                loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+                loss.backward()
+                optimizer.step()
+
+                train_losses.append(loss.item())
+
+            avg_train_loss = sum(train_losses) / len(train_losses)
+
+            # Validation phase
+            avg_val_loss = avg_train_loss  # Default if no validation
+            if val_loader is not None:
+                model.eval()
+                val_losses = []
+                with torch.no_grad():
+                    for images, masks in val_loader:
+                        images = images.to("cuda")
+                        masks = masks.to("cuda")
+                        logits = model(images)
+                        loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+                        val_losses.append(loss.item())
+                avg_val_loss = sum(val_losses) / len(val_losses)
+
+            # Update progress
+            self._training_progress.current_epoch = epoch + 1
+            self._training_progress.current_train_loss = avg_train_loss
+            self._training_progress.current_val_loss = avg_val_loss
+            self._training_progress.train_loss_history.append(avg_train_loss)
+            self._training_progress.val_loss_history.append(avg_val_loss)
+
+            # Check for improvement
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_epoch = epoch + 1
+                epochs_without_improvement = 0
+                lr_reduced_this_plateau = False
+                model.save_decoder(str(model_path))
+                logger.info(
+                    f"Epoch {epoch + 1}/{max_epochs}: train={avg_train_loss:.6f}, "
+                    f"val={avg_val_loss:.6f} (new best)"
+                )
+            else:
+                epochs_without_improvement += 1
+                logger.info(
+                    f"Epoch {epoch + 1}/{max_epochs}: train={avg_train_loss:.6f}, "
+                    f"val={avg_val_loss:.6f}, no improvement x{epochs_without_improvement}"
+                )
+
+            self._training_progress.best_val_loss = best_val_loss
+            self._training_progress.best_epoch = best_epoch
+            self._training_progress.epochs_without_improvement = epochs_without_improvement
+
+            # Early stopping
+            if epochs_without_improvement >= early_stop_patience:
+                logger.info(f"Early stopping after {epoch + 1} epochs")
+                break
+
+            # LR reduction
+            if (
+                epochs_without_improvement >= lr_patience
+                and not lr_reduced_this_plateau
+                and current_lr > min_lr
+            ):
+                current_lr *= lr_factor
+                for param_group in optimizer.param_groups:
+                    param_group["lr"] = current_lr
+                lr_reduced_this_plateau = True
+                logger.info(f"Reduced learning rate to {current_lr:.2e}")
+
+            self._training_progress.current_lr = current_lr
+            self._training_progress.lr_reduced_this_plateau = lr_reduced_this_plateau
+
+        # Cleanup
+        train_dataset.close()
+        if val_dataset:
+            val_dataset.close()
+
+        # Mark completed and apply to training data
+        if self._training_progress.status == "training":
+            self._training_progress.status = "applying"
+            self._apply_to_training_data(project_path, model)
+            self._training_progress.status = "completed"
+
+        self._training_progress.is_training = False
+        logger.info(f"Training completed. Best epoch: {best_epoch}, best val loss: {best_val_loss:.6f}")
 
     def _gather_training_frames(
         self,
