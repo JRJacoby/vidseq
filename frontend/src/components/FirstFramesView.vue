@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideos, getFrameImage, type Video } from '@/services/api'
+import { getVideos, getFrameImage, getDetectorMask, type Video } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,7 +32,17 @@ const pageVideos = computed(() => {
 
 // Per-cell state (Map keyed by video ID)
 const frameImages = ref<Map<number, ImageBitmap>>(new Map())
+const detectorMasks = ref<Map<number, ImageBitmap>>(new Map())
 const cellCanvases = ref<Map<number, HTMLCanvasElement>>(new Map())
+
+// Track which videos have valid (non-empty) detector masks
+const videosWithMasks = computed(() => {
+  return new Set(
+    pageVideos.value
+      .filter(v => detectorMasks.value.has(v.id))
+      .map(v => v.id)
+  )
+})
 
 // Page numbers for pagination UI (with ellipsis for large counts)
 const visiblePageNumbers = computed(() => {
@@ -103,15 +113,41 @@ const loadPageData = async () => {
   // Cleanup old bitmaps
   frameImages.value.forEach(img => img.close())
   frameImages.value.clear()
+  detectorMasks.value.forEach(img => img.close())
+  detectorMasks.value.clear()
 
   try {
-    // Load all frame images for current page in parallel
+    // Load all frame images and detector masks for current page in parallel
     const loadPromises = pageVideos.value.map(async (video) => {
       try {
-        const frameBlob = await getFrameImage(projectId.value, video.id, 0)
+        // Fetch frame and detector mask in parallel
+        const [frameBlob, maskBlob] = await Promise.all([
+          getFrameImage(projectId.value, video.id, 0),
+          getDetectorMask(projectId.value, video.id, 0).catch(() => null),
+        ])
 
         const imageBitmap = await createImageBitmap(frameBlob)
         frameImages.value.set(video.id, imageBitmap)
+
+        // Check if mask is non-empty before storing
+        if (maskBlob) {
+          const maskBitmap = await createImageBitmap(maskBlob)
+          // Check if mask has any non-transparent pixels
+          const tempCanvas = document.createElement('canvas')
+          tempCanvas.width = maskBitmap.width
+          tempCanvas.height = maskBitmap.height
+          const tempCtx = tempCanvas.getContext('2d')
+          if (tempCtx) {
+            tempCtx.drawImage(maskBitmap, 0, 0)
+            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height)
+            const hasContent = imageData.data.some((v, i) => i % 4 === 3 && v > 0) // Check alpha channel
+            if (hasContent) {
+              detectorMasks.value.set(video.id, maskBitmap)
+            } else {
+              maskBitmap.close()
+            }
+          }
+        }
 
         // Draw canvas for this video
         nextTick(() => {
@@ -161,6 +197,14 @@ const drawCell = (videoId: number) => {
 
   // Draw the frame image
   ctx.drawImage(image, 0, 0)
+
+  // Draw detector mask overlay if available
+  const mask = detectorMasks.value.get(videoId)
+  if (mask) {
+    ctx.globalAlpha = 0.4
+    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height)
+    ctx.globalAlpha = 1.0
+  }
 }
 
 // Page navigation
@@ -213,6 +257,8 @@ onUnmounted(() => {
   // Cleanup all ImageBitmaps
   frameImages.value.forEach(img => img.close())
   frameImages.value.clear()
+  detectorMasks.value.forEach(img => img.close())
+  detectorMasks.value.clear()
 })
 </script>
 
@@ -289,6 +335,7 @@ onUnmounted(() => {
           v-for="video in pageVideos"
           :key="video.id"
           class="frame-cell"
+          :class="{ 'missing-mask': !videosWithMasks.has(video.id) && !isLoading }"
         >
           <div class="cell-canvas-wrapper">
             <canvas
@@ -478,6 +525,24 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #fafafa;
+  position: relative;
+}
+
+.frame-cell.missing-mask {
+  border: 2px solid #ef4444;
+}
+
+.frame-cell.missing-mask::after {
+  content: 'No detector mask';
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  right: 0;
+  background: rgba(239, 68, 68, 0.9);
+  color: white;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  text-align: center;
 }
 
 .cell-canvas-wrapper {
