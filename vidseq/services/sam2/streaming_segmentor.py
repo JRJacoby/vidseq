@@ -421,6 +421,62 @@ class SAM2StreamingSegmentor:
 
         return True
 
+    def reset_frame(self, video_id: str, frame_idx: int) -> None:
+        """Reset a frame: clear its mask and remove from memory.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Frame index to reset.
+        """
+        session = self.sessions[video_id]
+        masks = session["masks"]
+        logits = session["logits"]
+        frame_dims = session["frame_dims"]  # (height, width)
+        output_dict = session["output_dict"]
+        cond_frame_indices = session["cond_frame_indices"]
+
+        # Clear mask (write zeros)
+        height, width = frame_dims
+        masks[frame_idx] = np.zeros((height, width), dtype=np.uint8)
+
+        # Clear logits (try/except in case storage doesn't support assignment)
+        try:
+            logits[frame_idx] = np.zeros((256, 256), dtype=np.float32)
+        except (TypeError, ValueError):
+            pass  # Storage may not support direct assignment
+
+        # Remove from cond_frame_indices
+        cond_frame_indices.discard(frame_idx)
+
+        # Remove from output_dict
+        output_dict["cond_frame_outputs"].pop(frame_idx, None)
+        output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
+
+        # Clear from cached_features if it's cached for this frame
+        cached = session.get("cached_features", {})
+        if cached.get("frame_idx") == frame_idx:
+            session["cached_features"] = {}
+
+    def reset_video(self, video_id: str) -> None:
+        """Reset entire video: clear all masks and memory.
+
+        Args:
+            video_id: The video identifier.
+        """
+        session = self.sessions[video_id]
+        output_dict = session["output_dict"]
+        cond_frame_indices = session["cond_frame_indices"]
+
+        # Clear output_dict (memory bank)
+        output_dict["cond_frame_outputs"].clear()
+        output_dict["non_cond_frame_outputs"].clear()
+
+        # Clear cond_frame_indices
+        cond_frame_indices.clear()
+
+        # Clear cached_features
+        session["cached_features"].clear()
+
     def add_point_prompt(
         self,
         video_id: str,
