@@ -48,3 +48,12 @@ lerna-debug.log*
 Thumbs.db
 sam2_models/
 sam2_plus_repo/
+
+# Local docs and experiments
+TODO.md
+docs/DECISIONS.md
+docs/plans/
+experiments/
+
+# Core dumps
+core.*
