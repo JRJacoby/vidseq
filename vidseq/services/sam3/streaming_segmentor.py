@@ -448,6 +448,7 @@ class StreamingSegmentor:
         logits,  # Indexable/assignable for logits storage (256x256 float32)
         frame_dims: tuple[int, int],  # (height, width)
         cond_frame_indices: set[int] | list[int] | None = None,
+        detector_masks=None,  # h5py dataset or None
     ) -> None:
         """Create a session with external frame, mask, and logits sources.
 
@@ -490,6 +491,7 @@ class StreamingSegmentor:
             "cond_frame_indices": cond_frame_indices,
             "cond_frame_memories": {},
             "frame_dims": frame_dims,
+            "detector_masks": detector_masks,
         }
 
         # Reconstruct conditioning frame memories from stored masks
