@@ -1202,3 +1202,108 @@ export function getCrowdMovieStreamUrl(projectId: number): string {
 export function getCrowdMovieVideoUrl(projectId: number, syllable: number): string {
     return `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/${syllable}/video`
 }
+
+// --- Detector API ---
+
+export interface DetectorStatus {
+    model_exists: boolean
+    is_training: boolean
+}
+
+export interface DetectorTrainingProgress {
+    is_training: boolean
+    status: 'idle' | 'training' | 'applying' | 'completed' | 'stopped' | 'failed'
+    current_epoch: number
+    max_epochs: number
+    current_train_loss: number
+    current_val_loss: number
+    train_loss_history: number[]
+    val_loss_history: number[]
+    best_val_loss: number | null
+    best_epoch: number
+    current_lr: number
+    epochs_without_improvement: number
+    lr_patience: number
+    early_stop_patience: number
+    num_train_frames: number
+    num_val_frames: number
+    apply_current: number
+    apply_total: number
+    error_message: string | null
+}
+
+export async function getDetectorStatus(projectId: number): Promise<DetectorStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/status`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get detector status'))
+    }
+    return response.json()
+}
+
+export async function trainDetector(
+    projectId: number,
+    maxEpochs: number = 1000,
+    lrPatience: number = 10,
+    earlyStopPatience: number = 20,
+): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/train`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            max_epochs: maxEpochs,
+            lr_patience: lrPatience,
+            early_stop_patience: earlyStopPatience,
+        }),
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to start detector training'))
+    }
+}
+
+export async function stopDetectorTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/stop`, {
+        method: 'POST',
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to stop detector training'))
+    }
+}
+
+export async function getDetectorTrainingStatus(projectId: number): Promise<DetectorTrainingProgress> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/training/status`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get detector training status'))
+    }
+    return response.json()
+}
+
+export function getDetectorTrainingStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/detector/training/stream`
+}
+
+export async function getDetectorMask(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-mask/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch detector mask'))
+    }
+    return response.blob()
+}
+
+export async function detectorMasksExist(
+    projectId: number,
+    videoId: number,
+): Promise<{ exists: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-masks/exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check detector masks'))
+    }
+    return response.json()
+}
