@@ -169,6 +169,11 @@ def handle_init_session(
             if "masks" in detector_file:
                 detector_masks = detector_file["masks"]
                 print(f"[SAM3 Worker] Loaded detector masks from {detector_h5_path}")
+            else:
+                # No masks dataset - close file handle
+                print(f"[SAM3 Worker] Warning: No 'masks' dataset in {detector_h5_path}")
+                detector_file.close()
+                detector_file = None
         except Exception as e:
             print(f"[SAM3 Worker] Warning: Failed to load detector masks: {e}")
             if detector_file is not None:
