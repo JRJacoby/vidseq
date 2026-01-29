@@ -8,6 +8,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Enable cuDNN benchmark for faster convolutions with fixed input sizes
+torch.backends.cudnn.benchmark = True
+
 
 class SegmentationDecoder(nn.Module):
     """Convolutional decoder that upsamples DINOv2 patch features to full resolution."""
@@ -89,6 +92,10 @@ class DINOv2Detector(nn.Module):
         self.backbone.eval()
         for param in self.backbone.parameters():
             param.requires_grad = False
+
+        # Compile backbone for faster inference (one-time cost on first forward)
+        if device == "cuda":
+            self.backbone = torch.compile(self.backbone)
 
         # Trainable decoder
         self.decoder = SegmentationDecoder(in_channels=1536)

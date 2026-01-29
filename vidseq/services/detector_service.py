@@ -297,6 +297,10 @@ class DetectorService:
         lr_reduced_this_plateau = False
         min_lr = 1e-7
 
+        # Use bfloat16 autocast for faster training on Ampere+ GPUs
+        use_amp = True
+        amp_dtype = torch.bfloat16
+
         # Ensure model save directory exists
         (project_path / "models").mkdir(parents=True, exist_ok=True)
         model_path = project_path / "models" / "detector.pt"
@@ -327,8 +331,12 @@ class DetectorService:
                 masks = masks.to("cuda")
 
                 optimizer.zero_grad()
-                logits = model(images)
-                loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+
+                with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+                    logits = model(images)
+                    loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+
+                # Backward pass outside autocast (bfloat16 doesn't need GradScaler)
                 loss.backward()
                 optimizer.step()
 
@@ -354,7 +362,7 @@ class DetectorService:
                     leave=False,
                     ncols=100,
                 )
-                with torch.no_grad():
+                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
                     for images, masks in val_pbar:
                         images = images.to("cuda")
                         masks = masks.to("cuda")
@@ -489,7 +497,8 @@ class DetectorService:
                 frames_by_video[video_id] = []
             frames_by_video[video_id].append((video_path, frame_idx))
 
-        with torch.no_grad():
+        # Use bfloat16 for faster inference
+        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for video_id, frame_list in frames_by_video.items():
                 h5_path = project_path / "masks" / f"{video_id}.h5"
 
