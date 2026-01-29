@@ -24,6 +24,7 @@ import {
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useYOLO } from '@/composables/useYOLO'
+import { useDetector } from '@/composables/useDetector'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -68,6 +69,13 @@ const {
   runInitialDetection,
   checkModelStatus,
 } = useYOLO(projectId)
+
+const {
+  isTraining: isDetectorTraining,
+  modelExists: detectorModelExists,
+  startTraining: startDetectorTraining,
+  checkStatus: checkDetectorStatus,
+} = useDetector(projectId)
 
 const loadProject = async () => {
   if (!projectStore.currentProjectId) return
@@ -337,6 +345,18 @@ const handleRunPCA = async () => {
   }
 }
 
+const handleTrainDetector = async () => {
+  if (!projectId.value || isDetectorTraining.value) return
+  try {
+    await startDetectorTraining(1000)
+    // Navigate to detector training page to see progress
+    router.push(`/project/${projectId.value}/detector`)
+  } catch (e: any) {
+    console.error('Failed to start detector training:', e)
+    alert(e.message || 'Failed to start detector training')
+  }
+}
+
 const hasAlignedVideos = computed(() => {
   return Object.values(alignedVideoExists.value).some(exists => exists)
 })
@@ -578,8 +598,24 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : 'Run PCA' }}</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : 'Running PCA...' }}
+          <h4 class="sidebar-section-title">DINOv2 Detector</h4>
+          <button
+            class="sidebar-button train-detector-button"
+            @click="handleTrainDetector"
+            :disabled="isDetectorTraining"
+          >
+            <span class="button-label">{{ isDetectorTraining ? 'Training...' : 'Train Detector' }}</span>
+          </button>
+          <button
+            v-if="detectorModelExists || isDetectorTraining"
+            class="sidebar-button view-detector-button"
+            @click="router.push(`/project/${projectId}/detector`)"
+          >
+            <span class="button-label">View Detector Training</span>
+          </button>
+
+          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
+            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
           </div>
         </aside>
       </div>
