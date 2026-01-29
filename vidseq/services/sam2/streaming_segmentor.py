@@ -658,3 +658,145 @@ class SAM2StreamingSegmentor:
 
         # 12. Return the refined mask
         return mask_resized
+
+    def propagate_sequential(
+        self,
+        video_id: str,
+        start_frame: int,
+        num_frames: int,
+        progress_interval: int = 10,
+    ) -> list[int]:
+        """Propagate tracking forward from start_frame.
+
+        Uses memory attention to track the object across frames without
+        requiring additional point prompts. Frames that are conditioning
+        frames (have user prompts) are skipped to preserve user annotations.
+
+        Args:
+            video_id: The video identifier.
+            start_frame: Frame index to start propagation from.
+            num_frames: Maximum number of frames to propagate.
+            progress_interval: Print progress every N frames (0 to disable).
+
+        Returns:
+            List of frame indices that were propagated.
+
+        Raises:
+            KeyError: If video_id is not open.
+            RuntimeError: If no memory exists (need to add a prompt first).
+        """
+        # Memory window size for eviction
+        MEM_WINDOW = 7
+
+        # 1. Get session state
+        session = self.sessions[video_id]
+        frames = session["frames"]
+        masks = session["masks"]
+        logits = session["logits"]
+        cond_frame_indices = session["cond_frame_indices"]
+        frame_dims = session["frame_dims"]  # (height, width)
+        output_dict = session["output_dict"]
+
+        # 2. Check output_dict has memory
+        has_memory = (
+            len(output_dict["cond_frame_outputs"]) > 0
+            or len(output_dict["non_cond_frame_outputs"]) > 0
+        )
+        if not has_memory:
+            raise RuntimeError(
+                "No memory exists for propagation. "
+                "Use add_point_prompt() to create an initial mask first."
+            )
+
+        orig_h, orig_w = frame_dims
+        propagated = []
+
+        # 3. Loop for num_frames iterations
+        for i in range(num_frames):
+            frame_idx = start_frame + i
+
+            # Skip if frame_idx in cond_indices (don't overwrite user prompts)
+            if frame_idx in cond_frame_indices:
+                continue
+
+            # Try to read frame from frames_source, break on IndexError/KeyError
+            try:
+                frame_bgr = frames[frame_idx]
+            except (IndexError, KeyError):
+                break
+
+            # Get image features and prepare backbone features
+            image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+            current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+                self._prepare_backbone_features(backbone_out)
+            )
+
+            # Call track_step for propagation (no point or mask inputs)
+            with torch.inference_mode():
+                current_out = self.predictor.track_step(
+                    frame_idx=frame_idx,
+                    is_init_cond_frame=False,
+                    current_vision_feats=current_vision_feats,
+                    current_vision_pos_embeds=current_vision_pos_embeds,
+                    feat_sizes=feat_sizes,
+                    point_inputs=None,
+                    mask_inputs=None,
+                    output_dict=output_dict,
+                    num_frames=session["num_frames"],
+                    run_mem_encoder=True,
+                )
+
+            # Extract mask from pred_masks_high_res
+            pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
+
+            # Get object score for debug logging
+            obj_score_logits = current_out.get("object_score_logits")
+            if obj_score_logits is not None:
+                obj_score = torch.sigmoid(obj_score_logits[0, 0]).item()
+            else:
+                obj_score = 0.0
+
+            # Threshold at 0, convert to uint8 * 255, resize to original dims
+            mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+            mask_resized = cv2.resize(
+                mask_binary,
+                (orig_w, orig_h),  # (width, height) for cv2.resize
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+            # Count mask pixels for debug logging
+            mask_pixels = np.sum(mask_resized > 0)
+
+            # Debug logging
+            print(f"  Frame {frame_idx}: obj_score={obj_score:.3f}, mask_pixels={mask_pixels}")
+
+            # Save mask to storage
+            masks[frame_idx] = mask_resized
+
+            # Save low-res logits for potential refinement
+            pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+            logits[frame_idx] = pred_masks_low_res
+
+            # Store in output_dict["non_cond_frame_outputs"]
+            output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(
+                current_out
+            )
+
+            # Memory eviction: remove frames from non_cond_frame_outputs where key <= frame_idx - MEM_WINDOW
+            eviction_threshold = frame_idx - MEM_WINDOW
+            keys_to_evict = [
+                k
+                for k in output_dict["non_cond_frame_outputs"]
+                if k <= eviction_threshold
+            ]
+            for k in keys_to_evict:
+                del output_dict["non_cond_frame_outputs"][k]
+
+            # Append frame_idx to propagated list
+            propagated.append(frame_idx)
+
+            # Progress reporting
+            if progress_interval > 0 and len(propagated) % progress_interval == 0:
+                print(f"  Propagated {len(propagated)} frames...")
+
+        return propagated
