@@ -33,6 +33,8 @@ class VideoResources:
     mask_file: h5py.File
     mask_dataset: Any  # h5py.Dataset - binary masks (uint8)
     logits_dataset: Any  # h5py.Dataset - low-res logits (float32) for refinement
+    detector_file: Optional[h5py.File] = None  # h5py.File for detector masks
+    detector_masks: Any = None  # h5py.Dataset for detector masks
 
 
 # Global state managed by the worker
@@ -157,12 +159,30 @@ def handle_init_session(
         mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
     )
 
+    # Open detector masks if available
+    detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
+    detector_file = None
+    detector_masks = None
+    if detector_h5_path.exists():
+        try:
+            detector_file = h5py.File(detector_h5_path, "r")
+            if "masks" in detector_file:
+                detector_masks = detector_file["masks"]
+                print(f"[SAM3 Worker] Loaded detector masks from {detector_h5_path}")
+        except Exception as e:
+            print(f"[SAM3 Worker] Warning: Failed to load detector masks: {e}")
+            if detector_file is not None:
+                detector_file.close()
+                detector_file = None
+
     # Store resources
     _video_resources[video_id] = VideoResources(
         frame_source=frame_source,
         mask_file=mask_file,
         mask_dataset=mask_dataset,
         logits_dataset=logits_dataset,
+        detector_file=detector_file,
+        detector_masks=detector_masks,
     )
 
     # Initialize StreamingSegmentor session
@@ -173,6 +193,7 @@ def handle_init_session(
         logits=logits_dataset,
         frame_dims=(height, width),
         cond_frame_indices=cond_frame_indices,
+        detector_masks=detector_masks,
     )
 
     return {
@@ -409,6 +430,64 @@ def handle_generate_training_masks(
     }
 
 
+def handle_propagate_with_detector(
+    params: dict,
+    segmentor: StreamingSegmentor,
+    response_callback: Callable[[dict], None],
+) -> dict:
+    """Propagate tracking with detector-based correction.
+
+    Args:
+        params: Command params with video_id, num_frames, iou_threshold
+        segmentor: StreamingSegmentor instance
+        response_callback: Callback for progress updates
+
+    Returns:
+        Response dict with frames_processed, frames_corrected, corrected_frame_indices
+    """
+    video_id = params["video_id"]
+    num_frames = params["num_frames"]
+    iou_threshold = params.get("iou_threshold", 0.5)
+
+    if segmentor is None:
+        raise RuntimeError("Model not loaded")
+
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+
+    # Check that detector masks are available
+    if resources.detector_masks is None:
+        raise RuntimeError(f"No detector masks available for video {video_id}")
+
+    def progress_callback(frame_idx: int, total: int) -> None:
+        if frame_idx % 50 == 0 or frame_idx == total - 1:
+            response_callback({
+                "type": "progress",
+                "frame_idx": frame_idx,
+                "total": total,
+            })
+
+    corrected_frames = segmentor.propagate_with_detector(
+        video_id=str(video_id),
+        num_frames=num_frames,
+        iou_threshold=iou_threshold,
+        progress_callback=progress_callback,
+    )
+
+    # Flush HDF5 to ensure writes are visible
+    resources.mask_file.flush()
+
+    return {
+        "type": "propagate_with_detector_result",
+        "status": "ok",
+        "frames_processed": num_frames,
+        "frames_corrected": len(corrected_frames),
+        "corrected_frame_indices": corrected_frames,
+    }
+
+
 def handle_reset_frame(
     params: dict,
     segmentor: StreamingSegmentor,
@@ -530,6 +609,8 @@ def _close_video_resources(video_id: int, segmentor: StreamingSegmentor) -> None
         resources = _video_resources.pop(video_id)
         resources.frame_source.close()
         resources.mask_file.close()
+        if resources.detector_file is not None:
+            resources.detector_file.close()
 
 
 def handle_close_session(

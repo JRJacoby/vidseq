@@ -316,6 +316,7 @@ class SAM2StreamingSegmentor:
         logits,  # Indexable/assignable for logits storage
         frame_dims: tuple[int, int],  # (height, width)
         cond_frame_indices: set[int] | list[int] | None = None,
+        detector_masks=None,  # Not used in SAM2 - for SAM3 compatibility
     ) -> None:
         """Create a session with external frame, mask, and logits sources.
 
@@ -859,3 +860,23 @@ class SAM2StreamingSegmentor:
                 print(f"  Propagated {len(propagated)} frames...")
 
         return propagated
+
+    def propagate_with_detector(
+        self,
+        video_id: str,
+        num_frames: int,
+        iou_threshold: float = 0.5,
+        progress_callback=None,
+    ) -> list[int]:
+        """Propagate with detector correction - not implemented for SAM2.
+
+        This feature requires SAM3 backend. Use SAM_BACKEND=sam3 environment
+        variable to enable detector-guided tracking.
+
+        Raises:
+            NotImplementedError: Always, as this feature requires SAM3.
+        """
+        raise NotImplementedError(
+            "propagate_with_detector requires SAM3 backend. "
+            "Set SAM_BACKEND=sam3 environment variable to use this feature."
+        )

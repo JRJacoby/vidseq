@@ -30,6 +30,7 @@ from vidseq.services.sam3.server.commands import (
     handle_init_session,
     handle_load_model,
     handle_propagate,
+    handle_propagate_with_detector,
     handle_refine_mask,
     handle_reset_frame,
     handle_reset_video,
@@ -336,6 +337,15 @@ class SAM3TCPServer:
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
                 result = handle_generate_training_masks(cmd, self._segmentor)
+
+            elif cmd_type == "propagate_with_detector":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
+                result = handle_propagate_with_detector(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
 
             elif cmd_type == "reset_frame":
                 if self._segmentor is None:
