@@ -648,39 +648,24 @@ class SAM3Service:
         project_id: int,
         project_path: Path,
         videos: list,
-        bboxes: dict[int, np.ndarray],
     ) -> list[int]:
         """
-        Start batch segmentation for all videos in a project.
+        Start batch segmentation for all videos in a project using detector-tracker approach.
+
+        For each video:
+        1. Initialize session (which loads detector masks)
+        2. Run propagate_with_detector command
+        3. Close session
 
         Args:
             project_id: ID of the project
             project_path: Path to the project folder
             videos: List of Video model instances
-            bboxes: Dict mapping video_id -> bbox array [x1, y1, x2, y2]
 
         Returns:
-            List of job IDs created
+            List of job IDs created (empty for now - synchronous execution)
         """
-        import uuid
-
-        # Prepare video configurations
-        video_configs = []
-        for video in videos:
-            bbox = bboxes.get(video.id)
-            if bbox is None:
-                continue
-
-            video_configs.append({
-                "video_id": video.id,
-                "video_path": video.path,
-                "bbox": bbox.tolist(),
-                "num_frames": video.num_frames,
-                "height": video.height,
-                "width": video.width,
-            })
-
-        if not video_configs:
+        if not videos:
             return []
 
         # Ensure model is loaded
@@ -694,24 +679,61 @@ class SAM3Service:
             time.sleep(1.0)
 
         self._ensure_worker_ready()
-        assert self._tcp_client is not None  # Set by _ensure_worker_ready
 
-        # Send command to worker (which now handles job creation and all DB updates)
-        cmd = {
-            "type": "segment_videos_batch",
-            "project_id": project_id,
-            "project_path": str(project_path),
-            "videos": video_configs,
-            "request_id": str(uuid.uuid4()),
-        }
+        # Process each video sequentially
+        for video in videos:
+            print(f"[SAM3 Service] Segmenting video {video.id} ({video.name})...")
 
-        result = self._tcp_client.send_command(cmd, timeout=10.0)
+            # Initialize session (this also loads detector masks)
+            try:
+                result = self._send_and_wait({
+                    "type": "init_session",
+                    "video_id": video.id,
+                    "video_path": video.path,
+                    "project_path": str(project_path),
+                    "num_frames": video.num_frames,
+                    "height": video.height,
+                    "width": video.width,
+                    "cond_frame_indices": [],  # Fresh session
+                }, timeout=600.0)
 
-        # Extract job IDs from response
-        if result.get("type") == "segment_videos_batch_started":
-            return result.get("job_ids", [])
+                if result.get("status") != "ok":
+                    print(f"[SAM3 Service] Failed to init session for video {video.id}: {result.get('error')}")
+                    continue
 
-        return []
+                # Run propagate_with_detector
+                result = self._send_and_wait({
+                    "type": "propagate_with_detector",
+                    "video_id": video.id,
+                    "num_frames": video.num_frames,
+                    "iou_threshold": 0.5,
+                }, timeout=3600.0)  # 1 hour timeout for long videos
+
+                if result.get("status") == "ok":
+                    frames_corrected = result.get("frames_corrected", 0)
+                    print(f"[SAM3 Service] Video {video.id} complete: "
+                          f"{video.num_frames} frames, {frames_corrected} corrected by detector")
+                else:
+                    print(f"[SAM3 Service] Failed to segment video {video.id}: {result.get('error')}")
+
+                # Close session
+                self._send_and_wait({
+                    "type": "close_session",
+                    "video_id": video.id,
+                }, timeout=30.0)
+
+            except Exception as e:
+                print(f"[SAM3 Service] Error segmenting video {video.id}: {e}")
+                # Try to close session on error
+                try:
+                    self._send_and_wait({
+                        "type": "close_session",
+                        "video_id": video.id,
+                    }, timeout=10.0)
+                except Exception:
+                    pass
+
+        return []  # No job IDs - synchronous execution
 
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -890,9 +912,8 @@ async def segment_all_videos(
     project_id: int,
     project_path: Path,
     videos: list,
-    bboxes: dict[int, np.ndarray],
 ) -> list[int]:
-    """Start batch segmentation for all videos in a project."""
+    """Start batch segmentation for all videos using detector-tracker approach."""
     return await SAM3Service.get_instance().segment_all_videos(
-        project_id, project_path, videos, bboxes
+        project_id, project_path, videos
     )

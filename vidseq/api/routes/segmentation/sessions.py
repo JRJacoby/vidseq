@@ -4,13 +4,15 @@ import asyncio
 import json
 from pathlib import Path
 
+import h5py
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import frame_data_service, sam3_service, video_service
+from vidseq.services import sam3_service, video_service
 
 router = APIRouter()
 
@@ -24,29 +26,39 @@ async def segment_all_videos_route(
     """
     Start batch segmentation for all videos in the project.
 
-    Validates that all videos have a bounding box on frame 0.
-    Returns 400 if any videos are missing frame 0 bounding boxes.
+    Validates that all videos have detector masks (frame 0 must be non-empty).
+    Returns 400 if any videos are missing detector masks.
     """
     videos = await video_service.get_all_videos(session)
     if not videos:
         raise HTTPException(status_code=400, detail="No videos found in project")
 
-    missing_bboxes = []
-    bboxes = {}
+    missing_detector_masks = []
 
     for video in videos:
-        bbox = await frame_data_service.load_bbox(session, video.id, 0)
-        if bbox is None:
-            missing_bboxes.append({"id": video.id, "name": video.name})
-        else:
-            bboxes[video.id] = bbox
+        detector_h5_path = project_path / "masks" / f"{video.id}_detector.h5"
+        if not detector_h5_path.exists():
+            missing_detector_masks.append({"id": video.id, "name": video.name})
+            continue
 
-    if missing_bboxes:
+        # Check frame 0 has non-empty mask
+        try:
+            with h5py.File(detector_h5_path, "r") as f:
+                if "masks" not in f:
+                    missing_detector_masks.append({"id": video.id, "name": video.name})
+                    continue
+                mask_0 = np.array(f["masks"][0])
+                if not mask_0.any():
+                    missing_detector_masks.append({"id": video.id, "name": video.name})
+        except Exception:
+            missing_detector_masks.append({"id": video.id, "name": video.name})
+
+    if missing_detector_masks:
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "Some videos are missing bounding boxes on frame 0. Please run initial detection or manually add a bounding box for these videos.",
-                "missing_videos": missing_bboxes
+                "message": "Some videos are missing detector masks. Please run 'Apply to All Videos' in the detector section first.",
+                "missing_videos": missing_detector_masks
             }
         )
 
@@ -54,7 +66,6 @@ async def segment_all_videos_route(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
-        bboxes=bboxes,
     )
 
     return {"job_ids": job_ids}
