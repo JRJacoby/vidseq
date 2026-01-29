@@ -2,6 +2,7 @@ import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
     getMask,
     getMasksBatch,
+    getDetectorMasksBatch,
     runSegmentation,
     refineMaskMultiPoint,
     resetFrame,
@@ -78,7 +79,8 @@ export function useSegmentation(
 
         isPrefetching = true
         try {
-            const maskResponse = await getMasksBatch(
+            const batchFn = maskViewMode.value === 'detector' ? getDetectorMasksBatch : getMasksBatch
+            const maskResponse = await batchFn(
                 projectId.value,
                 videoId.value,
                 startFrame,

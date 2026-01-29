@@ -94,28 +94,6 @@ def get_masks_batch_json(
     return result
 
 
-def clear_mask(
-    project_path: Path,
-    video_id: int,
-    frame_idx: int,
-) -> None:
-    """
-    Clear (zero out) a mask for a specific frame.
-
-    Does not reset SAM3 tracking state.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: Video ID
-        frame_idx: Frame index
-    """
-    mask_storage.clear_mask(
-        project_path=project_path,
-        video_id=video_id,
-        frame_idx=frame_idx,
-    )
-
-
 async def clear_video(
     project_path: Path,
     video_id: int,
@@ -126,36 +104,20 @@ async def clear_video(
     """
     Clear all masks and frame data for a video.
 
-    This is the master reset function that:
-    1. Closes SAM3 session (releases file handle)
-    2. Deletes the HDF5 mask file
-    3. Clears frame data from database
-    4. Re-initializes SAM3 session (recreates h5 file)
-
     Args:
         project_path: Path to the project folder
         video_id: Video ID
         session: Database session for clearing frame data
-        project_id: Project ID (required to re-init SAM3 session)
-        video_path: Path to the video file (required to re-init SAM3 session)
+        project_id: Project ID (required for SAM3 reset)
+        video_path: Path to the video file (unused, kept for API compatibility)
     """
     from vidseq.services import frame_data_service, sam3_service
 
-    # Close SAM3 session first to release file handle
+    # Reset via SAM3 service (handles all h5 file operations)
     if project_id is not None:
-        sam3_service.close_session(project_id, video_id)
-
-    # Delete HDF5 mask file
-    mask_storage.clear_all_masks(
-        project_path=project_path,
-        video_id=video_id,
-    )
+        sam3_service.reset_video(project_id, video_id, project_path)
 
     # Clear bboxes, frame_types, and scores from SQLite
     await frame_data_service.clear_all_frame_data(session, video_id)
-
-    # Re-init SAM3 session (recreates h5 file)
-    if project_id is not None and video_path is not None:
-        sam3_service.init_session(project_id, video_id, video_path, project_path)
 
 

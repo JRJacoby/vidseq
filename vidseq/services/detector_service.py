@@ -500,23 +500,25 @@ class DetectorService:
         # Use bfloat16 for faster inference
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for video_id, frame_list in frames_by_video.items():
-                h5_path = project_path / "masks" / f"{video_id}.h5"
+                tracker_h5_path = project_path / "masks" / f"{video_id}.h5"
+                detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
 
-                with h5py.File(h5_path, "a") as h5_file:
-                    # Get original mask shape
-                    mask_shape = h5_file["masks"].shape  # (N, H, W)
+                # Read original mask shape from tracker h5 file
+                with h5py.File(tracker_h5_path, "r") as tracker_h5:
+                    mask_shape = tracker_h5["masks"].shape  # (N, H, W)
                     _, orig_h, orig_w = mask_shape
 
-                    # Create or get detector_masks dataset
-                    if "detector_masks" not in h5_file:
+                with h5py.File(detector_h5_path, "a") as h5_file:
+                    # Create or get masks dataset
+                    if "masks" not in h5_file:
                         h5_file.create_dataset(
-                            "detector_masks",
+                            "masks",
                             shape=mask_shape,
                             dtype=np.uint8,
                             chunks=(1, orig_h, orig_w),
                             compression="gzip",
                         )
-                    detector_masks = h5_file["detector_masks"]
+                    detector_masks = h5_file["masks"]
 
                     for video_path, frame_idx in frame_list:
                         # Load and preprocess frame
@@ -620,10 +622,10 @@ class DetectorService:
 
         with Session(engine) as session:
             videos = session.execute(select(Video)).scalars().all()
-            video_list = [(v.id, v.path, v.num_frames) for v in videos]
+            video_list = [(v.id, v.path, v.num_frames, v.height, v.width) for v in videos]
 
         # Count total frames to process
-        total_frames = sum(nf for _, _, nf in video_list if nf)
+        total_frames = sum(nf for _, _, nf, _, _ in video_list if nf)
 
         # Initialize progress
         self._training_progress = DetectorTrainingProgress(
@@ -637,56 +639,85 @@ class DetectorService:
         processed = 0
         skipped = 0
 
+        from tqdm import tqdm
+
         # Use bfloat16 for faster inference
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            for video_id, video_path, frame_count in video_list:
+            for video_idx, (video_id, video_path, frame_count, orig_h, orig_w) in enumerate(video_list):
                 if self._stop_requested:
                     logger.info("Apply stopped by user")
                     self._training_progress.status = "stopped"
                     break
 
                 if not frame_count:
+                    logger.info(f"Video {video_idx + 1}/{len(video_list)}: skipping (no frames)")
                     continue
 
-                h5_path = project_path / "masks" / f"{video_id}.h5"
-                if not h5_path.exists():
-                    # No tracker masks exist, skip this video
-                    self._training_progress.apply_current += frame_count
-                    continue
+                detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
 
                 # Open video
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
-                    logger.warning(f"Could not open video {video_path}")
+                    logger.warning(f"Video {video_idx + 1}/{len(video_list)}: could not open {video_path}")
                     self._training_progress.apply_current += frame_count
                     continue
 
-                with h5py.File(str(h5_path), "a") as h5_file:
-                    # Get original mask shape from tracker masks
-                    mask_shape = h5_file["masks"].shape  # (N, H, W)
-                    num_frames, orig_h, orig_w = mask_shape
+                video_name = Path(video_path).name
+                logger.info(f"Video {video_idx + 1}/{len(video_list)}: {video_name}")
 
-                    # Create detector_masks dataset if needed
-                    if "detector_masks" not in h5_file:
+                # Use video dimensions for mask shape
+                num_frames = frame_count
+                mask_shape = (num_frames, orig_h, orig_w)
+
+                # Ensure masks directory exists
+                detector_h5_path.parent.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    h5_file = h5py.File(str(detector_h5_path), "a")
+                except OSError as e:
+                    # For writing detector masks, any error is a real problem
+                    # (we should be able to create/open the file)
+                    raise RuntimeError(
+                        f"Failed to open/create detector HDF5 file: {detector_h5_path}. Error: {e}"
+                    )
+
+                try:
+                    # Create masks dataset if needed
+                    if "masks" not in h5_file:
                         h5_file.create_dataset(
-                            "detector_masks",
+                            "masks",
                             shape=mask_shape,
                             dtype=np.uint8,
                             chunks=(1, orig_h, orig_w),
                             compression="gzip",
                         )
-                    detector_masks = h5_file["detector_masks"]
+                    detector_masks = h5_file["masks"]
 
-                    for frame_idx in range(num_frames):
+                    video_processed = 0
+                    video_skipped = 0
+
+                    pbar = tqdm(
+                        range(num_frames),
+                        desc=f"Video {video_idx + 1}/{len(video_list)}",
+                        leave=False,
+                        ncols=100,
+                    )
+                    for frame_idx in pbar:
                         if self._stop_requested:
                             break
 
                         # Check if mask already exists (non-zero)
-                        existing = detector_masks[frame_idx]
-                        if np.any(existing):
-                            skipped += 1
-                            self._training_progress.apply_current += 1
-                            continue
+                        # Use try/except because newly created datasets may fail to read
+                        try:
+                            existing = detector_masks[frame_idx]
+                            if np.any(existing):
+                                video_skipped += 1
+                                skipped += 1
+                                self._training_progress.apply_current += 1
+                                continue
+                        except OSError:
+                            # Dataset chunk not initialized yet, treat as empty
+                            pass
 
                         # Read frame
                         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -733,10 +764,18 @@ class DetectorService:
                         # Save to HDF5
                         detector_masks[frame_idx] = mask_np
                         processed += 1
+                        video_processed += 1
 
                         self._training_progress.apply_current += 1
 
+                    pbar.close()
+                finally:
+                    h5_file.close()
+
                 cap.release()
+                logger.info(
+                    f"  Processed {video_processed} frames, skipped {video_skipped} existing"
+                )
 
         if self._training_progress.status != "stopped":
             self._training_progress.status = "completed"

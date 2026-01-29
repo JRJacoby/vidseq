@@ -196,7 +196,7 @@ async def get_detector_mask(
 
     Returns PNG binary. If no detector mask exists, returns a transparent (all zeros) mask.
     """
-    h5_path = project_path / "masks" / f"{video.id}.h5"
+    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
 
     if not h5_path.exists():
         # Return empty mask
@@ -206,17 +206,71 @@ async def get_detector_mask(
 
     try:
         with h5py.File(h5_path, "r") as f:
-            if "detector_masks" not in f:
-                # No detector masks dataset
+            if "masks" not in f:
+                # No masks dataset
                 mask = np.zeros((video.height, video.width), dtype=np.uint8)
             else:
-                mask = np.array(f["detector_masks"][frame_idx])
+                mask = np.array(f["masks"][frame_idx])
     except (OSError, KeyError) as e:
         logger.warning(f"Error reading detector mask: {e}")
         mask = np.zeros((video.height, video.width), dtype=np.uint8)
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/detector-masks-batch")
+async def get_detector_masks_batch(
+    start_frame: int,
+    count: int = 100,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Get multiple detector masks in a single request.
+
+    Returns JSON with base64-encoded PNG masks for efficient batch transfer.
+    """
+    import base64
+
+    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
+    end_frame = min(start_frame + count, video.num_frames)
+    actual_count = end_frame - start_frame
+
+    masks_list = []
+
+    if not h5_path.exists():
+        # Return empty masks
+        for i in range(actual_count):
+            mask = np.zeros((video.height, video.width), dtype=np.uint8)
+            png_bytes = segmentation_service.mask_to_png(mask)
+            png_base64 = base64.b64encode(png_bytes).decode('ascii')
+            masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
+    else:
+        try:
+            with h5py.File(h5_path, "r") as f:
+                if "masks" not in f:
+                    # No masks dataset - return empty
+                    for i in range(actual_count):
+                        mask = np.zeros((video.height, video.width), dtype=np.uint8)
+                        png_bytes = segmentation_service.mask_to_png(mask)
+                        png_base64 = base64.b64encode(png_bytes).decode('ascii')
+                        masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
+                else:
+                    masks = np.array(f["masks"][start_frame:end_frame])
+                    for i, mask in enumerate(masks):
+                        png_bytes = segmentation_service.mask_to_png(mask)
+                        png_base64 = base64.b64encode(png_bytes).decode('ascii')
+                        masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
+        except (OSError, KeyError) as e:
+            logger.warning(f"Error reading detector masks batch: {e}")
+            for i in range(actual_count):
+                mask = np.zeros((video.height, video.width), dtype=np.uint8)
+                png_bytes = segmentation_service.mask_to_png(mask)
+                png_base64 = base64.b64encode(png_bytes).decode('ascii')
+                masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
+
+    return {"masks": masks_list}
 
 
 @router.get(
@@ -230,17 +284,8 @@ async def check_detector_masks_exist(
     """
     Check if detector masks exist for a video.
 
-    Returns true if the detector_masks dataset exists in the HDF5 file.
+    Returns true if the detector h5 file exists.
     """
-    h5_path = project_path / "masks" / f"{video.id}.h5"
+    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
 
-    if not h5_path.exists():
-        return DetectorMasksExistsResponse(exists=False)
-
-    try:
-        with h5py.File(h5_path, "r") as f:
-            exists = "detector_masks" in f
-    except OSError:
-        exists = False
-
-    return DetectorMasksExistsResponse(exists=exists)
+    return DetectorMasksExistsResponse(exists=h5_path.exists())

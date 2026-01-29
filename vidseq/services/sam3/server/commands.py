@@ -109,6 +109,9 @@ def _ensure_mask_dataset(
             fillvalue=0.0,
         )
 
+    # Flush to ensure datasets are written to disk (important for NFS)
+    mask_file.flush()
+
     return mask_file, mask_file["masks"], mask_file["logits"]
 
 
@@ -477,9 +480,17 @@ def handle_reset_video(
 
         print(f"[DEBUG reset_video] After close: mask_path exists={mask_path.exists()}")
 
-        if mask_path.exists():
-            mask_path.unlink()
-            print(f"[DEBUG reset_video] After unlink: mask_path exists={mask_path.exists()}")
+        # Delete all h5 files for this video
+        h5_files_to_delete = [
+            mask_path,  # tracker masks
+            mask_path.parent / f"{video_id}_detector.h5",  # detector masks
+            project_path / "cropped_masks" / f"{video_id}.h5",  # cropped masks
+            project_path / "aligned_masks" / f"{video_id}.h5",  # aligned masks
+        ]
+        for h5_path in h5_files_to_delete:
+            if h5_path.exists():
+                h5_path.unlink()
+                print(f"[DEBUG reset_video] Deleted: {h5_path}")
 
         # Recreate empty HDF5 file so session remains valid
         mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(

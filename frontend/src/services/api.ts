@@ -1307,6 +1307,21 @@ export async function getDetectorMask(
     return response.blob()
 }
 
+export async function getDetectorMasksBatch(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100
+): Promise<MaskBatchResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-masks-batch?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch detector mask batch'))
+    }
+    return response.json()
+}
+
 export async function detectorMasksExist(
     projectId: number,
     videoId: number,
