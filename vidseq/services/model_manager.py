@@ -235,30 +235,3 @@ def ensure_model(model_name: str) -> Path:
 
 # Convenience constants for SAM2 models
 SAM2_TINY_MODEL = "sam2.1_hiera_tiny"
-
-# SAM3 constants
-SAM3_MODEL = "sam3"
-SAM3_HF_REPO_ID = "facebook/sam3"
-SAM3_CKPT_FILENAME = "sam3.pt"
-SAM3_CFG_FILENAME = "config.json"
-
-
-def ensure_sam3_model() -> Path:
-    """
-    Ensure the SAM3 checkpoint is available, downloading via HuggingFace Hub if necessary.
-
-    SAM3 uses HuggingFace Hub for checkpoint distribution rather than direct URL download.
-    The checkpoint is downloaded from the 'facebook/sam3' repository. HuggingFace Hub
-    handles its own caching in ~/.cache/huggingface/hub/.
-
-    Returns:
-        Path to the SAM3 checkpoint file
-    """
-    from huggingface_hub import hf_hub_download
-
-    # Also download the config as SAM3 may need it
-    _ = hf_hub_download(repo_id=SAM3_HF_REPO_ID, filename=SAM3_CFG_FILENAME)
-    checkpoint_path = hf_hub_download(repo_id=SAM3_HF_REPO_ID, filename=SAM3_CKPT_FILENAME)
-
-    print(f"[VidSeq] SAM3 checkpoint ready: {checkpoint_path}")
-    return Path(checkpoint_path)

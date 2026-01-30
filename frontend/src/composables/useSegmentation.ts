@@ -3,6 +3,8 @@ import {
     getMask,
     getMasksBatch,
     getDetectorMasksBatch,
+    getFinalMask,
+    getFinalMasksBatch,
     runSegmentation,
     refineMaskMultiPoint,
     resetFrame,
@@ -79,7 +81,16 @@ export function useSegmentation(
 
         isPrefetching = true
         try {
-            const batchFn = maskViewMode.value === 'detector' ? getDetectorMasksBatch : getMasksBatch
+            // Select batch function based on mask view mode
+            let batchFn
+            if (maskViewMode.value === 'detector') {
+                batchFn = getDetectorMasksBatch
+            } else if (maskViewMode.value === 'final') {
+                batchFn = getFinalMasksBatch
+            } else {
+                batchFn = getMasksBatch
+            }
+
             const maskResponse = await batchFn(
                 projectId.value,
                 videoId.value,
@@ -111,6 +122,8 @@ export function useSegmentation(
         try {
             if (maskViewMode.value === 'detector') {
                 return await getDetectorMask(projectId.value, videoId.value, frameIdx)
+            } else if (maskViewMode.value === 'final') {
+                return await getFinalMask(projectId.value, videoId.value, frameIdx)
             } else {
                 return await getMask(projectId.value, videoId.value, frameIdx)
             }

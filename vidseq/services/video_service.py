@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vidseq.models.conditioning_frame import ConditioningFrame
+from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
+from vidseq.services import h5_storage, segmentation_service, segmentation_tcp_client
 
 
 @dataclass(frozen=True)
@@ -97,4 +100,106 @@ async def get_all_videos(session: AsyncSession) -> list[Video]:
         select(Video).order_by(Video.id)
     )
     return list(result.scalars().all())
+
+
+async def delete_frame_data(
+    project_id: int,
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession,
+) -> None:
+    """Delete all annotation data for a frame.
+
+    Clears:
+    - H5 files: tracker mask/logits, detector mask, final mask
+    - Database: conditioning_frame, frame_data tables
+    - SAM memory: if session active
+
+    Args:
+        project_id: ID of the project
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+        session: Async database session
+    """
+    # 1. Clear H5 files
+    h5_storage.delete_tracker_mask(project_path, video_id, frame_idx)
+    h5_storage.delete_tracker_logits(project_path, video_id, frame_idx)
+    h5_storage.delete_detector_mask(project_path, video_id, frame_idx)
+    h5_storage.delete_final_mask(project_path, video_id, frame_idx)
+
+    # 2. Clear database tables
+    await session.execute(
+        delete(ConditioningFrame)
+        .where(ConditioningFrame.video_id == video_id)
+        .where(ConditioningFrame.frame_idx == frame_idx)
+    )
+    await session.execute(
+        delete(FrameData)
+        .where(FrameData.video_id == video_id)
+        .where(FrameData.frame_idx == frame_idx)
+    )
+    await session.commit()
+
+    # 3. Clear SAM memory (if session active)
+    segmentation_service.reset_frame_memory(project_id, video_id, frame_idx)
+
+
+async def reset_video(
+    project_id: int,
+    project_path: Path,
+    video: Video,
+    session: AsyncSession,
+) -> None:
+    """Reset all annotation data for a video.
+
+    Clears:
+    - H5 files: tracker masks/logits, detector masks, final masks
+    - Database: conditioning_frames, frame_data tables
+    - SAM memory: closes and re-opens session if it was open
+
+    Does NOT touch cropped/aligned mask files.
+
+    Args:
+        project_id: ID of the project
+        project_path: Path to the project folder
+        video: Video model instance
+        session: Async database session
+    """
+    video_id = video.id
+
+    # 1. Check if SAM session is currently open
+    session_was_open = segmentation_tcp_client.get_session(project_id, video_id) is not None
+
+    # 2. Close SAM session (releases worker file handles)
+    if session_was_open:
+        segmentation_tcp_client.close_session(project_id, video_id)
+
+    # 3. Reset H5 files (all segmentation H5s: tracker, detector, final)
+    h5_storage.reset_video_h5_files(
+        project_path=project_path,
+        video_id=video_id,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
+    )
+
+    # 4. Clear database tables
+    await session.execute(
+        delete(ConditioningFrame).where(ConditioningFrame.video_id == video_id)
+    )
+    await session.execute(
+        delete(FrameData).where(FrameData.video_id == video_id)
+    )
+    await session.commit()
+
+    # 5. Re-open SAM session if it was open before
+    if session_was_open:
+        segmentation_tcp_client.init_session(
+            project_id=project_id,
+            video_id=video_id,
+            video_path=Path(video.path),
+            project_path=project_path,
+        )
 

@@ -356,7 +356,7 @@ export async function resetFrame(
     frameIdx: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame/${frameIdx}`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame-data/${frameIdx}`,
         { method: 'DELETE' }
     )
     if (!response.ok) {
@@ -369,7 +369,7 @@ export async function resetVideo(
     videoId: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/all-frames`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame-data`,
         { method: 'DELETE' }
     )
     if (!response.ok) {
@@ -1331,6 +1331,50 @@ export async function detectorMasksExist(
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to check detector masks'))
+    }
+    return response.json()
+}
+
+// ----- Final masks (tracker-detector fusion) -----
+
+export async function getFinalMask(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-mask/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch final mask'))
+    }
+    return response.blob()
+}
+
+export async function getFinalMasksBatch(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100
+): Promise<MaskBatchResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-masks-batch?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch final mask batch'))
+    }
+    return response.json()
+}
+
+export async function finalMasksExist(
+    projectId: number,
+    videoId: number,
+): Promise<{ exists: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-masks/exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check final masks'))
     }
     return response.json()
 }

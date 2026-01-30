@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, detectorMasksExist, type Video, type MaskScore } from '@/services/api'
+import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -32,9 +32,10 @@ const maxFrames = ref(1000)
 const confidenceScores = ref<MaskScore[]>([])
 
 // Mask view mode
-type MaskViewMode = 'tracker' | 'detector'
+type MaskViewMode = 'tracker' | 'detector' | 'final'
 const maskViewMode = ref<MaskViewMode>('tracker')
 const hasDetectorMasks = ref(false)
+const hasFinalMasks = ref(false)
 
 const checkDetectorMasks = async () => {
   if (!projectId.value || !videoId.value) return
@@ -43,6 +44,16 @@ const checkDetectorMasks = async () => {
     hasDetectorMasks.value = result.exists
   } catch {
     hasDetectorMasks.value = false
+  }
+}
+
+const checkFinalMasks = async () => {
+  if (!projectId.value || !videoId.value) return
+  try {
+    const result = await finalMasksExist(projectId.value, videoId.value)
+    hasFinalMasks.value = result.exists
+  } catch {
+    hasFinalMasks.value = false
   }
 }
 
@@ -231,6 +242,7 @@ onMounted(async () => {
   await loadVideo()
   await refreshFrameRanges()
   await checkDetectorMasks()
+  await checkFinalMasks()
   // Initial fetch without debounce
   await fetchScoresForView()
 })
@@ -397,6 +409,9 @@ onMounted(async () => {
             <option value="tracker">Tracker</option>
             <option value="detector" :disabled="!hasDetectorMasks">
               Detector {{ hasDetectorMasks ? '' : '(not available)' }}
+            </option>
+            <option value="final" :disabled="!hasFinalMasks">
+              Final {{ hasFinalMasks ? '' : '(not available)' }}
             </option>
           </select>
         </div>

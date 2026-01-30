@@ -1,29 +1,101 @@
-"""SAM3 TCP command handlers using StreamingSegmentor.
+"""SAM2 TCP command handlers using StreamingSegmentor.
 
 Each function handles one command type. The worker maintains a single
 StreamingSegmentor instance and manages file handles externally.
 """
 
+import base64
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import cv2
 import h5py
 import numpy as np
 
-from vidseq.services.sam3.frame_source import VideoFrameSource
-from vidseq.services.sam3.utils import encode_mask_rle
+from vidseq.services.sam2.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
 
-# Backend selection - can be switched via environment variable
-import os
-SAM_BACKEND = os.environ.get("SAM_BACKEND", "sam2").lower()
 
-if SAM_BACKEND == "sam2":
-    from vidseq.services.sam2.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
-    print(f"[SAM Worker] Using SAM2 backend")
-else:
-    from vidseq.services.sam3.streaming_segmentor import StreamingSegmentor
-    print(f"[SAM Worker] Using SAM3 backend")
+# ---------------------------------------------------------------------------
+# VideoFrameSource - wrapper for sequential video frame access
+# ---------------------------------------------------------------------------
+
+
+class VideoFrameSource:
+    """Wrapper around cv2.VideoCapture with position tracking.
+
+    Implements __getitem__ for random access to video frames, but tracks
+    current position to avoid unnecessary seeks during sequential reads.
+    """
+
+    def __init__(self, path: str | Path):
+        """Open a video file."""
+        self._path = str(path)
+        self._cap = cv2.VideoCapture(self._path)
+        if not self._cap.isOpened():
+            raise ValueError(f"Failed to open video: {path}")
+
+        self._pos = 0
+        self.frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    def __getitem__(self, idx: int) -> np.ndarray:
+        """Read a frame by index. Returns BGR numpy array."""
+        if idx < 0 or idx >= self.frame_count:
+            raise IndexError(f"Frame index {idx} out of range [0, {self.frame_count})")
+
+        if idx != self._pos:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            self._pos = idx
+
+        success, frame = self._cap.read()
+        if not success:
+            raise IndexError(f"Failed to read frame {idx}")
+
+        self._pos += 1
+        return frame
+
+    def __len__(self) -> int:
+        return self.frame_count
+
+    def close(self) -> None:
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+    def __del__(self):
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Mask encoding utilities
+# ---------------------------------------------------------------------------
+
+
+def encode_mask_rle(mask: np.ndarray) -> str:
+    """Encode binary mask as binary RLE + base64 for JSON transport."""
+    flat = mask.flatten()
+    binary_data = bytearray()
+    i = 0
+
+    while i < len(flat):
+        value = flat[i]
+        length = 1
+        while i + length < len(flat) and flat[i + length] == value:
+            length += 1
+        binary_data.extend(struct.pack(">BI", int(value), length))
+        i += length
+
+    return base64.b64encode(bytes(binary_data)).decode("utf-8")
 
 
 @dataclass
@@ -35,6 +107,8 @@ class VideoResources:
     logits_dataset: Any  # h5py.Dataset - low-res logits (float32) for refinement
     detector_file: Optional[h5py.File] = None  # h5py.File for detector masks
     detector_masks: Any = None  # h5py.Dataset for detector masks
+    final_file: Optional[h5py.File] = None  # h5py.File for final (corrected) masks
+    final_masks: Any = None  # h5py.Dataset for final (corrected) masks
 
 
 # Global state managed by the worker
@@ -87,9 +161,7 @@ def _ensure_mask_dataset(
 
     mask_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[DEBUG _ensure_mask_dataset] Opening {mask_path}, exists before={mask_path.exists()}")
     mask_file = h5py.File(mask_path, "a")
-    print(f"[DEBUG _ensure_mask_dataset] Opened, exists after={mask_path.exists()}, filename={mask_file.filename}")
 
     # Binary masks for display (full resolution)
     if "masks" not in mask_file:
@@ -168,17 +240,41 @@ def handle_init_session(
             detector_file = h5py.File(detector_h5_path, "r")
             if "masks" in detector_file:
                 detector_masks = detector_file["masks"]
-                print(f"[SAM3 Worker] Loaded detector masks from {detector_h5_path}")
+                print(f"[SAM2 Worker] Loaded detector masks from {detector_h5_path}")
             else:
                 # No masks dataset - close file handle
-                print(f"[SAM3 Worker] Warning: No 'masks' dataset in {detector_h5_path}")
+                print(f"[SAM2 Worker] Warning: No 'masks' dataset in {detector_h5_path}")
                 detector_file.close()
                 detector_file = None
         except Exception as e:
-            print(f"[SAM3 Worker] Warning: Failed to load detector masks: {e}")
+            print(f"[SAM2 Worker] Warning: Failed to load detector masks: {e}")
             if detector_file is not None:
                 detector_file.close()
                 detector_file = None
+
+    # Open/create final masks file if detector masks available
+    final_file = None
+    final_masks = None
+    if detector_masks is not None:
+        final_h5_path = project_path / "masks" / f"{video_id}_final.h5"
+        try:
+            final_file = h5py.File(final_h5_path, "a")
+            if "masks" not in final_file:
+                final_file.create_dataset(
+                    "masks",
+                    shape=(num_frames, height, width),
+                    dtype=np.uint8,
+                    chunks=(1, height, width),
+                    fillvalue=0,
+                )
+            final_masks = final_file["masks"]
+            print(f"[SAM2 Worker] Opened final masks file: {final_h5_path}")
+        except Exception as e:
+            print(f"[SAM2 Worker] Warning: Failed to open final masks file: {e}")
+            if final_file is not None:
+                final_file.close()
+                final_file = None
+                final_masks = None
 
     # Store resources
     _video_resources[video_id] = VideoResources(
@@ -188,17 +284,16 @@ def handle_init_session(
         logits_dataset=logits_dataset,
         detector_file=detector_file,
         detector_masks=detector_masks,
+        final_file=final_file,
+        final_masks=final_masks,
     )
 
     # Initialize StreamingSegmentor session
+    # Session only holds modeling state - no H5 handles
     segmentor.open_video(
         video_id=str(video_id),
-        frames=frame_source,
-        masks=mask_dataset,
-        logits=logits_dataset,
         frame_dims=(height, width),
         cond_frame_indices=cond_frame_indices,
-        detector_masks=detector_masks,
     )
 
     return {
@@ -247,17 +342,22 @@ def handle_add_prompt(
     mask_before = np.array(resources.mask_dataset[frame_idx])
     before_sum = int(mask_before.sum())
 
-    # Run segmentation
-    segmentor.add_point_prompt(
+    # Read frame from video
+    frame = resources.frame_source[frame_idx]
+
+    # Run segmentation - returns mask and logits
+    mask, logits = segmentor.add_point_prompt(
         video_id=str(video_id),
         frame_idx=frame_idx,
         location=(px, py),
         label=label,
+        frame=frame,
     )
 
-    # Flush HDF5 to ensure write is visible, then read back the mask
+    # Write results to HDF5
+    resources.mask_dataset[frame_idx] = mask
+    resources.logits_dataset[frame_idx] = logits
     resources.mask_file.flush()
-    mask = resources.mask_dataset[frame_idx]
     after_sum = int(mask.sum())
 
     print(f"[SAM3 Worker] add_prompt frame={frame_idx} label={label} "
@@ -317,17 +417,24 @@ def handle_refine_mask(
     mask_before = np.array(resources.mask_dataset[frame_idx])
     before_sum = int(mask_before.sum())
 
-    # Run refinement with all points
-    segmentor.refine_mask(
+    # Read frame and previous logits
+    frame = resources.frame_source[frame_idx]
+    prev_logits = np.array(resources.logits_dataset[frame_idx])
+
+    # Run refinement with all points - returns mask and logits
+    mask, logits = segmentor.refine_mask(
         video_id=str(video_id),
         frame_idx=frame_idx,
         location=locations,
         label=labels,
+        frame=frame,
+        prev_logits=prev_logits,
     )
 
-    # Flush HDF5 to ensure write is visible, then read back the mask
+    # Write results to HDF5
+    resources.mask_dataset[frame_idx] = mask
+    resources.logits_dataset[frame_idx] = logits
     resources.mask_file.flush()
-    mask = resources.mask_dataset[frame_idx]
     after_sum = int(mask.sum())
 
     print(f"[SAM3 Worker] refine_mask frame={frame_idx} "
@@ -366,14 +473,20 @@ def handle_propagate(
 
     resources = _video_resources[video_id]
 
-    segmentor.propagate(
+    # Read frame from video
+    frame = resources.frame_source[frame_idx]
+
+    # Propagate - returns mask and logits
+    mask, logits = segmentor.propagate(
         video_id=str(video_id),
         frame_idx=frame_idx,
+        frame=frame,
     )
 
-    # Flush HDF5 to ensure write is visible
+    # Write results to HDF5
+    resources.mask_dataset[frame_idx] = mask
+    resources.logits_dataset[frame_idx] = logits
     resources.mask_file.flush()
-    mask = resources.mask_dataset[frame_idx]
 
     return {
         "type": "propagate_result",
@@ -407,25 +520,24 @@ def handle_generate_training_masks(
     if video_id not in _video_resources:
         raise RuntimeError(f"No session for video {video_id}")
 
+    resources = _video_resources[video_id]
+
+    # Callback to write each result to HDF5
+    def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray) -> None:
+        resources.mask_dataset[frame_idx] = mask
+        resources.logits_dataset[frame_idx] = logits
+
     frame_indices = segmentor.propagate_sequential(
         video_id=str(video_id),
         start_frame=start_frame_idx,
         num_frames=max_frames,
+        frames=resources.frame_source,
+        on_result=on_result,
         progress_interval=50,
     )
 
     # Flush HDF5 to ensure writes are visible to readers
-    resources = _video_resources[video_id]
     resources.mask_file.flush()
-
-    # DEBUG: Verify masks were written
-    if frame_indices:
-        sample_idx = frame_indices[0]
-        mask_data = resources.mask_dataset[sample_idx]
-        print(f"[DEBUG] After propagate: frame {sample_idx} mask sum={int(mask_data.sum())}, "
-              f"shape={mask_data.shape}, dtype={mask_data.dtype}, "
-              f"min={mask_data.min()}, max={mask_data.max()}")
-        print(f"[DEBUG] HDF5 file path: {resources.mask_file.filename}")
 
     return {
         "type": "generate_training_masks_result",
@@ -474,20 +586,37 @@ def handle_propagate_with_detector(
                 "total": total,
             })
 
-    corrected_frames = segmentor.propagate_with_detector(
+    # Callback to write tracker results to HDF5
+    def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray) -> None:
+        resources.mask_dataset[frame_idx] = mask
+        resources.logits_dataset[frame_idx] = logits
+
+    # Callback to write final (corrected) masks if available
+    def on_final_result(frame_idx: int, mask: np.ndarray) -> None:
+        if resources.final_masks is not None:
+            resources.final_masks[frame_idx] = mask
+
+    # Propagate with detector correction
+    propagated_frames, corrected_frames = segmentor.propagate_with_detector(
         video_id=str(video_id),
         num_frames=num_frames,
+        frames=resources.frame_source,
+        detector_masks=resources.detector_masks,
+        on_result=on_result,
+        on_final_result=on_final_result if resources.final_masks is not None else None,
         iou_threshold=iou_threshold,
         progress_callback=progress_callback,
     )
 
-    # Flush HDF5 to ensure writes are visible
+    # Flush HDF5 files to ensure writes are visible
     resources.mask_file.flush()
+    if resources.final_file is not None:
+        resources.final_file.flush()
 
     return {
         "type": "propagate_with_detector_result",
         "status": "ok",
-        "frames_processed": num_frames,
+        "frames_processed": len(propagated_frames),
         "frames_corrected": len(corrected_frames),
         "corrected_frame_indices": corrected_frames,
     }
@@ -497,7 +626,10 @@ def handle_reset_frame(
     params: dict,
     segmentor: StreamingSegmentor,
 ) -> dict:
-    """Reset a single frame (clear mask and memory).
+    """Reset a single frame (clear SAM memory only).
+
+    H5 files are cleared by the FastAPI side (video_service.delete_frame_data)
+    before this command is sent. This only clears the in-memory SAM state.
 
     Args:
         params: Command params with video_id, frame_idx
@@ -512,14 +644,9 @@ def handle_reset_frame(
     if segmentor is None:
         raise RuntimeError("Model not loaded")
 
-    # Clear from StreamingSegmentor memory
-    if video_id in _video_resources:
+    # Clear from StreamingSegmentor memory only
+    if str(video_id) in segmentor.sessions:
         segmentor.reset_frame(str(video_id), frame_idx)
-
-        # Clear mask and logits in HDF5
-        resources = _video_resources[video_id]
-        resources.mask_dataset[frame_idx] = 0
-        resources.logits_dataset[frame_idx] = 0.0
 
     return {
         "type": "reset_frame_result",
@@ -532,73 +659,26 @@ def handle_reset_video(
     params: dict,
     segmentor: StreamingSegmentor,
 ) -> dict:
-    """Reset entire video (clear all masks and memory).
+    """Reset SAM memory for a video.
+
+    H5 file operations are handled by FastAPI side before this command.
+    This only clears in-memory SAM state.
 
     Args:
-        params: Command params with video_id, project_path
+        params: Command params with video_id
         segmentor: StreamingSegmentor instance
 
     Returns:
         Response dict
     """
     video_id = params["video_id"]
-    project_path = Path(params["project_path"])
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
 
-    if video_id in _video_resources:
-        # Close StreamingSegmentor session
-        segmentor.close_video(str(video_id))
-
-        resources = _video_resources[video_id]
-
-        # Get dimensions before closing
-        num_frames, height, width = resources.mask_dataset.shape
-        mask_path = _get_mask_path(project_path, video_id)
-
-        print(f"[DEBUG reset_video] Before close: mask_path={mask_path}, exists={mask_path.exists()}")
-
-        # Close HDF5 file and delete it
-        resources.mask_file.close()
-
-        print(f"[DEBUG reset_video] After close: mask_path exists={mask_path.exists()}")
-
-        # Delete all h5 files for this video
-        h5_files_to_delete = [
-            mask_path,  # tracker masks
-            mask_path.parent / f"{video_id}_detector.h5",  # detector masks
-            project_path / "cropped_masks" / f"{video_id}.h5",  # cropped masks
-            project_path / "aligned_masks" / f"{video_id}.h5",  # aligned masks
-        ]
-        for h5_path in h5_files_to_delete:
-            if h5_path.exists():
-                h5_path.unlink()
-                print(f"[DEBUG reset_video] Deleted: {h5_path}")
-
-        # Recreate empty HDF5 file so session remains valid
-        mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
-            mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
-        )
-
-        print(f"[DEBUG reset_video] After _ensure_mask_dataset: mask_path exists={mask_path.exists()}")
-        print(f"[DEBUG reset_video] mask_file.filename={mask_file.filename}")
-
-        resources.mask_file = mask_file
-        resources.mask_dataset = mask_dataset
-        resources.logits_dataset = logits_dataset
-
-        # Re-open StreamingSegmentor session with fresh state
-        segmentor.open_video(
-            video_id=str(video_id),
-            frames=resources.frame_source,
-            masks=mask_dataset,
-            logits=logits_dataset,
-            frame_dims=(height, width),
-            cond_frame_indices=set(),  # No conditioning frames after reset
-        )
-
-        print(f"[DEBUG reset_video] Complete. Final mask_path exists={mask_path.exists()}")
+    # Only clear SAM memory, no H5 operations
+    if str(video_id) in segmentor.sessions:
+        segmentor.reset_video(str(video_id))
 
     return {
         "type": "reset_video_result",
@@ -616,6 +696,8 @@ def _close_video_resources(video_id: int, segmentor: StreamingSegmentor) -> None
         resources.mask_file.close()
         if resources.detector_file is not None:
             resources.detector_file.close()
+        if resources.final_file is not None:
+            resources.final_file.close()
 
 
 def handle_close_session(

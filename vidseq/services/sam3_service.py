@@ -4,8 +4,8 @@ This module re-exports everything from the new location for backwards compatibil
 New code should import directly from vidseq.services.sam3.
 """
 
-from vidseq.services.sam3.service import *
-from vidseq.services.sam3.service import (
+from vidseq.services.segmentation_tcp_client import *
+from vidseq.services.segmentation_tcp_client import (
     SAM3Service,
     SAM3Status,
     VideoSessionInfo,
@@ -17,6 +17,7 @@ from vidseq.services.sam3.service import (
     init_session,
     propagate,
     reset_frame,
+    reset_frame_memory,
     reset_video,
     segment_all_videos,
     shutdown_worker,

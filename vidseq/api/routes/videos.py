@@ -10,9 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from PIL import Image
 
-from vidseq.api.dependencies import get_project_session, get_video
+from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
+from vidseq.services import h5_storage, video_service
 from vidseq.services.video_service import (
     VideoMetadataError,
     get_video_metadata,
@@ -34,24 +35,25 @@ async def get_videos(
 @router.post("/projects/{project_id}/videos", response_model=list[VideoResponse], status_code=201)
 async def add_videos(
     video_data: VideoCreate,
+    project_path: Path = Depends(get_project_folder),
     session: AsyncSession = Depends(get_project_session),
 ):
     added_videos = []
-    
+
     for path_str in video_data.paths:
         path = Path(path_str)
-        
+
         if not path.exists():
             raise HTTPException(status_code=400, detail=f"Path does not exist: {path}")
-        
+
         if not path.is_file():
             raise HTTPException(status_code=400, detail=f"Path is not a file: {path}")
-        
+
         try:
             meta = get_video_metadata(path)
         except VideoMetadataError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        
+
         video = Video(
             name=path.name,
             path=str(path),
@@ -62,12 +64,20 @@ async def add_videos(
         )
         session.add(video)
         added_videos.append(video)
-    
+
     await session.commit()
-    
+
+    # Create H5 files upfront for each video
     for video in added_videos:
         await session.refresh(video)
-    
+        h5_storage.create_video_h5_files(
+            project_path=project_path,
+            video_id=video.id,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+        )
+
     return added_videos
 
 
@@ -172,3 +182,66 @@ async def get_frame(
     img_bytes.seek(0)
     
     return Response(content=img_bytes.read(), media_type="image/jpeg")
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/frame-data/{frame_idx}")
+async def delete_frame_data(
+    project_id: int,
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Delete all annotation data for a frame.
+
+    Clears masks, logits, database entries (conditioning_frame, frame_data),
+    and SAM memory state for the specified frame.
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video (from path, resolved via get_video)
+        frame_idx: Frame index (0-based)
+
+    Returns:
+        Status confirmation
+    """
+    await video_service.delete_frame_data(
+        project_id=project_id,
+        project_path=project_path,
+        video_id=video.id,
+        frame_idx=frame_idx,
+        session=session,
+    )
+    return {"status": "ok"}
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/frame-data")
+async def reset_video_data(
+    project_id: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Reset all annotation data for a video.
+
+    Clears all masks (tracker, detector, final), logits, database entries
+    (conditioning_frames, frame_data), and SAM memory state.
+
+    If SAM session is active, closes and re-opens it with fresh state.
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video (from path, resolved via get_video)
+
+    Returns:
+        Status confirmation
+    """
+    await video_service.reset_video(
+        project_id=project_id,
+        project_path=project_path,
+        video=video,
+        session=session,
+    )
+    return {"status": "ok"}

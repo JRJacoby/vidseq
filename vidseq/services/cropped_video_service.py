@@ -14,7 +14,7 @@ import cv2
 import imageio_ffmpeg
 import numpy as np
 
-from vidseq.services import mask_storage
+from vidseq.services import h5_storage
 
 
 # =============================================================================
@@ -216,13 +216,13 @@ def compute_global_crop_size(
             continue
 
         try:
-            with mask_storage.open_video_h5(project_path, video_id, "r") as h5_file:
+            with h5_storage.open_video_h5(project_path, video_id, "r") as h5_file:
                 if "masks" not in h5_file:
                     continue
 
                 for frame_idx, height, width in frame_list:
                     mask = np.array(h5_file["masks"][frame_idx])
-                    bbox = mask_storage.compute_bbox_from_mask(mask)
+                    bbox = h5_storage.compute_bbox_from_mask(mask)
                     if bbox is not None:
                         x1, y1, x2, y2 = bbox
                         bbox_w = int(x2 - x1)

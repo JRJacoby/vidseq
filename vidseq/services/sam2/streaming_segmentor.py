@@ -4,11 +4,7 @@
 PURPOSE
 ================================================================================
 
-This module provides a SAM2StreamingSegmentor class that mirrors the API of the
-SAM3 StreamingSegmentor (vidseq/services/sam3/streaming_segmentor.py). The goal
-is to enable comparison testing between SAM2 and SAM3 backends for video object
-segmentation.
-
+This module provides a SAM2StreamingSegmentor class for video object segmentation.
 SAM2 (Segment Anything Model 2) is Meta's video-capable segmentation model that
 uses memory attention to propagate object masks across video frames.
 
@@ -16,13 +12,13 @@ uses memory attention to propagate object masks across video frames.
 ARCHITECTURE
 ================================================================================
 
-SAM2 uses a different approach than SAM3:
-- SAM2: build_sam2_video_predictor returns a SAM2VideoPredictor that manages
+SAM2's architecture:
+- build_sam2_video_predictor returns a SAM2VideoPredictor that manages
   inference state internally via init_state() and propagate_in_video()
-- SAM3: separate backbone + tracker with explicit memory management
+- Memory attention allows tracking objects across frames
+- Supports point prompts, box prompts, and mask prompts
 
-This wrapper adapts SAM2's API to match the StreamingSegmentor interface used
-by the rest of the vidseq application.
+This wrapper provides a StreamingSegmentor interface used by the vidseq application.
 
 ================================================================================
 USAGE
@@ -59,6 +55,7 @@ USAGE
 from __future__ import annotations
 
 import sys
+from typing import Callable
 
 # Add SAM2 repo to path for imports
 sys.path.insert(0, "/n/groups/datta/john/repos/sam2")
@@ -146,16 +143,17 @@ class SAM2StreamingSegmentor:
             return False
 
     def _get_image_features(
-        self, video_id: str, frame_idx: int
+        self, video_id: str, frame_idx: int, frame: np.ndarray
     ) -> tuple[torch.Tensor, dict]:
         """Get image features for a frame, with caching.
 
-        Loads the frame, preprocesses it, and runs through the SAM2 image encoder.
+        Preprocesses the frame and runs through the SAM2 image encoder.
         Caches only the most recent frame's features to avoid memory bloat.
 
         Args:
             video_id: The video identifier.
-            frame_idx: Frame index to encode.
+            frame_idx: Frame index (used for caching).
+            frame: BGR uint8 frame data (H, W, 3).
 
         Returns:
             (image_tensor, backbone_out) where:
@@ -169,12 +167,8 @@ class SAM2StreamingSegmentor:
         if cached.get("frame_idx") == frame_idx:
             return cached["image"], cached["backbone_out"]
 
-        # Load frame from source
-        frames = session["frames"]
-        frame_bgr = frames[frame_idx]
-
         # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Resize to model input size (1024x1024)
         frame_resized = cv2.resize(
@@ -249,11 +243,13 @@ class SAM2StreamingSegmentor:
             "object_score_logits": current_out.get("object_score_logits"),
         }
 
-    def _encode_stored_mask(self, video_id: str, frame_idx: int) -> None:
+    def _encode_stored_mask(
+        self, video_id: str, frame_idx: int, frame: np.ndarray, mask: np.ndarray
+    ) -> None:
         """Encode a stored mask into the memory bank.
 
-        Loads a mask from storage, converts it to a tensor, and runs through
-        track_step with mask_inputs to encode it into the output_dict memory.
+        Converts the mask to a tensor and runs through track_step with
+        mask_inputs to encode it into the output_dict memory.
 
         This is used to reconstruct conditioning frame memories when opening
         a video that has existing masks.
@@ -261,16 +257,17 @@ class SAM2StreamingSegmentor:
         Args:
             video_id: The video identifier.
             frame_idx: Frame index whose mask should be encoded.
+            frame: BGR uint8 frame data (H, W, 3).
+            mask: Binary mask data (H, W) uint8.
 
         Side Effects:
             - Stores result in output_dict["cond_frame_outputs"][frame_idx]
         """
         session = self.sessions[video_id]
-        masks = session["masks"]
         output_dict = session["output_dict"]
 
-        # Load mask from storage
-        stored_mask = masks[frame_idx]
+        # Use provided mask
+        stored_mask = mask
 
         # Resize mask to model input size and convert to tensor
         # Mask should be float in range [0, 1] with shape (1, 1, H, W)
@@ -284,7 +281,7 @@ class SAM2StreamingSegmentor:
         mask_tensor = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)  # (1, 1, H, W)
 
         # Get image features
-        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx, frame)
 
         # Prepare features for track_step
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
@@ -311,33 +308,28 @@ class SAM2StreamingSegmentor:
     def open_video(
         self,
         video_id: str,
-        frames,  # Indexable returning BGR uint8 (H, W, 3)
-        masks,  # Indexable/assignable for binary mask storage
-        logits,  # Indexable/assignable for logits storage
         frame_dims: tuple[int, int],  # (height, width)
         cond_frame_indices: set[int] | list[int] | None = None,
-        detector_masks=None,  # Not used in SAM2 - for SAM3 compatibility
+        frames=None,  # Optional: for memory reconstruction only
+        masks=None,  # Optional: for memory reconstruction only
     ) -> None:
-        """Create a session with external frame, mask, and logits sources.
+        """Create a session for video segmentation.
 
-        This initializes the session and reconstructs conditioning frame memories
-        from stored masks. Call this before using add_point_prompt or refine_mask.
+        This initializes the session with modeling state only. If frames and masks
+        are provided along with cond_frame_indices, conditioning frame memories
+        will be reconstructed from the stored masks.
 
-        The caller is responsible for managing the lifecycle of frames, masks,
-        and logits (e.g., opening/closing file handles).
+        The caller is responsible for managing the lifecycle of any file handles.
+        This method does NOT store references to frames, masks, or other handles.
 
         Args:
             video_id: Unique identifier for this video session.
-            frames: Indexable frame source returning BGR uint8 arrays (H, W, 3).
-                    Must support frames[frame_idx] access.
-            masks: Indexable storage for binary masks (array or h5 dataset).
-                   Will be used for both reading existing masks and writing new ones.
-            logits: Indexable storage for low-res logits.
-                    Used for iterative refinement with refine_mask().
             frame_dims: Tuple of (height, width) for the video frames.
             cond_frame_indices: Frame indices that have existing user prompts.
                    Their memories will be reconstructed from stored masks.
                    Pass None or empty for a fresh session.
+            frames: Optional indexable frame source (only needed if reconstructing).
+            masks: Optional indexable mask source (only needed if reconstructing).
 
         Raises:
             ValueError: If video_id already exists.
@@ -351,11 +343,8 @@ class SAM2StreamingSegmentor:
         else:
             cond_frame_indices = set(cond_frame_indices)
 
-        # Create session with SAM2-style memory structure
+        # Create session with ONLY modeling state (no file handles)
         session = {
-            "frames": frames,
-            "masks": masks,
-            "logits": logits,
             "cond_frame_indices": cond_frame_indices,
             "frame_dims": frame_dims,
             "num_frames": 10000,  # Large default (SAM2 uses this for temporal position encoding)
@@ -368,24 +357,27 @@ class SAM2StreamingSegmentor:
 
         self.sessions[video_id] = session
 
-        # Reconstruct conditioning frame memories from stored masks
-        cond_to_reconstruct = [
-            idx for idx in sorted(cond_frame_indices) if self._mask_exists(masks, idx)
-        ]
-        if cond_to_reconstruct:
-            import sys
+        # Reconstruct conditioning frame memories from stored masks (if provided)
+        if frames is not None and masks is not None:
+            cond_to_reconstruct = [
+                idx for idx in sorted(cond_frame_indices) if self._mask_exists(masks, idx)
+            ]
+            if cond_to_reconstruct:
+                import sys
 
-            print(f"  Reconstructing {len(cond_to_reconstruct)} cond frame memories...")
-            sys.stdout.flush()
-            for i, idx in enumerate(cond_to_reconstruct):
-                print(
-                    f"    [{i + 1}/{len(cond_to_reconstruct)}] Encoding frame {idx}...",
-                    end="",
-                )
+                print(f"  Reconstructing {len(cond_to_reconstruct)} cond frame memories...")
                 sys.stdout.flush()
-                self._encode_stored_mask(video_id, idx)
-                print(" done")
-                sys.stdout.flush()
+                for i, idx in enumerate(cond_to_reconstruct):
+                    print(
+                        f"    [{i + 1}/{len(cond_to_reconstruct)}] Encoding frame {idx}...",
+                        end="",
+                    )
+                    sys.stdout.flush()
+                    frame = frames[idx]
+                    mask = masks[idx]
+                    self._encode_stored_mask(video_id, idx, frame, mask)
+                    print(" done")
+                    sys.stdout.flush()
 
         print(
             f"Opened video '{video_id}' with "
@@ -426,28 +418,18 @@ class SAM2StreamingSegmentor:
         return True
 
     def reset_frame(self, video_id: str, frame_idx: int) -> None:
-        """Reset a frame: clear its mask and remove from memory.
+        """Reset a frame: clear its memory state.
+
+        This only clears the SAM modeling state (conditioning frames, memory).
+        The caller is responsible for clearing any stored masks/logits in H5.
 
         Args:
             video_id: The video identifier.
             frame_idx: Frame index to reset.
         """
         session = self.sessions[video_id]
-        masks = session["masks"]
-        logits = session["logits"]
-        frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
         cond_frame_indices = session["cond_frame_indices"]
-
-        # Clear mask (write zeros)
-        height, width = frame_dims
-        masks[frame_idx] = np.zeros((height, width), dtype=np.uint8)
-
-        # Clear logits (try/except in case storage doesn't support assignment)
-        try:
-            logits[frame_idx] = np.zeros((256, 256), dtype=np.float32)
-        except (TypeError, ValueError):
-            pass  # Storage may not support direct assignment
 
         # Remove from cond_frame_indices
         cond_frame_indices.discard(frame_idx)
@@ -487,7 +469,8 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         location: tuple[float, float] | list[tuple[float, float]],
         label: int | list[int],
-    ) -> np.ndarray:
+        frame: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
         This method is for adding prompts to frames that don't have existing masks.
@@ -498,17 +481,18 @@ class SAM2StreamingSegmentor:
             frame_idx: Index of the frame to annotate.
             location: (x, y) point or list of points in original frame coords.
             label: Label(s) for each point. 1=positive, 0=negative.
+            frame: BGR uint8 frame data (H, W, 3).
 
         Returns:
-            Binary mask array (height, width) with dtype uint8, values 0 or 255.
+            Tuple of (mask, logits) where:
+            - mask: Binary mask array (height, width) with dtype uint8, values 0 or 255.
+            - logits: Low-res logits array (256, 256) for potential refinement.
 
         Raises:
             KeyError: If video_id is not open.
         """
         # 1. Get session state
         session = self.sessions[video_id]
-        masks = session["masks"]
-        logits = session["logits"]
         frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
         cond_frame_indices = session["cond_frame_indices"]
@@ -547,7 +531,7 @@ class SAM2StreamingSegmentor:
         }
 
         # 5. Get image features and prepare backbone features
-        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+        _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
@@ -585,13 +569,9 @@ class SAM2StreamingSegmentor:
             interpolation=cv2.INTER_NEAREST,
         )
 
-        # 10. Save mask to masks storage, logits to logits storage
-        masks[frame_idx] = mask_resized
-
-        # Save low-res logits for potential refinement
+        # 10. Get low-res logits for potential refinement
         # pred_masks has shape (1, num_objects, H, W) - low res version
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
-        logits[frame_idx] = pred_masks_low_res
 
         # 11. Add frame_idx to cond_frame_indices
         cond_frame_indices.add(frame_idx)
@@ -599,8 +579,8 @@ class SAM2StreamingSegmentor:
         # 12. Store compact output in output_dict["cond_frame_outputs"]
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 13. Return the mask
-        return mask_resized
+        # 13. Return mask and logits (caller saves to storage)
+        return mask_resized, pred_masks_low_res
 
     def refine_mask(
         self,
@@ -608,7 +588,9 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         location: tuple[float, float] | list[tuple[float, float]],
         label: int | list[int],
-    ) -> np.ndarray:
+        frame: np.ndarray,
+        prev_logits: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Refine an existing mask with point prompt(s).
 
         Uses the previous mask logits as context for refinement.
@@ -618,35 +600,28 @@ class SAM2StreamingSegmentor:
             frame_idx: Index of the frame to refine.
             location: (x, y) point or list of points in original frame coords.
             label: Label(s) for each point. 1=positive, 0=negative.
+            frame: BGR uint8 frame data (H, W, 3).
+            prev_logits: Previous low-res logits (256, 256) from prior call.
 
         Returns:
-            Refined binary mask array (height, width) with dtype uint8.
+            Tuple of (mask, logits) where:
+            - mask: Refined binary mask array (height, width) with dtype uint8.
+            - logits: Updated low-res logits array (256, 256).
 
         Raises:
             KeyError: If video_id is not open.
-            RuntimeError: If no previous logits exist for this frame.
         """
         # 1. Get session state
         session = self.sessions[video_id]
-        masks = session["masks"]
-        logits = session["logits"]
         frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
 
-        # 2. Load previous logits from logits storage
-        prev_logits = logits[frame_idx]
-        if prev_logits is None:
-            raise RuntimeError(
-                f"No previous logits for frame {frame_idx}. "
-                "Use add_point_prompt() for initial mask creation."
-            )
-
-        # 3. Convert to tensor: shape (1, 1, 256, 256), float32, on device
+        # 2. Convert prev_logits to tensor: shape (1, 1, 256, 256), float32, on device
         # SAM2 low-res logits are 256x256
         prev_logits_tensor = torch.from_numpy(prev_logits.astype(np.float32))
         prev_logits_tensor = prev_logits_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # 4. Normalize location/label to lists
+        # 3. Normalize location/label to lists
         if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
             # Single point: (x, y)
             locations = [location]
@@ -658,7 +633,7 @@ class SAM2StreamingSegmentor:
         else:
             labels = list(label)
 
-        # 5. Scale points to INPUT_SIZE (1024) space
+        # 4. Scale points to INPUT_SIZE (1024) space
         orig_h, orig_w = frame_dims
         scaled_points = []
         for x, y in locations:
@@ -666,7 +641,7 @@ class SAM2StreamingSegmentor:
             scaled_y = y * self.INPUT_SIZE / orig_h
             scaled_points.append([scaled_x, scaled_y])
 
-        # 6. Create point_inputs dict with tensors on device
+        # 5. Create point_inputs dict with tensors on device
         point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
         point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
         point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
@@ -677,13 +652,13 @@ class SAM2StreamingSegmentor:
             "point_labels": point_labels,
         }
 
-        # 7. Get image features and prepare backbone features
-        image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+        # 6. Get image features and prepare backbone features
+        _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Call track_step with point_inputs and prev_sam_mask_logits
+        # 7. Call track_step with point_inputs and prev_sam_mask_logits
         # is_init_cond_frame=False because we have existing context (the previous mask)
         with torch.inference_mode():
             current_out = self.predictor.track_step(
@@ -699,7 +674,7 @@ class SAM2StreamingSegmentor:
                 prev_sam_mask_logits=prev_logits_tensor,
             )
 
-        # 9. Extract mask, threshold, resize to original dims
+        # 8. Extract mask, threshold, resize to original dims
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
         mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
         mask_resized = cv2.resize(
@@ -708,22 +683,49 @@ class SAM2StreamingSegmentor:
             interpolation=cv2.INTER_NEAREST,
         )
 
-        # 10. Save mask to masks storage, update logits_storage with new pred_masks
-        masks[frame_idx] = mask_resized
+        # 9. Get updated logits
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
-        logits[frame_idx] = pred_masks_low_res
 
-        # 11. Update output_dict["cond_frame_outputs"][frame_idx]
+        # 10. Update output_dict["cond_frame_outputs"][frame_idx]
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 12. Return the refined mask
-        return mask_resized
+        # 11. Return mask and logits (caller saves to storage)
+        return mask_resized, pred_masks_low_res
+
+    def propagate(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frame: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Propagate tracking to a single frame.
+
+        This is a convenience wrapper that propagates to exactly one frame.
+        For batch propagation, use propagate_sequential() instead.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Frame index to propagate to.
+            frame: BGR uint8 frame data (H, W, 3).
+
+        Returns:
+            Tuple of (mask, logits) where:
+            - mask: Binary mask array (height, width) with dtype uint8, values 0 or 255.
+            - logits: Low-res logits array (256, 256).
+
+        Raises:
+            KeyError: If video_id is not open.
+            RuntimeError: If no memory exists (need to add a prompt first).
+        """
+        return self._propagate_single_frame(video_id, frame_idx, frame)
 
     def propagate_sequential(
         self,
         video_id: str,
         start_frame: int,
         num_frames: int,
+        frames,  # Indexable frame source
+        on_result: Callable[[int, np.ndarray, np.ndarray], None],  # callback(frame_idx, mask, logits)
         progress_interval: int = 10,
     ) -> list[int]:
         """Propagate tracking forward from start_frame.
@@ -736,6 +738,9 @@ class SAM2StreamingSegmentor:
             video_id: The video identifier.
             start_frame: Frame index to start propagation from.
             num_frames: Maximum number of frames to propagate.
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            on_result: Callback called for each frame with (frame_idx, mask, logits).
+                       The caller should save the results in this callback.
             progress_interval: Print progress every N frames (0 to disable).
 
         Returns:
@@ -750,9 +755,6 @@ class SAM2StreamingSegmentor:
 
         # 1. Get session state
         session = self.sessions[video_id]
-        frames = session["frames"]
-        masks = session["masks"]
-        logits = session["logits"]
         cond_frame_indices = session["cond_frame_indices"]
         frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
@@ -786,7 +788,7 @@ class SAM2StreamingSegmentor:
                 break
 
             # Get image features and prepare backbone features
-            image_tensor, backbone_out = self._get_image_features(video_id, frame_idx)
+            _, backbone_out = self._get_image_features(video_id, frame_idx, frame_bgr)
             current_vision_feats, current_vision_pos_embeds, feat_sizes = (
                 self._prepare_backbone_features(backbone_out)
             )
@@ -809,13 +811,6 @@ class SAM2StreamingSegmentor:
             # Extract mask from pred_masks_high_res
             pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
 
-            # Get object score for debug logging
-            obj_score_logits = current_out.get("object_score_logits")
-            if obj_score_logits is not None:
-                obj_score = torch.sigmoid(obj_score_logits[0, 0]).item()
-            else:
-                obj_score = 0.0
-
             # Threshold at 0, convert to uint8 * 255, resize to original dims
             mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
             mask_resized = cv2.resize(
@@ -824,18 +819,11 @@ class SAM2StreamingSegmentor:
                 interpolation=cv2.INTER_NEAREST,
             )
 
-            # Count mask pixels for debug logging
-            mask_pixels = np.sum(mask_resized > 0)
-
-            # Debug logging
-            print(f"  Frame {frame_idx}: obj_score={obj_score:.3f}, mask_pixels={mask_pixels}")
-
-            # Save mask to storage
-            masks[frame_idx] = mask_resized
-
-            # Save low-res logits for potential refinement
+            # Get low-res logits
             pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
-            logits[frame_idx] = pred_masks_low_res
+
+            # Call callback to save results
+            on_result(frame_idx, mask_resized, pred_masks_low_res)
 
             # Store in output_dict["non_cond_frame_outputs"]
             output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(
@@ -861,22 +849,370 @@ class SAM2StreamingSegmentor:
 
         return propagated
 
+    def _compute_bbox_iou(
+        self, mask1: np.ndarray, mask2: np.ndarray
+    ) -> float:
+        """Compute IoU between bounding boxes of two masks.
+
+        This is faster and more robust than pixel-level mask IoU for
+        detecting drift between tracker and detector.
+
+        Args:
+            mask1: First binary mask (H, W).
+            mask2: Second binary mask (H, W).
+
+        Returns:
+            IoU value in [0, 1]. Returns 0 if either mask is empty.
+        """
+        # Get bounding box from mask1
+        rows1 = np.any(mask1 > 127, axis=1)
+        cols1 = np.any(mask1 > 127, axis=0)
+        if not rows1.any() or not cols1.any():
+            return 0.0
+
+        y1_1, y2_1 = np.where(rows1)[0][[0, -1]]
+        x1_1, x2_1 = np.where(cols1)[0][[0, -1]]
+        # Add 1 to max indices to get proper bbox dimensions
+        y2_1 += 1
+        x2_1 += 1
+
+        # Get bounding box from mask2
+        rows2 = np.any(mask2 > 127, axis=1)
+        cols2 = np.any(mask2 > 127, axis=0)
+        if not rows2.any() or not cols2.any():
+            return 0.0
+
+        y1_2, y2_2 = np.where(rows2)[0][[0, -1]]
+        x1_2, x2_2 = np.where(cols2)[0][[0, -1]]
+        y2_2 += 1
+        x2_2 += 1
+
+        # Compute intersection box
+        inter_x1 = max(x1_1, x1_2)
+        inter_y1 = max(y1_1, y1_2)
+        inter_x2 = min(x2_1, x2_2)
+        inter_y2 = min(y2_1, y2_2)
+
+        if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+            return 0.0
+
+        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+
+        # Compute union
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = area1 + area2 - inter_area
+
+        return inter_area / union_area if union_area > 0 else 0.0
+
+    def _propagate_single_frame(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frame: np.ndarray,
+        mask_prompt: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Propagate to a single frame, optionally with a mask prompt.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Frame index to propagate to.
+            frame: BGR uint8 frame data (H, W, 3).
+            mask_prompt: Optional mask to use as prompt (for detector re-prompting).
+
+        Returns:
+            (mask, logits) where mask is (H, W) uint8 and logits is (256, 256) float32.
+        """
+        session = self.sessions[video_id]
+        frame_dims = session["frame_dims"]
+        output_dict = session["output_dict"]
+        orig_h, orig_w = frame_dims
+
+        # Get image features and prepare backbone features
+        try:
+            _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
+        except Exception as e:
+            raise RuntimeError(f"Failed to get image features for frame {frame_idx}: {e}") from e
+
+        try:
+            current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+                self._prepare_backbone_features(backbone_out)
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to prepare backbone features for frame {frame_idx}: {e}") from e
+
+        # Prepare mask_inputs if mask_prompt provided
+        mask_inputs = None
+        if mask_prompt is not None:
+            # Resize mask to model input size and convert to tensor
+            mask_resized = cv2.resize(
+                mask_prompt.astype(np.float32),
+                (self.INPUT_SIZE, self.INPUT_SIZE),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            # Convert to binary float (0.0 or 1.0) and add batch/channel dims
+            mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
+            mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
+
+        # Call track_step
+        try:
+            with torch.inference_mode():
+                current_out = self.predictor.track_step(
+                    frame_idx=frame_idx,
+                    is_init_cond_frame=(mask_prompt is not None),  # Treat mask prompts as conditioning
+                    current_vision_feats=current_vision_feats,
+                    current_vision_pos_embeds=current_vision_pos_embeds,
+                    feat_sizes=feat_sizes,
+                    point_inputs=None,
+                    mask_inputs=mask_inputs,
+                    output_dict=output_dict,
+                    num_frames=session["num_frames"],
+                    run_mem_encoder=True,
+                )
+        except Exception as e:
+            raise RuntimeError(f"track_step failed for frame {frame_idx}: {e}") from e
+
+        # Extract mask from pred_masks_high_res
+        pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
+
+        # Threshold at 0, convert to uint8 * 255, resize to original dims
+        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_resized = cv2.resize(
+            mask_binary,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        # Get logits
+        pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+
+        # Store in output_dict (memory for future frames)
+        if mask_prompt is not None:
+            output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+        else:
+            output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+        return mask_resized, pred_masks_low_res
+
+    def _propagate_single_frame_no_store(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frame: np.ndarray,
+        mask_prompt: np.ndarray,
+    ) -> np.ndarray:
+        """Propagate with mask prompt but don't write to session masks.
+
+        This is used for final mask generation where we want the corrected
+        result but don't want to overwrite the original tracker mask.
+
+        The result IS added to cond_frame_outputs so it influences future
+        frame predictions via memory attention.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Frame index to propagate to.
+            frame: BGR uint8 frame data (H, W, 3).
+            mask_prompt: Mask to use as prompt (required).
+
+        Returns:
+            Corrected mask (H, W) uint8.
+        """
+        session = self.sessions[video_id]
+        frame_dims = session["frame_dims"]
+        output_dict = session["output_dict"]
+        orig_h, orig_w = frame_dims
+
+        # Get image features and prepare backbone features
+        _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
+        current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+            self._prepare_backbone_features(backbone_out)
+        )
+
+        # Prepare mask_inputs
+        mask_resized = cv2.resize(
+            mask_prompt.astype(np.float32),
+            (self.INPUT_SIZE, self.INPUT_SIZE),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
+        mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
+
+        # Call track_step
+        with torch.inference_mode():
+            current_out = self.predictor.track_step(
+                frame_idx=frame_idx,
+                is_init_cond_frame=True,  # Treat as conditioning frame
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=None,
+                mask_inputs=mask_inputs,
+                output_dict=output_dict,
+                num_frames=session["num_frames"],
+                run_mem_encoder=True,
+            )
+
+        # Extract mask
+        pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
+        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_result = cv2.resize(mask_binary, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+        # Store in cond_frame_outputs for memory (so future frames benefit)
+        output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+        return mask_result
+
     def propagate_with_detector(
         self,
         video_id: str,
         num_frames: int,
+        frames,  # Indexable frame source (frames[idx] -> np.ndarray)
+        detector_masks,  # Indexable detector mask source (detector_masks[idx] -> np.ndarray)
+        on_result: Callable[[int, np.ndarray, np.ndarray], None],
+        on_final_result: Callable[[int, np.ndarray], None] | None = None,
         iou_threshold: float = 0.5,
         progress_callback=None,
-    ) -> list[int]:
-        """Propagate with detector correction - not implemented for SAM2.
+    ) -> tuple[list[int], list[int]]:
+        """Propagate tracking with detector-guided correction.
 
-        This feature requires SAM3 backend. Use SAM_BACKEND=sam3 environment
-        variable to enable detector-guided tracking.
+        Uses the detector mask to correct SAM2 when tracker drift is detected.
+        Drift is detected by comparing bounding box IoU between tracker output
+        and detector mask.
+
+        The tracker output is ALWAYS passed to on_result callback.
+        When on_final_result is provided:
+        - If IoU >= threshold: calls on_final_result with tracker mask
+        - If IoU < threshold: re-prompt with detector, calls on_final_result
+          with corrected mask (tracker mask via on_result remains original)
+
+        Args:
+            video_id: The video identifier.
+            num_frames: Number of frames to propagate.
+            frames: Indexable frame source (frames[idx] returns BGR numpy array).
+            detector_masks: Indexable detector mask source.
+            on_result: Callback(frame_idx, mask, logits) called for each tracker result.
+            on_final_result: Optional callback(frame_idx, mask) for final (corrected) masks.
+            iou_threshold: Re-prompt when bbox IoU drops below this (default 0.5).
+            progress_callback: Optional callback(frame_idx, num_frames) for progress.
+
+        Returns:
+            Tuple of (propagated_frames, corrected_frames) where:
+            - propagated_frames: List of all frame indices that were propagated
+            - corrected_frames: List of frame indices where detector correction was applied
 
         Raises:
-            NotImplementedError: Always, as this feature requires SAM3.
+            RuntimeError: If no memory exists and detector mask at frame 0 is empty.
         """
-        raise NotImplementedError(
-            "propagate_with_detector requires SAM3 backend. "
-            "Set SAM_BACKEND=sam3 environment variable to use this feature."
+        MEM_WINDOW = 7
+
+        session = self.sessions[video_id]
+        output_dict = session["output_dict"]
+
+        # Check output_dict has memory (need at least frame 0 initialized)
+        has_memory = (
+            len(output_dict["cond_frame_outputs"]) > 0
+            or len(output_dict["non_cond_frame_outputs"]) > 0
         )
+        if not has_memory:
+            # Initialize from detector mask on frame 0
+            detector_0 = np.array(detector_masks[0])
+            if not (detector_0 > 127).any():
+                raise RuntimeError(
+                    "No memory and detector mask at frame 0 is empty. "
+                    "Need either existing memory or detector mask to start."
+                )
+            print("  Initializing from detector mask at frame 0...")
+            try:
+                frame_0 = frames[0]
+                mask_0, logits_0 = self._propagate_single_frame(
+                    video_id, 0, frame_0, mask_prompt=detector_0
+                )
+                on_result(0, mask_0, logits_0)
+                if on_final_result is not None:
+                    on_final_result(0, mask_0)
+                print("  Frame 0 initialized successfully")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise RuntimeError(f"Failed to initialize frame 0: {e}") from e
+
+        propagated = []
+        corrected_frames = []
+
+        for i in range(num_frames):
+            frame_idx = i
+
+            # Skip frame 0 if already initialized
+            if frame_idx == 0 and 0 in output_dict["cond_frame_outputs"]:
+                propagated.append(frame_idx)
+                continue
+
+            # Load detector mask for this frame
+            try:
+                detector_mask = np.array(detector_masks[frame_idx])
+            except (IndexError, KeyError):
+                break
+
+            detector_has_mask = (detector_mask > 127).any()
+
+            # Get frame data
+            frame = frames[frame_idx]
+
+            # Propagate without prompt to get tracker prediction
+            tracker_mask, tracker_logits = self._propagate_single_frame(
+                video_id, frame_idx, frame
+            )
+            tracker_has_mask = (tracker_mask > 127).any()
+
+            # Always call on_result with tracker output
+            on_result(frame_idx, tracker_mask, tracker_logits)
+
+            # Decide if we need to correct with detector
+            need_correction = False
+            iou = 1.0  # Default if not computed
+
+            if detector_has_mask:
+                if not tracker_has_mask:
+                    # Tracker lost object but detector sees it
+                    need_correction = True
+                    iou = 0.0
+                    print(f"  Frame {frame_idx}: tracker empty, correcting with detector")
+                else:
+                    # Both have masks - check IoU
+                    iou = self._compute_bbox_iou(tracker_mask, detector_mask)
+                    if iou < iou_threshold:
+                        need_correction = True
+                        print(f"  Frame {frame_idx}: IoU={iou:.3f} < {iou_threshold}, correcting")
+
+            # Call on_final_result if provided
+            if on_final_result is not None:
+                if need_correction:
+                    # Get corrected mask without overwriting tracker memory
+                    corrected_mask = self._propagate_single_frame_no_store(
+                        video_id, frame_idx, frame, mask_prompt=detector_mask
+                    )
+                    on_final_result(frame_idx, corrected_mask)
+                    corrected_frames.append(frame_idx)
+                else:
+                    # Trust tracker - pass tracker mask to final
+                    on_final_result(frame_idx, tracker_mask)
+
+            # Memory eviction
+            eviction_threshold = frame_idx - MEM_WINDOW
+            keys_to_evict = [
+                k
+                for k in output_dict["non_cond_frame_outputs"]
+                if k <= eviction_threshold
+            ]
+            for k in keys_to_evict:
+                del output_dict["non_cond_frame_outputs"][k]
+
+            propagated.append(frame_idx)
+
+            # Progress callback
+            if progress_callback:
+                progress_callback(frame_idx, num_frames)
+
+        print(f"  Propagated {len(propagated)} frames, corrected {len(corrected_frames)} frames")
+        return propagated, corrected_frames

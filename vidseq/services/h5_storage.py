@@ -27,9 +27,18 @@ def _get_masks_dir(project_path: Path, mask_subdir: str = "masks") -> Path:
     return project_path / mask_subdir
 
 
-def _get_video_h5_path(project_path: Path, video_id: int, mask_subdir: str = "masks") -> Path:
-    """Get path to the HDF5 file for a specific video's masks."""
-    return _get_masks_dir(project_path, mask_subdir) / f"{video_id}.h5"
+def _get_video_h5_path(
+    project_path: Path, video_id: int, mask_subdir: str = "masks", suffix: str = ""
+) -> Path:
+    """Get path to the HDF5 file for a specific video's masks.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
+        suffix: Optional suffix like "_detector" or "_final"
+    """
+    return _get_masks_dir(project_path, mask_subdir) / f"{video_id}{suffix}.h5"
 
 
 def _get_lock_path(h5_path: Path) -> Path:
@@ -38,7 +47,13 @@ def _get_lock_path(h5_path: Path) -> Path:
 
 
 @contextmanager
-def open_video_h5(project_path: Path, video_id: int, mode: str, mask_subdir: str = "masks"):
+def open_video_h5(
+    project_path: Path,
+    video_id: int,
+    mode: str,
+    mask_subdir: str = "masks",
+    suffix: str = "",
+):
     """Context manager for per-video HDF5 mask file access with file locking.
 
     Args:
@@ -46,6 +61,7 @@ def open_video_h5(project_path: Path, video_id: int, mode: str, mask_subdir: str
         video_id: ID of the video
         mode: File mode - 'r' for read-only, 'a' for append/write
         mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
+        suffix: Optional suffix like "_detector" or "_final"
 
     Yields:
         h5py.File: The opened HDF5 file handle
@@ -55,21 +71,21 @@ def open_video_h5(project_path: Path, video_id: int, mode: str, mask_subdir: str
         FileNotFoundError: If project_path doesn't exist
         RuntimeError: If file is locked by another process (write mode only)
     """
-    if mode not in ("r", "a"):
-        raise ValueError(f"Invalid mode '{mode}'. Must be 'r' or 'a'")
+    if mode not in ("r", "a", "w"):
+        raise ValueError(f"Invalid mode '{mode}'. Must be 'r', 'a', or 'w'")
 
     if not project_path.exists():
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
     masks_dir = _get_masks_dir(project_path, mask_subdir)
-    if mode == "a":
+    if mode in ("a", "w"):
         masks_dir.mkdir(parents=True, exist_ok=True)
 
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
+    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir, suffix)
     lock_path = _get_lock_path(h5_path)
 
     lock_created = False
-    if mode == "a":
+    if mode in ("a", "w"):
         if lock_path.exists():
             raise RuntimeError(
                 f"HDF5 file is locked by another process. Lock file: {lock_path}"
@@ -346,3 +362,291 @@ def video_has_masks(project_path: Path, video_id: int) -> bool:
     """
     h5_path = _get_video_h5_path(project_path, video_id)
     return h5_path.exists()
+
+
+# ----- Final masks support -----
+# Final masks are stored in {video_id}_final.h5 and contain the
+# tracker-detector fusion result (tracker if IoU >= 0.5, corrected otherwise)
+
+
+def _get_final_h5_path(project_path: Path, video_id: int) -> Path:
+    """Get path to the final masks HDF5 file."""
+    return project_path / "masks" / f"{video_id}_final.h5"
+
+
+def video_has_final_masks(project_path: Path, video_id: int) -> bool:
+    """Check if a video has final (corrected) masks.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+
+    Returns:
+        True if the final mask file exists, False otherwise
+    """
+    h5_path = _get_final_h5_path(project_path, video_id)
+    return h5_path.exists()
+
+
+def load_final_mask(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """Load a final (corrected) mask from the HDF5 file.
+
+    Returns zeros if the file or dataset doesn't exist.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+        height: Video height in pixels
+        width: Video width in pixels
+
+    Returns:
+        Mask array (height, width) with dtype uint8
+    """
+    h5_path = _get_final_h5_path(project_path, video_id)
+    if not h5_path.exists():
+        return np.zeros((height, width), dtype=np.uint8)
+
+    try:
+        with h5py.File(h5_path, "r") as f:
+            if "masks" not in f:
+                return np.zeros((height, width), dtype=np.uint8)
+            return np.array(f["masks"][frame_idx])
+    except (OSError, KeyError):
+        return np.zeros((height, width), dtype=np.uint8)
+
+
+def load_final_masks_batch(
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    count: int,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """Load multiple final (corrected) masks efficiently.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        start_frame: Starting frame index (0-based)
+        count: Number of frames to load
+        num_frames: Total number of frames in the video
+        height: Video height in pixels
+        width: Video width in pixels
+
+    Returns:
+        Array of shape (actual_count, height, width)
+    """
+    end_frame = min(start_frame + count, num_frames)
+    actual_count = end_frame - start_frame
+
+    h5_path = _get_final_h5_path(project_path, video_id)
+    if not h5_path.exists():
+        return np.zeros((actual_count, height, width), dtype=np.uint8)
+
+    try:
+        with h5py.File(h5_path, "r") as f:
+            if "masks" not in f:
+                return np.zeros((actual_count, height, width), dtype=np.uint8)
+            return np.array(f["masks"][start_frame:end_frame])
+    except (OSError, KeyError):
+        return np.zeros((actual_count, height, width), dtype=np.uint8)
+
+
+# ----- Delete functions for clearing individual frame data -----
+
+
+def delete_tracker_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
+    """Zero out tracker mask for a frame.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+    """
+    h5_path = _get_video_h5_path(project_path, video_id)
+    if not h5_path.exists():
+        return
+
+    with open_video_h5(project_path, video_id, mode="a") as f:
+        if "masks" in f:
+            f["masks"][frame_idx] = 0
+            f.flush()
+
+
+def delete_tracker_logits(project_path: Path, video_id: int, frame_idx: int) -> None:
+    """Zero out tracker logits for a frame.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+    """
+    h5_path = _get_video_h5_path(project_path, video_id)
+    if not h5_path.exists():
+        return
+
+    with open_video_h5(project_path, video_id, mode="a") as f:
+        if "logits" in f:
+            f["logits"][frame_idx] = 0.0
+            f.flush()
+
+
+def delete_detector_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
+    """Zero out detector mask for a frame.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+    """
+    h5_path = _get_video_h5_path(project_path, video_id, suffix="_detector")
+    if not h5_path.exists():
+        return
+
+    with open_video_h5(project_path, video_id, mode="a", suffix="_detector") as f:
+        if "masks" in f:
+            f["masks"][frame_idx] = 0
+            f.flush()
+
+
+def delete_final_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
+    """Zero out final (corrected) mask for a frame.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+    """
+    h5_path = _get_video_h5_path(project_path, video_id, suffix="_final")
+    if not h5_path.exists():
+        return
+
+    with open_video_h5(project_path, video_id, mode="a", suffix="_final") as f:
+        if "masks" in f:
+            f["masks"][frame_idx] = 0
+            f.flush()
+
+
+# ----- Video-level H5 file management -----
+
+
+def create_video_h5_files(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    height: int,
+    width: int,
+    logits_size: int = 256,
+) -> None:
+    """Create all segmentation H5 files for a video upfront.
+
+    Creates tracker, detector, and final mask files with pre-allocated datasets.
+    Uses file locking via open_video_h5.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        height: Video height in pixels
+        width: Video width in pixels
+        logits_size: Size of low-res logits (SAM2=256)
+    """
+    # Create masks directory
+    masks_dir = project_path / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Tracker: {video_id}.h5 with 'masks' and 'logits'
+    with open_video_h5(project_path, video_id, mode="w") as f:
+        f.create_dataset(
+            "masks",
+            shape=(num_frames, height, width),
+            dtype=np.uint8,
+            chunks=(1, height, width),
+            fillvalue=0,
+        )
+        f.create_dataset(
+            "logits",
+            shape=(num_frames, logits_size, logits_size),
+            dtype=np.float32,
+            chunks=(1, logits_size, logits_size),
+            fillvalue=0.0,
+        )
+
+    # 2. Detector: {video_id}_detector.h5 (compressed)
+    with open_video_h5(project_path, video_id, mode="w", suffix="_detector") as f:
+        f.create_dataset(
+            "masks",
+            shape=(num_frames, height, width),
+            dtype=np.uint8,
+            chunks=(1, height, width),
+            compression="gzip",
+            fillvalue=0,
+        )
+
+    # 3. Final: {video_id}_final.h5
+    with open_video_h5(project_path, video_id, mode="w", suffix="_final") as f:
+        f.create_dataset(
+            "masks",
+            shape=(num_frames, height, width),
+            dtype=np.uint8,
+            chunks=(1, height, width),
+            fillvalue=0,
+        )
+
+
+def delete_video_h5_files(project_path: Path, video_id: int) -> None:
+    """Delete all segmentation H5 files for a video.
+
+    Deletes tracker, detector, and final mask files.
+    Does NOT touch cropped/aligned masks.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+    """
+    masks_dir = project_path / "masks"
+    for suffix in ["", "_detector", "_final"]:
+        h5_path = masks_dir / f"{video_id}{suffix}.h5"
+        lock_path = _get_lock_path(h5_path)
+
+        # Check for lock before deleting
+        if lock_path.exists():
+            raise RuntimeError(
+                f"Cannot delete - file is locked by another process: {lock_path}"
+            )
+
+        if h5_path.exists():
+            h5_path.unlink()
+
+
+def reset_video_h5_files(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    height: int,
+    width: int,
+    logits_size: int = 256,
+) -> None:
+    """Reset all segmentation H5 files by deleting and recreating with zeros.
+
+    Resets tracker, detector, and final masks. Does NOT touch cropped/aligned.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        height: Video height in pixels
+        width: Video width in pixels
+        logits_size: Size of low-res logits (SAM2=256)
+    """
+    delete_video_h5_files(project_path, video_id)
+    create_video_h5_files(project_path, video_id, num_frames, height, width, logits_size)

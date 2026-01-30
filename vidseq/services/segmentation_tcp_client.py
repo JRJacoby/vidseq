@@ -9,6 +9,8 @@ Communicates with worker via TCP sockets.
 """
 
 import base64
+import json
+import socket
 import struct
 import subprocess
 import sys
@@ -22,11 +24,140 @@ from typing import Optional
 
 import numpy as np
 
-from vidseq.services.sam3.config import (
+from vidseq.services.segmentation_config import (
     get_sam3_port,
     is_sam3_worker_running,
 )
-from vidseq.services.sam3.client import SAM3TCPClient
+
+
+# ---------------------------------------------------------------------------
+# TCP Client for worker communication
+# ---------------------------------------------------------------------------
+
+
+class SAM3TCPClient:
+    """TCP client for SAM3 worker communication."""
+
+    def __init__(self):
+        self.socket: Optional[socket.socket] = None
+        self.host: Optional[str] = None
+        self.port: Optional[int] = None
+
+    def connect(self, host: str, port: int, timeout: float = 10.0) -> None:
+        """Connect to SAM3 worker server."""
+        if self.socket is not None:
+            self.disconnect()
+
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(timeout)
+            self.socket.connect((host, port))
+            self.host = host
+            self.port = port
+        except Exception as e:
+            self.socket = None
+            raise ConnectionError(f"Failed to connect to SAM3 worker at {host}:{port}: {e}")
+
+    def disconnect(self) -> None:
+        """Close connection to server."""
+        if self.socket is not None:
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+            self.socket = None
+            self.host = None
+            self.port = None
+
+    def send_command(self, cmd: dict, timeout: float = 120.0) -> dict:
+        """Send command to server and wait for response."""
+        if self.socket is None:
+            raise ConnectionError("Not connected to SAM3 worker")
+
+        old_timeout = self.socket.gettimeout()
+        self.socket.settimeout(timeout)
+
+        try:
+            cmd_json = json.dumps(cmd)
+            cmd_bytes = cmd_json.encode('utf-8')
+
+            length_prefix = struct.pack('>I', len(cmd_bytes))
+            self.socket.sendall(length_prefix)
+            self.socket.sendall(cmd_bytes)
+
+            length_bytes = self._recv_exact(4)
+            if len(length_bytes) != 4:
+                raise ConnectionError("Connection closed by server")
+
+            response_length = struct.unpack('>I', length_bytes)[0]
+            response_bytes = self._recv_exact(response_length)
+            response_json = response_bytes.decode('utf-8')
+            return json.loads(response_json)
+
+        except socket.timeout:
+            raise TimeoutError(f"Timeout waiting for response to {cmd.get('type', 'unknown')}")
+        except Exception as e:
+            if isinstance(e, (ConnectionError, TimeoutError)):
+                raise
+            raise ConnectionError(f"Error communicating with SAM3 worker: {e}")
+        finally:
+            self.socket.settimeout(old_timeout)
+
+    def send_command_streaming(self, cmd: dict, timeout: float = 120.0):
+        """Send command to server and yield multiple responses."""
+        if self.socket is None:
+            raise ConnectionError("Not connected to SAM3 worker")
+
+        old_timeout = self.socket.gettimeout()
+        self.socket.settimeout(timeout)
+
+        try:
+            cmd_json = json.dumps(cmd)
+            cmd_bytes = cmd_json.encode('utf-8')
+
+            length_prefix = struct.pack('>I', len(cmd_bytes))
+            self.socket.sendall(length_prefix)
+            self.socket.sendall(cmd_bytes)
+
+            while True:
+                length_bytes = self._recv_exact(4)
+                if len(length_bytes) != 4:
+                    raise ConnectionError("Connection closed by server")
+
+                response_length = struct.unpack('>I', length_bytes)[0]
+                response_bytes = self._recv_exact(response_length)
+                response_json = response_bytes.decode('utf-8')
+                response = json.loads(response_json)
+
+                yield response
+
+                cmd_type = cmd.get("type", "")
+                resp_type = response.get("type", "")
+                if resp_type == f"{cmd_type}_result" or resp_type == "error":
+                    break
+
+        except socket.timeout:
+            raise TimeoutError(f"Timeout waiting for response to {cmd.get('type', 'unknown')}")
+        except Exception as e:
+            if isinstance(e, (ConnectionError, TimeoutError)):
+                raise
+            raise ConnectionError(f"Error communicating with SAM3 worker: {e}")
+        finally:
+            self.socket.settimeout(old_timeout)
+
+    def _recv_exact(self, n: int) -> bytes:
+        """Receive exactly n bytes from socket."""
+        data = b''
+        while len(data) < n:
+            chunk = self.socket.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("Connection closed by server")
+            data += chunk
+        return data
+
+    def is_connected(self) -> bool:
+        """Check if client is connected."""
+        return self.socket is not None
 
 
 def _decode_mask_rle(mask_rle: str, shape: tuple[int, ...], dtype: str = "uint8") -> np.ndarray:
@@ -176,7 +307,7 @@ class SAM3Service:
             kwargs['start_new_session'] = True
 
         self._worker_process = subprocess.Popen(
-            [sys.executable, "-m", "vidseq.services.sam3.server.tcp_server"],
+            [sys.executable, "-m", "vidseq.services.segmentation_tcp_server"],
             **kwargs
         )
 
@@ -277,6 +408,35 @@ class SAM3Service:
             if isinstance(e, (ConnectionError, TimeoutError)) or "Connection" in str(e):
                 self._tcp_client = None
                 # Don't change status - might be temporary connection issue
+            raise RuntimeError(f"Failed to communicate with SAM3 worker: {e}") from e
+
+    def _send_streaming(self, cmd: dict, timeout: float = 120.0) -> dict:
+        """Send a command and stream responses until final result.
+
+        Use this for commands that send progress callbacks.
+        """
+        self._ensure_worker_ready()
+        assert self._tcp_client is not None
+
+        request_id = str(uuid.uuid4())
+        cmd["request_id"] = request_id
+
+        try:
+            final_result = None
+            for response in self._tcp_client.send_command_streaming(cmd, timeout=timeout):
+                resp_type = response.get("type", "")
+                # Progress messages - just log them
+                if resp_type == "progress":
+                    frame_idx = response.get("frame_idx", 0)
+                    total = response.get("total", 0)
+                    print(f"[SAM3 Service] Progress: {frame_idx}/{total}")
+                    continue
+                # Final result
+                final_result = response
+            return final_result or {"status": "error", "error": "No response received"}
+        except Exception as e:
+            if isinstance(e, (ConnectionError, TimeoutError)) or "Connection" in str(e):
+                self._tcp_client = None
             raise RuntimeError(f"Failed to communicate with SAM3 worker: {e}") from e
 
     def init_session(self, project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
@@ -542,6 +702,26 @@ class SAM3Service:
             db_session.commit()
 
         # Tell worker to reset frame
+        self.reset_frame_memory(project_id, video_id, frame_idx)
+
+    def reset_frame_memory(
+        self,
+        project_id: int,
+        video_id: int,
+        frame_idx: int,
+    ) -> None:
+        """
+        Clear SAM memory for a single frame (no database or H5 changes).
+
+        This only sends a command to the TCP worker to clear the frame from
+        SAM's in-memory state (cond_frame_outputs, output_dict, etc).
+        Does nothing if no active session exists.
+
+        Args:
+            project_id: ID of the project
+            video_id: ID of the video
+            frame_idx: Frame index to clear from memory
+        """
         session = self.get_session(project_id, video_id)
         if session is not None:
             self._send_and_wait({
@@ -701,8 +881,8 @@ class SAM3Service:
                     print(f"[SAM3 Service] Failed to init session for video {video.id}: {result.get('error')}")
                     continue
 
-                # Run propagate_with_detector
-                result = self._send_and_wait({
+                # Run propagate_with_detector (uses streaming for progress callbacks)
+                result = self._send_streaming({
                     "type": "propagate_with_detector",
                     "video_id": video.id,
                     "num_frames": video.num_frames,
@@ -869,6 +1049,25 @@ def reset_frame(
         frame_idx: Frame index to reset
     """
     SAM3Service.get_instance().reset_frame(project_id, video_id, project_path, frame_idx)
+
+
+def reset_frame_memory(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+) -> None:
+    """
+    Clear SAM memory for a single frame (no database or H5 changes).
+
+    This only clears the frame from SAM's in-memory state.
+    Does nothing if no active session exists.
+
+    Args:
+        project_id: ID of the project
+        video_id: ID of the video
+        frame_idx: Frame index to clear from memory
+    """
+    SAM3Service.get_instance().reset_frame_memory(project_id, video_id, frame_idx)
 
 
 def reset_video(

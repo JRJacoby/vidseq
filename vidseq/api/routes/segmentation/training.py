@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import frame_data_service, mask_storage
+from vidseq.services import frame_data_service, h5_storage
 
 router = APIRouter()
 
@@ -65,9 +65,9 @@ async def mark_training(
         )
 
     # Load masks and compute bboxes, then save to SQLite
-    with mask_storage.open_video_h5(project_path, video.id, "r") as h5_file:
+    with h5_storage.open_video_h5(project_path, video.id, "r") as h5_file:
         for frame_idx in range(start_frame, end_frame + 1):
-            mask = mask_storage.load_mask(
+            mask = h5_storage.load_mask(
                 project_path=project_path,
                 video_id=video.id,
                 frame_idx=frame_idx,
@@ -76,7 +76,7 @@ async def mark_training(
                 width=video.width,
                 h5_file=h5_file,
             )
-            bbox = mask_storage.compute_bbox_from_mask(mask)
+            bbox = h5_storage.compute_bbox_from_mask(mask)
             if bbox is not None:
                 await frame_data_service.save_bbox(session, video.id, frame_idx, bbox)
 
