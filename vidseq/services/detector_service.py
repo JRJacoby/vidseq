@@ -52,18 +52,15 @@ class DetectorDataset(Dataset):
         self,
         frames: list[tuple[Path, int, int]],  # (video_path, video_id, frame_idx)
         project_path: Path,
-        processor,  # SegformerImageProcessor
     ):
         """Initialize dataset.
 
         Args:
             frames: List of (video_path, video_id, frame_idx) tuples.
             project_path: Path to project folder (for HDF5 mask files).
-            processor: SegformerImageProcessor instance for preprocessing.
         """
         self.frames = frames
         self.project_path = project_path
-        self.processor = processor
         self._h5_cache: dict[int, h5py.File] = {}
         self._video_cache: dict[str, cv2.VideoCapture] = {}
 
@@ -83,7 +80,7 @@ class DetectorDataset(Dataset):
             self._video_cache[video_path] = cv2.VideoCapture(video_path)
         return self._video_cache[video_path]
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         video_path, video_id, frame_idx = self.frames[idx]
 
         # Load frame from video (cached VideoCapture)
@@ -104,18 +101,8 @@ class DetectorDataset(Dataset):
         # Convert 0/255 to 0/1 class labels
         mask_labels = (mask > 127).astype(np.uint8)
 
-        # Use processor for preprocessing
-        inputs = self.processor(
-            images=Image.fromarray(frame_rgb),
-            segmentation_maps=Image.fromarray(mask_labels),
-            return_tensors="pt",
-        )
-
-        # Remove batch dimension (DataLoader will add it back)
-        pixel_values = inputs["pixel_values"].squeeze(0)
-        labels = inputs["labels"].squeeze(0)
-
-        return pixel_values, labels
+        # Return raw numpy arrays - preprocessing happens on GPU in training loop
+        return frame_rgb, mask_labels
 
     def close(self):
         """Close all HDF5 and video files."""
@@ -230,7 +217,7 @@ class DetectorService:
     ) -> None:
         """Synchronous training implementation."""
         from torch.utils.data import DataLoader
-        from vidseq.services.detector_model import SegFormerDetector, get_processor
+        from vidseq.services.detector_model import SegFormerDetector
 
         logger.info(f"Starting detector training: max_epochs={max_epochs}, batch_size={batch_size}")
 
@@ -266,11 +253,8 @@ class DetectorService:
             num_val_frames=len(val_frames),
         )
 
-        # Get processor for preprocessing
-        processor = get_processor()
-
-        # Create datasets and loaders
-        train_dataset = DetectorDataset(train_frames, project_path, processor)
+        # Create datasets and loaders (return raw numpy, preprocessing on GPU)
+        train_dataset = DetectorDataset(train_frames, project_path)
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
@@ -283,7 +267,7 @@ class DetectorService:
         val_loader = None
         val_dataset = None
         if use_validation:
-            val_dataset = DetectorDataset(val_frames, project_path, processor)
+            val_dataset = DetectorDataset(val_frames, project_path)
             val_loader = DataLoader(
                 val_dataset,
                 batch_size=batch_size,
@@ -292,6 +276,39 @@ class DetectorService:
                 pin_memory=True,
                 persistent_workers=True,
             )
+
+        # ImageNet normalization constants for GPU preprocessing
+        img_mean = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+        img_std = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+
+        def preprocess_batch(
+            images: torch.Tensor, masks: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            """Preprocess batch on GPU: resize, normalize.
+
+            Args:
+                images: (B, H, W, 3) uint8 tensor on GPU
+                masks: (B, H, W) uint8 tensor on GPU
+
+            Returns:
+                pixel_values: (B, 3, 640, 640) normalized float tensor
+                labels: (B, 640, 640) long tensor
+            """
+            # BHWC -> BCHW, uint8 -> float, scale to [0,1]
+            pixel_values = images.permute(0, 3, 1, 2).float() / 255.0
+
+            # Resize to 640x640
+            pixel_values = F.interpolate(
+                pixel_values, size=(640, 640), mode="bilinear", align_corners=False
+            )
+            labels = F.interpolate(
+                masks.unsqueeze(1).float(), size=(640, 640), mode="nearest"
+            ).long().squeeze(1)
+
+            # Normalize with ImageNet stats
+            pixel_values = (pixel_values - img_mean) / img_std
+
+            return pixel_values, labels
 
         # Initialize model
         model = SegFormerDetector(device="cuda")
@@ -353,9 +370,11 @@ class DetectorService:
                 leave=False,
                 ncols=100,
             )
-            for batch_idx, (pixel_values, labels) in enumerate(pbar):
-                pixel_values = pixel_values.to("cuda")
-                labels = labels.to("cuda")
+            for batch_idx, (images, masks) in enumerate(pbar):
+                # GPU preprocessing: resize, normalize
+                images = images.cuda()
+                masks = masks.cuda()
+                pixel_values, labels = preprocess_batch(images, masks)
 
                 optimizer.zero_grad()
 
@@ -403,9 +422,11 @@ class DetectorService:
                     ncols=100,
                 )
                 with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    for pixel_values, labels in val_pbar:
-                        pixel_values = pixel_values.to("cuda")
-                        labels = labels.to("cuda")
+                    for images, masks in val_pbar:
+                        # GPU preprocessing: resize, normalize
+                        images = images.cuda()
+                        masks = masks.cuda()
+                        pixel_values, labels = preprocess_batch(images, masks)
 
                         logits = model(pixel_values)
                         logits_upsampled = F.interpolate(
