@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from PIL import Image
+
 if TYPE_CHECKING:
     from vidseq.services.detector_model import DINOv2Detector
 
@@ -49,18 +51,18 @@ class DetectorDataset(Dataset):
         self,
         frames: list[tuple[Path, int, int]],  # (video_path, video_id, frame_idx)
         project_path: Path,
-        target_size: int = 518,
+        processor,  # SegformerImageProcessor
     ):
         """Initialize dataset.
 
         Args:
             frames: List of (video_path, video_id, frame_idx) tuples.
             project_path: Path to project folder (for HDF5 mask files).
-            target_size: Target size for longest edge.
+            processor: SegformerImageProcessor instance for preprocessing.
         """
         self.frames = frames
         self.project_path = project_path
-        self.target_size = target_size
+        self.processor = processor
         self._h5_cache: dict[int, h5py.File] = {}
 
     def __len__(self) -> int:
@@ -85,31 +87,28 @@ class DetectorDataset(Dataset):
         if not ret:
             raise RuntimeError(f"Failed to read frame {frame_idx} from {video_path}")
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w = frame.shape[:2]
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Load mask from HDF5
+        # Load mask from HDF5 (values are 0 or 255)
         h5_file = self._get_h5_file(video_id)
-        mask = h5_file["masks"][frame_idx]
-        mask = np.array(mask, dtype=np.float32) / 255.0
+        mask = np.array(h5_file["masks"][frame_idx], dtype=np.uint8)
 
-        # Resize preserving aspect ratio, then trim to multiple of 14
-        scale = self.target_size / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        # Convert 0/255 to 0/1 class labels
+        mask_labels = (mask > 127).astype(np.uint8)
 
-        # Trim to multiple of 14
-        new_h = (frame.shape[0] // 14) * 14
-        new_w = (frame.shape[1] // 14) * 14
-        frame = frame[:new_h, :new_w]
-        mask = mask[:new_h, :new_w]
+        # Use processor for preprocessing
+        inputs = self.processor(
+            images=Image.fromarray(frame_rgb),
+            segmentation_maps=Image.fromarray(mask_labels),
+            return_tensors="pt",
+        )
 
-        # Convert to tensors
-        frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-        mask = torch.from_numpy(mask).unsqueeze(0).float()
+        # Remove batch dimension (DataLoader will add it back)
+        pixel_values = inputs["pixel_values"].squeeze(0)
+        labels = inputs["labels"].squeeze(0)
 
-        return frame, mask
+        return pixel_values, labels
 
     def close(self):
         """Close all HDF5 files."""
