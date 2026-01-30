@@ -314,6 +314,9 @@ class DetectorService:
         model = SegFormerDetector(device="cuda")
         model.train()
 
+        # Compile model for faster training (first epoch will be slower due to compilation)
+        model = torch.compile(model, mode="reduce-overhead")
+
         # Optimizer (only decoder parameters)
         optimizer = torch.optim.AdamW(
             model.decoder.parameters(), lr=lr, weight_decay=1e-4
