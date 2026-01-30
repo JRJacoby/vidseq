@@ -85,12 +85,13 @@ class SAM2StreamingSegmentor:
     # Low-res logits size (SAM2 outputs 256x256)
     LOGITS_SIZE = 256
 
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, compile_model: bool = True):
         """Initialize the segmentor and load the SAM2 model.
 
         Args:
             device: Torch device string ("cuda", "cpu", etc.).
                     Defaults to "cuda" if available, else "cpu".
+            compile_model: Whether to use torch.compile for faster inference.
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -101,6 +102,17 @@ class SAM2StreamingSegmentor:
             device=self.device,
         )
         print("SAM2 model loaded.")
+
+        # Compile model components for faster inference
+        if compile_model and self.device == "cuda":
+            print("Compiling SAM2 image encoder with torch.compile...")
+            # Compile image encoder (the main bottleneck - 55% of inference time)
+            self.predictor.image_encoder = torch.compile(
+                self.predictor.image_encoder,
+                mode="max-autotune",
+                fullgraph=True,
+            )
+            print("SAM2 image encoder compiled.")
 
         # Sessions dict: video_id -> session state
         self.sessions: dict[str, dict] = {}
@@ -179,8 +191,8 @@ class SAM2StreamingSegmentor:
         image_tensor = torch.from_numpy(frame_resized).permute(2, 0, 1).float() / 255.0
         image_tensor = image_tensor.unsqueeze(0).to(self.device)  # (1, 3, 1024, 1024)
 
-        # Run through image encoder
-        with torch.inference_mode():
+        # Run through image encoder with bfloat16 for faster inference
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             backbone_out = self.predictor.forward_image(image_tensor)
 
         # Cache (only most recent frame)
@@ -289,7 +301,7 @@ class SAM2StreamingSegmentor:
         )
 
         # Run track_step with mask_inputs to encode the mask into memory
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=True,  # Treat as conditioning frame
@@ -544,7 +556,7 @@ class SAM2StreamingSegmentor:
         is_init_cond_frame = not has_existing_memory
 
         # 7. Call track_step with point_inputs
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=is_init_cond_frame,
@@ -660,7 +672,7 @@ class SAM2StreamingSegmentor:
 
         # 7. Call track_step with point_inputs and prev_sam_mask_logits
         # is_init_cond_frame=False because we have existing context (the previous mask)
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=False,
@@ -794,7 +806,7 @@ class SAM2StreamingSegmentor:
             )
 
             # Call track_step for propagation (no point or mask inputs)
-            with torch.inference_mode():
+            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
                     is_init_cond_frame=False,
@@ -954,9 +966,9 @@ class SAM2StreamingSegmentor:
             mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
             mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # Call track_step
+        # Call track_step with bfloat16 for faster inference
         try:
-            with torch.inference_mode():
+            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
                     is_init_cond_frame=(mask_prompt is not None),  # Treat mask prompts as conditioning
@@ -1038,8 +1050,8 @@ class SAM2StreamingSegmentor:
         mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
         mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # Call track_step
-        with torch.inference_mode():
+        # Call track_step with bfloat16 for faster inference
+        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=True,  # Treat as conditioning frame
