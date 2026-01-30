@@ -65,6 +65,7 @@ class DetectorDataset(Dataset):
         self.project_path = project_path
         self.processor = processor
         self._h5_cache: dict[int, h5py.File] = {}
+        self._video_cache: dict[str, cv2.VideoCapture] = {}
 
     def __len__(self) -> int:
         return len(self.frames)
@@ -76,14 +77,19 @@ class DetectorDataset(Dataset):
             self._h5_cache[video_id] = h5py.File(h5_path, "r")
         return self._h5_cache[video_id]
 
+    def _get_video_capture(self, video_path: str) -> cv2.VideoCapture:
+        """Get or open VideoCapture for video."""
+        if video_path not in self._video_cache:
+            self._video_cache[video_path] = cv2.VideoCapture(video_path)
+        return self._video_cache[video_path]
+
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         video_path, video_id, frame_idx = self.frames[idx]
 
-        # Load frame from video
-        cap = cv2.VideoCapture(str(video_path))
+        # Load frame from video (cached VideoCapture)
+        cap = self._get_video_capture(str(video_path))
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
-        cap.release()
 
         if not ret:
             raise RuntimeError(f"Failed to read frame {frame_idx} from {video_path}")
@@ -112,10 +118,13 @@ class DetectorDataset(Dataset):
         return pixel_values, labels
 
     def close(self):
-        """Close all HDF5 files."""
+        """Close all HDF5 and video files."""
         for f in self._h5_cache.values():
             f.close()
         self._h5_cache.clear()
+        for cap in self._video_cache.values():
+            cap.release()
+        self._video_cache.clear()
 
 
 class DetectorService:
@@ -263,7 +272,12 @@ class DetectorService:
         # Create datasets and loaders
         train_dataset = DetectorDataset(train_frames, project_path, processor)
         train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=True,
         )
 
         val_loader = None
@@ -271,7 +285,12 @@ class DetectorService:
         if use_validation:
             val_dataset = DetectorDataset(val_frames, project_path, processor)
             val_loader = DataLoader(
-                val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=True,
             )
 
         # Initialize model
@@ -633,6 +652,9 @@ class DetectorService:
         model = SegFormerDetector(device="cuda")
         model.load_decoder(str(project_path / "models" / "detector.pt"))
         model.eval()
+
+        # Compile for faster inference (first call will be slow due to compilation)
+        model = torch.compile(model, mode="max-autotune", fullgraph=True)
 
         processor = get_processor()
 
