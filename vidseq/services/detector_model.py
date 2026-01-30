@@ -1,82 +1,35 @@
-"""DINOv2-based detector model for segmentation.
+"""SegFormer-based detector model for binary segmentation.
 
-Uses DINOv2-giant as frozen backbone with a lightweight convolutional decoder
-that outputs per-pixel segmentation logits.
+Uses SegFormer-b5 pretrained on ADE20K with frozen encoder and trainable decoder.
+The classifier head is replaced from 150 classes to 2 (background/foreground).
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from transformers import (
+    SegformerForSemanticSegmentation,
+    SegformerImageProcessor,
+)
 
 # Enable cuDNN benchmark for faster convolutions with fixed input sizes
 torch.backends.cudnn.benchmark = True
 
 
-class SegmentationDecoder(nn.Module):
-    """Convolutional decoder that upsamples DINOv2 patch features to full resolution."""
+def get_processor() -> SegformerImageProcessor:
+    """Get the SegFormer image processor.
 
-    def __init__(self, in_channels: int = 1536):
-        """Initialize decoder.
-
-        Args:
-            in_channels: Number of input channels from DINOv2 (1536 for giant).
-        """
-        super().__init__()
-
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-        )
-        self.conv3 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-        )
-        self.conv4 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-        )
-        self.head = nn.Conv2d(64, 1, kernel_size=1)
-
-    def forward(self, x: torch.Tensor, output_size: tuple[int, int]) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x: Patch features from DINOv2, shape (B, C, H/14, W/14).
-            output_size: Target output size (H, W) for final mask.
-
-        Returns:
-            Logits tensor of shape (B, 1, H, W).
-        """
-        x = self.conv1(x)
-        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-
-        x = self.conv2(x)
-        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-
-        x = self.conv3(x)
-        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-
-        x = self.conv4(x)
-        x = F.interpolate(x, size=output_size, mode="bilinear", align_corners=False)
-
-        x = self.head(x)
-        return x
+    Returns:
+        Configured SegformerImageProcessor instance.
+    """
+    return SegformerImageProcessor.from_pretrained(
+        "nvidia/segformer-b5-finetuned-ade-640-640"
+    )
 
 
-class DINOv2Detector(nn.Module):
-    """DINOv2-giant backbone with segmentation decoder."""
+class SegFormerDetector(nn.Module):
+    """SegFormer-b5 with frozen encoder, trainable decoder for binary segmentation."""
 
-    # ImageNet normalization
-    MEAN = torch.tensor([0.485, 0.456, 0.406])
-    STD = torch.tensor([0.229, 0.224, 0.225])
+    MODEL_NAME = "nvidia/segformer-b5-finetuned-ade-640-640"
 
     def __init__(self, device: str = "cuda"):
         """Initialize model.
@@ -87,79 +40,55 @@ class DINOv2Detector(nn.Module):
         super().__init__()
         self.device = device
 
-        # Load DINOv2-giant backbone (frozen)
-        self.backbone = torch.hub.load("facebookresearch/dinov2", "dinov2_vitg14")
-        self.backbone.eval()
-        for param in self.backbone.parameters():
+        # Load pretrained SegFormer-b5
+        self.model = SegformerForSemanticSegmentation.from_pretrained(self.MODEL_NAME)
+
+        # Replace classifier head: 150 classes -> 2 classes (background/foreground)
+        decoder_hidden_size = self.model.config.decoder_hidden_size
+        self.model.decode_head.classifier = nn.Conv2d(
+            in_channels=decoder_hidden_size,
+            out_channels=2,
+            kernel_size=1,
+        )
+
+        # Update config
+        self.model.config.num_labels = 2
+        self.model.config.id2label = {0: "background", 1: "foreground"}
+        self.model.config.label2id = {"background": 0, "foreground": 1}
+
+        # Freeze encoder
+        for param in self.model.segformer.parameters():
             param.requires_grad = False
-
-        # Compile backbone for faster inference (one-time cost on first forward)
-        if device == "cuda":
-            self.backbone = torch.compile(self.backbone)
-
-        # Trainable decoder
-        self.decoder = SegmentationDecoder(in_channels=1536)
-
-        # Register normalization buffers BEFORE .to(device) so they get moved
-        self.register_buffer("mean", self.MEAN.view(1, 3, 1, 1))
-        self.register_buffer("std", self.STD.view(1, 3, 1, 1))
 
         self.to(device)
 
-    def preprocess(self, images: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
-        """Preprocess images for DINOv2.
+    @property
+    def decoder(self) -> nn.Module:
+        """Return the decode_head for optimizer parameter access.
 
-        Args:
-            images: Input images, shape (B, C, H, W), values in [0, 1].
-
-        Returns:
-            Tuple of (preprocessed images, original size).
+        Maintains compatibility with service code that uses model.decoder.parameters().
         """
-        original_size = (images.shape[2], images.shape[3])
+        return self.model.decode_head
 
-        # Trim to multiple of 14
-        h, w = images.shape[2], images.shape[3]
-        new_h = (h // 14) * 14
-        new_w = (w // 14) * 14
-        images = images[:, :, :new_h, :new_w]
-
-        # Normalize
-        images = (images - self.mean) / self.std
-
-        return images, original_size
-
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Forward pass.
 
         Args:
-            images: Input images, shape (B, C, H, W), values in [0, 1].
+            pixel_values: Preprocessed images from SegformerImageProcessor,
+                shape (B, C, H, W), already normalized.
 
         Returns:
-            Logits tensor of shape (B, 1, H, W) at original resolution.
+            Logits tensor of shape (B, 2, H/4, W/4).
         """
-        images, original_size = self.preprocess(images)
-        trimmed_size = (images.shape[2], images.shape[3])
-
-        # Get patch features from DINOv2
-        with torch.no_grad():
-            features = self.backbone.forward_features(images)
-            patch_tokens = features["x_norm_patchtokens"]  # (B, N, C)
-
-        # Reshape to spatial grid
-        B, N, C = patch_tokens.shape
-        h = images.shape[2] // 14
-        w = images.shape[3] // 14
-        patch_tokens = patch_tokens.permute(0, 2, 1).reshape(B, C, h, w)
-
-        # Decode to mask logits
-        logits = self.decoder(patch_tokens, trimmed_size)
-
-        return logits
+        outputs = self.model(pixel_values=pixel_values)
+        return outputs.logits
 
     def save_decoder(self, path: str) -> None:
         """Save only the decoder weights."""
-        torch.save(self.decoder.state_dict(), path)
+        torch.save(self.model.decode_head.state_dict(), path)
 
     def load_decoder(self, path: str) -> None:
         """Load decoder weights."""
-        self.decoder.load_state_dict(torch.load(path, map_location=self.device))
+        self.model.decode_head.load_state_dict(
+            torch.load(path, map_location=self.device, weights_only=True)
+        )
