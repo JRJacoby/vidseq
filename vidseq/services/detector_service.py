@@ -625,14 +625,16 @@ class DetectorService:
 
     def _apply_to_all_sync(self, project_path: Path) -> None:
         """Synchronous implementation of apply to all frames."""
-        from vidseq.services.detector_model import DINOv2Detector
+        from vidseq.services.detector_model import SegFormerDetector, get_processor
 
         logger.info("Applying detector to all frames in project...")
 
         # Load model
-        model = DINOv2Detector(device="cuda")
+        model = SegFormerDetector(device="cuda")
         model.load_decoder(str(project_path / "models" / "detector.pt"))
         model.eval()
+
+        processor = get_processor()
 
         # Get all videos
         db_manager = DatabaseManager.get_instance()
@@ -693,8 +695,6 @@ class DetectorService:
                 try:
                     h5_file = h5py.File(str(detector_h5_path), "a")
                 except OSError as e:
-                    # For writing detector masks, any error is a real problem
-                    # (we should be able to create/open the file)
                     raise RuntimeError(
                         f"Failed to open/create detector HDF5 file: {detector_h5_path}. Error: {e}"
                     )
@@ -725,7 +725,6 @@ class DetectorService:
                             break
 
                         # Check if mask already exists (non-zero)
-                        # Use try/except because newly created datasets may fail to read
                         try:
                             existing = detector_masks[frame_idx]
                             if np.any(existing):
@@ -734,7 +733,6 @@ class DetectorService:
                                 self._training_progress.apply_current += 1
                                 continue
                         except OSError:
-                            # Dataset chunk not initialized yet, treat as empty
                             pass
 
                         # Read frame
@@ -744,50 +742,24 @@ class DetectorService:
                             self._training_progress.apply_current += 1
                             continue
 
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        h, w = frame.shape[:2]
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                        # Resize preserving aspect ratio
-                        target_size = 518
-                        scale = target_size / max(h, w)
-                        new_h, new_w = int(h * scale), int(w * scale)
-                        frame_resized = cv2.resize(frame, (new_w, new_h))
-
-                        # Trim to multiple of 14 (remember pre-trim size for correct upscaling)
-                        pre_trim_h, pre_trim_w = frame_resized.shape[:2]
-                        trim_h = (pre_trim_h // 14) * 14
-                        trim_w = (pre_trim_w // 14) * 14
-                        frame_resized = frame_resized[:trim_h, :trim_w]
-
-                        # To tensor
-                        frame_tensor = (
-                            torch.from_numpy(frame_resized)
-                            .permute(2, 0, 1)
-                            .float()
-                            / 255.0
+                        # Preprocess with processor
+                        inputs = processor(
+                            images=Image.fromarray(frame_rgb),
+                            return_tensors="pt",
                         )
-                        frame_tensor = frame_tensor.unsqueeze(0).to("cuda")
+                        pixel_values = inputs["pixel_values"].to("cuda")
 
                         # Inference
-                        logits = model(frame_tensor)
-                        mask_pred = (torch.sigmoid(logits) > 0.5).float()
+                        logits = model(pixel_values)  # (1, 2, H/4, W/4)
 
-                        # Resize back to original size, accounting for trimmed pixels
-                        # First resize to the region that was actually processed
-                        effective_h = int(orig_h * trim_h / pre_trim_h)
-                        effective_w = int(orig_w * trim_w / pre_trim_w)
-                        mask_pred = torch.nn.functional.interpolate(
-                            mask_pred,
-                            size=(effective_h, effective_w),
-                            mode="nearest",
+                        # Upsample to original size and get binary mask
+                        logits_upsampled = F.interpolate(
+                            logits, size=(orig_h, orig_w), mode="bilinear", align_corners=False
                         )
-                        # Pad with zeros to reach full original size
-                        pad_bottom = orig_h - effective_h
-                        pad_right = orig_w - effective_w
-                        mask_pred = torch.nn.functional.pad(
-                            mask_pred, (0, pad_right, 0, pad_bottom), mode="constant", value=0
-                        )
-                        mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
+                        mask_pred = logits_upsampled.argmax(dim=1)  # (1, H, W)
+                        mask_np = (mask_pred[0].cpu().numpy() * 255).astype(np.uint8)
 
                         # Save to HDF5
                         detector_masks[frame_idx] = mask_np
