@@ -1,4 +1,4 @@
-"""Detector Service for DINOv2-based segmentation training and inference."""
+"""Detector Service for SegFormer-based segmentation training and inference."""
 
 import logging
 import os
