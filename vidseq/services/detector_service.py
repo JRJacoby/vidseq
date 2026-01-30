@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from PIL import Image
 
 if TYPE_CHECKING:
-    from vidseq.services.detector_model import DINOv2Detector
+    from vidseq.services.detector_model import SegFormerDetector
 
 import cv2
 import h5py
@@ -509,9 +509,11 @@ class DetectorService:
     def _apply_to_training_data(
         self,
         project_path: Path,
-        model: "DINOv2Detector",
+        model: "SegFormerDetector",
     ) -> None:
         """Apply trained detector to all training frames and save masks."""
+        from vidseq.services.detector_model import get_processor
+
         logger.info("Applying detector to training data...")
 
         all_frames = self._gather_training_frames(project_path)
@@ -519,6 +521,7 @@ class DetectorService:
         self._training_progress.apply_current = 0
 
         model.eval()
+        processor = get_processor()
 
         # Group frames by video for efficient HDF5 access
         frames_by_video: dict[int, list[tuple[Path, int]]] = {}
@@ -551,59 +554,34 @@ class DetectorService:
                     detector_masks = h5_file["masks"]
 
                     for video_path, frame_idx in frame_list:
-                        # Load and preprocess frame
+                        # Load frame
                         cap = cv2.VideoCapture(str(video_path))
                         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                         ret, frame = cap.read()
                         cap.release()
 
                         if not ret:
+                            self._training_progress.apply_current += 1
                             continue
 
-                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        h, w = frame.shape[:2]
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                        # Resize preserving aspect ratio
-                        target_size = 518
-                        scale = target_size / max(h, w)
-                        new_h, new_w = int(h * scale), int(w * scale)
-                        frame_resized = cv2.resize(frame, (new_w, new_h))
-
-                        # Trim to multiple of 14 (remember pre-trim size for correct upscaling)
-                        pre_trim_h, pre_trim_w = frame_resized.shape[:2]
-                        trim_h = (pre_trim_h // 14) * 14
-                        trim_w = (pre_trim_w // 14) * 14
-                        frame_resized = frame_resized[:trim_h, :trim_w]
-
-                        # To tensor
-                        frame_tensor = (
-                            torch.from_numpy(frame_resized)
-                            .permute(2, 0, 1)
-                            .float()
-                            / 255.0
+                        # Preprocess with processor
+                        inputs = processor(
+                            images=Image.fromarray(frame_rgb),
+                            return_tensors="pt",
                         )
-                        frame_tensor = frame_tensor.unsqueeze(0).to("cuda")
+                        pixel_values = inputs["pixel_values"].to("cuda")
 
                         # Inference
-                        logits = model(frame_tensor)
-                        mask_pred = (torch.sigmoid(logits) > 0.5).float()
+                        logits = model(pixel_values)  # (1, 2, H/4, W/4)
 
-                        # Resize back to original size, accounting for trimmed pixels
-                        # First resize to the region that was actually processed
-                        effective_h = int(orig_h * trim_h / pre_trim_h)
-                        effective_w = int(orig_w * trim_w / pre_trim_w)
-                        mask_pred = torch.nn.functional.interpolate(
-                            mask_pred,
-                            size=(effective_h, effective_w),
-                            mode="nearest",
+                        # Upsample to original size and get binary mask
+                        logits_upsampled = F.interpolate(
+                            logits, size=(orig_h, orig_w), mode="bilinear", align_corners=False
                         )
-                        # Pad with zeros to reach full original size
-                        pad_bottom = orig_h - effective_h
-                        pad_right = orig_w - effective_w
-                        mask_pred = torch.nn.functional.pad(
-                            mask_pred, (0, pad_right, 0, pad_bottom), mode="constant", value=0
-                        )
-                        mask_np = (mask_pred[0, 0].cpu().numpy() * 255).astype(np.uint8)
+                        mask_pred = logits_upsampled.argmax(dim=1)  # (1, H, W)
+                        mask_np = (mask_pred[0].cpu().numpy() * 255).astype(np.uint8)
 
                         # Save to HDF5
                         detector_masks[frame_idx] = mask_np
