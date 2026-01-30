@@ -16,6 +16,7 @@ import cv2
 import h5py
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -219,9 +220,8 @@ class DetectorService:
         early_stop_patience: int,
     ) -> None:
         """Synchronous training implementation."""
-        import torch.nn as nn
         from torch.utils.data import DataLoader
-        from vidseq.services.detector_model import DINOv2Detector
+        from vidseq.services.detector_model import SegFormerDetector, get_processor
 
         logger.info(f"Starting detector training: max_epochs={max_epochs}, batch_size={batch_size}")
 
@@ -257,8 +257,11 @@ class DetectorService:
             num_val_frames=len(val_frames),
         )
 
+        # Get processor for preprocessing
+        processor = get_processor()
+
         # Create datasets and loaders
-        train_dataset = DetectorDataset(train_frames, project_path)
+        train_dataset = DetectorDataset(train_frames, project_path, processor)
         train_loader = DataLoader(
             train_dataset, batch_size=batch_size, shuffle=True, num_workers=0
         )
@@ -266,27 +269,33 @@ class DetectorService:
         val_loader = None
         val_dataset = None
         if use_validation:
-            val_dataset = DetectorDataset(val_frames, project_path)
+            val_dataset = DetectorDataset(val_frames, project_path, processor)
             val_loader = DataLoader(
                 val_dataset, batch_size=batch_size, shuffle=False, num_workers=0
             )
 
         # Initialize model
-        model = DINOv2Detector(device="cuda")
+        model = SegFormerDetector(device="cuda")
         model.train()
 
-        # Loss and optimizer
-        bce_loss = nn.BCEWithLogitsLoss()
+        # Optimizer (only decoder parameters)
         optimizer = torch.optim.AdamW(
             model.decoder.parameters(), lr=lr, weight_decay=1e-4
         )
 
-        def dice_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-            probs = torch.sigmoid(logits)
-            intersection = (probs * targets).sum(dim=(2, 3))
-            union = probs.sum(dim=(2, 3)) + targets.sum(dim=(2, 3))
-            dice = (2 * intersection + 1) / (union + 1)
-            return 1 - dice.mean()
+        def dice_loss(probs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+            """Dice loss for binary segmentation.
+
+            Args:
+                probs: Foreground probabilities, shape (B, H, W), values in [0, 1]
+                targets: Binary targets, shape (B, H, W), values 0 or 1
+            """
+            probs_flat = probs.contiguous().view(-1)
+            targets_flat = targets.contiguous().view(-1).float()
+            intersection = (probs_flat * targets_flat).sum()
+            union = probs_flat.sum() + targets_flat.sum()
+            dice = (2.0 * intersection + 1.0) / (union + 1.0)
+            return 1.0 - dice
 
         # Training state
         best_val_loss = float("inf")
@@ -325,17 +334,30 @@ class DetectorService:
                 leave=False,
                 ncols=100,
             )
-            for batch_idx, (images, masks) in enumerate(pbar):
-                images = images.to("cuda")
-                masks = masks.to("cuda")
+            for batch_idx, (pixel_values, labels) in enumerate(pbar):
+                pixel_values = pixel_values.to("cuda")
+                labels = labels.to("cuda")
 
                 optimizer.zero_grad()
 
                 with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    logits = model(images)
-                    loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+                    logits = model(pixel_values)  # (B, 2, H/4, W/4)
 
-                # Backward pass outside autocast (bfloat16 doesn't need GradScaler)
+                    # Upsample logits to match label size
+                    logits_upsampled = F.interpolate(
+                        logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                    )
+
+                    # Cross-entropy loss
+                    ce_loss = F.cross_entropy(logits_upsampled, labels)
+
+                    # Dice loss on foreground probabilities
+                    probs = F.softmax(logits_upsampled, dim=1)[:, 1]  # (B, H, W)
+                    d_loss = dice_loss(probs, labels.float())
+
+                    loss = 0.5 * ce_loss + 0.5 * d_loss
+
+                # Backward pass
                 loss.backward()
                 optimizer.step()
 
@@ -362,11 +384,20 @@ class DetectorService:
                     ncols=100,
                 )
                 with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    for images, masks in val_pbar:
-                        images = images.to("cuda")
-                        masks = masks.to("cuda")
-                        logits = model(images)
-                        loss = 0.5 * bce_loss(logits, masks) + 0.5 * dice_loss(logits, masks)
+                    for pixel_values, labels in val_pbar:
+                        pixel_values = pixel_values.to("cuda")
+                        labels = labels.to("cuda")
+
+                        logits = model(pixel_values)
+                        logits_upsampled = F.interpolate(
+                            logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                        )
+
+                        ce_loss = F.cross_entropy(logits_upsampled, labels)
+                        probs = F.softmax(logits_upsampled, dim=1)[:, 1]
+                        d_loss = dice_loss(probs, labels.float())
+
+                        loss = 0.5 * ce_loss + 0.5 * d_loss
                         val_losses.append(loss.item())
                 val_pbar.close()
                 avg_val_loss = sum(val_losses) / len(val_losses)
