@@ -228,6 +228,11 @@ const handleResetFrameWithRefresh = async () => {
   await refreshFrameRanges()
 }
 
+const handlePointCompleteWithRefresh = async (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => {
+  await handlePointComplete(point)
+  await refreshFrameRanges()
+}
+
 const handleResetVideoWithRefresh = async () => {
   await handleResetVideo()
   await refreshFrameRanges()
@@ -286,7 +291,7 @@ onMounted(async () => {
                 :prompts="currentPrompts"
                 :show-mask="showMask"
                 :show-prompts="showPrompts"
-                @point-complete="handlePointComplete"
+                @point-complete="handlePointCompleteWithRefresh"
               />
             </div>
           </div>
