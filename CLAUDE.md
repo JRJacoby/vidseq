@@ -85,6 +85,66 @@ Commands are JSON dicts sent over TCP to the GPU worker:
 
 Handler functions follow: `handle_{command_type}(params, segmentor) -> dict`
 
+### GPU & Model Performance
+
+When working with model inference or training loops, apply these optimizations:
+
+**1. torch.compile with max-autotune**
+```python
+model = torch.compile(model, mode="max-autotune", fullgraph=True)
+```
+- Apply to models before inference/training loops
+- First call is slow (compilation), subsequent calls are fast
+- Use `fullgraph=True` when possible for best optimization
+
+**2. bfloat16 autocast for inference**
+```python
+with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+    output = model(input)
+```
+- Wrap inference loops in autocast, not permanent dtype conversion
+- Permanent conversion (`model.to(torch.bfloat16)`) can fail on mixed-precision edge cases
+- Autocast handles dtype mismatches automatically with minimal overhead
+
+**3. Sequential video reads with VideoFrameSource**
+```python
+from vidseq.services.segmentation_commands import VideoFrameSource
+
+frame_source = VideoFrameSource(video_path)
+for idx in range(num_frames):
+    frame = frame_source[idx]  # Avoids seek if sequential
+```
+- Tracks position internally, only seeks when non-sequential
+- Much faster than `cap.set(cv2.CAP_PROP_POS_FRAMES, idx)` every frame
+
+**4. GPU preprocessing instead of CPU processors**
+```python
+# Instead of HuggingFace/torchvision CPU processors:
+IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+
+frame_gpu = torch.from_numpy(frame).to("cuda")
+pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+pixel_values = F.interpolate(pixel_values.unsqueeze(0), size=(H, W), mode="bilinear", align_corners=False)
+pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
+```
+- Fuses BGR→RGB, HWC→CHW, scale, resize, normalize on GPU
+- Avoids CPU→GPU→CPU→GPU round-trips from PIL/processor pipelines
+
+**5. GPU post-processing before CPU transfer**
+```python
+# Instead of: (tensor.cpu().numpy() * 255).astype(np.uint8)
+# Do multiplication and type conversion on GPU first:
+result = (tensor * 255).to(torch.uint8).cpu().numpy()
+```
+- GPU multiply/cast is faster than CPU
+- Transferring uint8 is faster than float32 (4x smaller)
+
+**6. Keep files open across frames**
+- Use `VideoFrameSource` (keeps cv2.VideoCapture open)
+- Keep H5 files open for duration of processing loop
+- Avoid open/close per frame
+
 ---
 
 ## Architecture

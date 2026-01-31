@@ -25,6 +25,7 @@ from vidseq.models.video import Video
 from vidseq.models.frame_data import FrameData
 from vidseq.schemas.detector import DetectorTrainingProgress
 from vidseq.services.database_manager import DatabaseManager
+from vidseq.services.segmentation_commands import VideoFrameSource
 
 # Disable HDF5's internal file locking
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -668,7 +669,7 @@ class DetectorService:
 
     def _apply_to_all_sync(self, project_path: Path) -> None:
         """Synchronous implementation of apply to all frames."""
-        from vidseq.services.detector_model import SegFormerDetector, get_processor
+        from vidseq.services.detector_model import SegFormerDetector
 
         logger.info("Applying detector to all frames in project...")
 
@@ -680,7 +681,9 @@ class DetectorService:
         # Compile for faster inference (first call will be slow due to compilation)
         model = torch.compile(model, mode="max-autotune", fullgraph=True)
 
-        processor = get_processor()
+        # ImageNet normalization constants for GPU preprocessing
+        IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+        IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
 
         # Get all videos
         db_manager = DatabaseManager.get_instance()
@@ -721,9 +724,10 @@ class DetectorService:
 
                 detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
 
-                # Open video
-                cap = cv2.VideoCapture(video_path)
-                if not cap.isOpened():
+                # Open video with optimized frame source
+                try:
+                    frame_source = VideoFrameSource(video_path)
+                except ValueError:
                     logger.warning(f"Video {video_idx + 1}/{len(video_list)}: could not open {video_path}")
                     self._training_progress.apply_current += frame_count
                     continue
@@ -781,21 +785,20 @@ class DetectorService:
                         except OSError:
                             pass
 
-                        # Read frame
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                        ret, frame = cap.read()
-                        if not ret:
+                        # Read frame (VideoFrameSource tracks position, avoids seeks for sequential reads)
+                        try:
+                            frame = frame_source[frame_idx]
+                        except IndexError:
                             self._training_progress.apply_current += 1
                             continue
 
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                        # Preprocess with processor
-                        inputs = processor(
-                            images=Image.fromarray(frame_rgb),
-                            return_tensors="pt",
+                        # GPU preprocessing: BGR→RGB, resize, normalize (fused operations)
+                        frame_gpu = torch.from_numpy(frame).to("cuda")
+                        pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+                        pixel_values = F.interpolate(
+                            pixel_values.unsqueeze(0), size=(640, 640), mode="bilinear", align_corners=False
                         )
-                        pixel_values = inputs["pixel_values"].to("cuda")
+                        pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
 
                         # Inference
                         logits = model(pixel_values)  # (1, 2, H/4, W/4)
@@ -805,7 +808,8 @@ class DetectorService:
                             logits, size=(orig_h, orig_w), mode="bilinear", align_corners=False
                         )
                         mask_pred = logits_upsampled.argmax(dim=1)  # (1, H, W)
-                        mask_np = (mask_pred[0].cpu().numpy() * 255).astype(np.uint8)
+                        # GPU uint8 conversion before CPU transfer (faster than CPU multiply+astype)
+                        mask_np = (mask_pred[0] * 255).to(torch.uint8).cpu().numpy()
 
                         # Save to HDF5
                         detector_masks[frame_idx] = mask_np
@@ -818,7 +822,7 @@ class DetectorService:
                 finally:
                     h5_file.close()
 
-                cap.release()
+                frame_source.close()
                 logger.info(
                     f"  Processed {video_processed} frames, skipped {video_skipped} existing"
                 )

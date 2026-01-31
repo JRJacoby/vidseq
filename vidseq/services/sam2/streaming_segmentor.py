@@ -179,20 +179,26 @@ class SAM2StreamingSegmentor:
         if cached.get("frame_idx") == frame_idx:
             return cached["image"], cached["backbone_out"]
 
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # GPU-accelerated preprocessing: transfer raw BGR uint8, then process on GPU
+        # 1. Transfer raw uint8 to GPU (smaller transfer than float32)
+        frame_gpu = torch.from_numpy(frame).to(self.device)  # (H, W, 3) uint8
 
-        # Resize to model input size (1024x1024)
-        frame_resized = cv2.resize(
-            frame_rgb, (self.INPUT_SIZE, self.INPUT_SIZE), interpolation=cv2.INTER_LINEAR
-        )
+        # 2. BGR→RGB by indexing channels, HWC→CHW, normalize to [0,1] - all fused on GPU
+        #    frame_gpu[..., [2,1,0]] does BGR→RGB reorder
+        #    .permute(2,0,1) does HWC→CHW
+        #    .float() / 255.0 normalizes
+        image_tensor = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
 
-        # Convert to tensor: HWC uint8 -> CHW float [0, 1]
-        image_tensor = torch.from_numpy(frame_resized).permute(2, 0, 1).float() / 255.0
-        image_tensor = image_tensor.unsqueeze(0).to(self.device)  # (1, 3, 1024, 1024)
+        # 3. Resize on GPU to model input size (1024x1024)
+        image_tensor = torch.nn.functional.interpolate(
+            image_tensor.unsqueeze(0),  # Add batch dim: (1, 3, H, W)
+            size=(self.INPUT_SIZE, self.INPUT_SIZE),
+            mode="bilinear",
+            align_corners=False,
+        )  # (1, 3, 1024, 1024)
 
-        # Run through image encoder with bfloat16 for faster inference
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        # Run through image encoder with autocast for automatic mixed precision
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             backbone_out = self.predictor.forward_image(image_tensor)
 
         # Cache (only most recent frame)
@@ -282,7 +288,7 @@ class SAM2StreamingSegmentor:
         stored_mask = mask
 
         # Resize mask to model input size and convert to tensor
-        # Mask should be float in range [0, 1] with shape (1, 1, H, W)
+        # Mask should be bfloat16 in range [0, 1] with shape (1, 1, H, W)
         mask_resized = cv2.resize(
             stored_mask.astype(np.float32),
             (self.INPUT_SIZE, self.INPUT_SIZE),
@@ -301,7 +307,7 @@ class SAM2StreamingSegmentor:
         )
 
         # Run track_step with mask_inputs to encode the mask into memory
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=True,  # Treat as conditioning frame
@@ -556,7 +562,7 @@ class SAM2StreamingSegmentor:
         is_init_cond_frame = not has_existing_memory
 
         # 7. Call track_step with point_inputs
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=is_init_cond_frame,
@@ -672,7 +678,7 @@ class SAM2StreamingSegmentor:
 
         # 7. Call track_step with point_inputs and prev_sam_mask_logits
         # is_init_cond_frame=False because we have existing context (the previous mask)
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=False,
@@ -806,7 +812,7 @@ class SAM2StreamingSegmentor:
             )
 
             # Call track_step for propagation (no point or mask inputs)
-            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
                     is_init_cond_frame=False,
@@ -966,9 +972,9 @@ class SAM2StreamingSegmentor:
             mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
             mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # Call track_step with bfloat16 for faster inference
+        # Call track_step
         try:
-            with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
                     is_init_cond_frame=(mask_prompt is not None),  # Treat mask prompts as conditioning
@@ -1050,8 +1056,8 @@ class SAM2StreamingSegmentor:
         mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
         mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # Call track_step with bfloat16 for faster inference
-        with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        # Call track_step
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
                 is_init_cond_frame=True,  # Treat as conditioning frame
