@@ -1254,6 +1254,83 @@ class SAM2StreamingSegmentor:
         if on_progress:
             on_progress(start_frame)
 
-        # Main loop will be implemented in Task 3
-        # For now, just handle the frames after start_frame
-        pass
+        # Main loop
+        for frame_idx in range(start_frame + 1, num_frames):
+            frame = frames[frame_idx]
+
+            if searching:
+                # Searching mode: detect every frame, no tracking
+                detector_mask = get_detector_mask(frame_idx, frame)
+                detector_masks[frame_idx] = detector_mask
+
+                # Write empty while searching
+                h, w = frame.shape[:2]
+                empty_mask = np.zeros((h, w), dtype=np.uint8)
+                tracker_masks[frame_idx] = empty_mask
+                final_masks[frame_idx] = empty_mask
+
+                if (detector_mask > 127).any():
+                    # Object reappeared - add as conditioning frame
+                    mask, _ = self._propagate_single_frame(
+                        video_id, frame_idx, frame, mask_prompt=detector_mask
+                    )
+                    final_masks[frame_idx] = mask
+
+                    # Backtrack and re-propagate
+                    self._backtrack_reprop(
+                        video_id, frames, final_masks,
+                        last_successful_check + 1, frame_idx - 1
+                    )
+
+                    last_successful_check = frame_idx
+                    searching = False
+            else:
+                # Normal mode: propagate tracker
+                tracker_mask, _ = self._propagate_single_frame(video_id, frame_idx, frame)
+                tracker_masks[frame_idx] = tracker_mask
+                final_masks[frame_idx] = tracker_mask
+
+                # Check frame?
+                if frame_idx % check_interval == 0:
+                    detector_mask = get_detector_mask(frame_idx, frame)
+                    detector_masks[frame_idx] = detector_mask
+
+                    iou = self._compute_iou(tracker_mask, detector_mask)
+
+                    if iou >= iou_threshold:
+                        # Tracker is good
+                        last_successful_check = frame_idx
+                    elif (detector_mask > 127).any():
+                        # Drift detected, detector has mask - correct
+                        mask, _ = self._propagate_single_frame(
+                            video_id, frame_idx, frame, mask_prompt=detector_mask
+                        )
+                        final_masks[frame_idx] = mask
+
+                        # Backtrack and re-propagate
+                        self._backtrack_reprop(
+                            video_id, frames, final_masks,
+                            last_successful_check + 1, frame_idx - 1
+                        )
+
+                        last_successful_check = frame_idx
+                    else:
+                        # Detector empty - object disappeared
+                        h, w = frame.shape[:2]
+                        empty_mask = np.zeros((h, w), dtype=np.uint8)
+                        self._propagate_single_frame(
+                            video_id, frame_idx, frame, mask_prompt=empty_mask
+                        )
+                        final_masks[frame_idx] = empty_mask
+
+                        # Backtrack and re-propagate
+                        self._backtrack_reprop(
+                            video_id, frames, final_masks,
+                            last_successful_check + 1, frame_idx - 1
+                        )
+
+                        last_successful_check = frame_idx
+                        searching = True
+
+            if on_progress:
+                on_progress(frame_idx)
