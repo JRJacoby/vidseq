@@ -415,8 +415,7 @@ def handle_refine_mask(
     mask_before = np.array(resources.mask_dataset[frame_idx])
     before_sum = int(mask_before.sum())
 
-    # Read frame and previous logits
-    frame = resources.frame_source[frame_idx]
+    # Read previous logits
     prev_logits = np.array(resources.logits_dataset[frame_idx])
 
     # Run refinement with all points - returns mask and logits
@@ -425,7 +424,8 @@ def handle_refine_mask(
         frame_idx=frame_idx,
         location=locations,
         label=labels,
-        frame=frame,
+        frames=resources.frame_source,
+        masks=resources.mask_dataset,
         prev_logits=prev_logits,
     )
 
