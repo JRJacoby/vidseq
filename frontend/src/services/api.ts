@@ -1272,15 +1272,6 @@ export async function stopDetectorTraining(projectId: number): Promise<void> {
     }
 }
 
-export async function applyDetectorToAll(projectId: number): Promise<void> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/apply-all`, {
-        method: 'POST',
-    })
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to start detector apply'))
-    }
-}
-
 export async function getDetectorTrainingStatus(projectId: number): Promise<DetectorTrainingProgress> {
     const response = await fetch(`${API_BASE}/projects/${projectId}/detector/training/status`)
     if (!response.ok) {
