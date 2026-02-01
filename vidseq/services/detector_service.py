@@ -25,7 +25,6 @@ from vidseq.models.video import Video
 from vidseq.models.frame_data import FrameData
 from vidseq.schemas.detector import DetectorTrainingProgress
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.segmentation_commands import VideoFrameSource
 
 # Disable HDF5's internal file locking
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"

@@ -4,8 +4,6 @@ import asyncio
 import json
 from pathlib import Path
 
-import h5py
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,40 +24,19 @@ async def segment_all_videos_route(
     """
     Start batch segmentation for all videos in the project.
 
-    Validates that all videos have detector masks (frame 0 must be non-empty).
-    Returns 400 if any videos are missing detector masks.
+    Validates that the detector model exists. Detection is performed on-the-fly
+    during segmentation, so pre-computed detector masks are no longer required.
     """
     videos = await video_service.get_all_videos(session)
     if not videos:
         raise HTTPException(status_code=400, detail="No videos found in project")
 
-    missing_detector_masks = []
-
-    for video in videos:
-        detector_h5_path = project_path / "masks" / f"{video.id}_detector.h5"
-        if not detector_h5_path.exists():
-            missing_detector_masks.append({"id": video.id, "name": video.name})
-            continue
-
-        # Check frame 0 has non-empty mask
-        try:
-            with h5py.File(detector_h5_path, "r") as f:
-                if "masks" not in f:
-                    missing_detector_masks.append({"id": video.id, "name": video.name})
-                    continue
-                mask_0 = np.array(f["masks"][0])
-                if not mask_0.any():
-                    missing_detector_masks.append({"id": video.id, "name": video.name})
-        except Exception:
-            missing_detector_masks.append({"id": video.id, "name": video.name})
-
-    if missing_detector_masks:
+    # Check that detector model exists
+    detector_model_path = project_path / "models" / "detector.pt"
+    if not detector_model_path.exists():
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": "Some videos are missing detector masks. Please run 'Apply to All Videos' in the detector section first.",
-                "missing_videos": missing_detector_masks
-            }
+            detail="Detector model not found. Please train the detector first."
         )
 
     job_ids = await sam3_service.segment_all_videos(
