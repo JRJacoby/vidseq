@@ -797,7 +797,8 @@ class SAM2StreamingSegmentor:
         self,
         video_id: str,
         frame_idx: int,
-        frame: np.ndarray,
+        frames,  # Indexable frame source
+        masks,  # Indexable mask source
     ) -> tuple[np.ndarray, np.ndarray]:
         """Propagate tracking to a single frame.
 
@@ -807,7 +808,8 @@ class SAM2StreamingSegmentor:
         Args:
             video_id: The video identifier.
             frame_idx: Frame index to propagate to.
-            frame: BGR uint8 frame data (H, W, 3).
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
 
         Returns:
             Tuple of (mask, logits) where:
@@ -818,6 +820,10 @@ class SAM2StreamingSegmentor:
             KeyError: If video_id is not open.
             RuntimeError: If no memory exists (need to add a prompt first).
         """
+        # Prepare memory for arbitrary frame access
+        self._set_memory_frame(video_id, frame_idx, frames, masks)
+
+        frame = frames[frame_idx]
         return self._propagate_single_frame(video_id, frame_idx, frame)
 
     def propagate_sequential(
