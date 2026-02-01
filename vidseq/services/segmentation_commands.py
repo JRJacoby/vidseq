@@ -471,14 +471,12 @@ def handle_propagate(
 
     resources = _video_resources[video_id]
 
-    # Read frame from video
-    frame = resources.frame_source[frame_idx]
-
     # Propagate - returns mask and logits
     mask, logits = segmentor.propagate(
         video_id=str(video_id),
         frame_idx=frame_idx,
-        frame=frame,
+        frames=resources.frame_source,
+        masks=resources.mask_dataset,
     )
 
     # Write results to HDF5
