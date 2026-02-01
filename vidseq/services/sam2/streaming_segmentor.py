@@ -681,7 +681,8 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         location: tuple[float, float] | list[tuple[float, float]],
         label: int | list[int],
-        frame: np.ndarray,
+        frames,  # Indexable frame source
+        masks,  # Indexable mask source
         prev_logits: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Refine an existing mask with point prompt(s).
@@ -693,7 +694,8 @@ class SAM2StreamingSegmentor:
             frame_idx: Index of the frame to refine.
             location: (x, y) point or list of points in original frame coords.
             label: Label(s) for each point. 1=positive, 0=negative.
-            frame: BGR uint8 frame data (H, W, 3).
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
             prev_logits: Previous low-res logits (256, 256) from prior call.
 
         Returns:
@@ -709,12 +711,18 @@ class SAM2StreamingSegmentor:
         frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
 
-        # 2. Convert prev_logits to tensor: shape (1, 1, 256, 256), float32, on device
+        # 2. Prepare memory for arbitrary frame access
+        self._set_memory_frame(video_id, frame_idx, frames, masks)
+
+        # 3. Get frame from source
+        frame = frames[frame_idx]
+
+        # 4. Convert prev_logits to tensor: shape (1, 1, 256, 256), float32, on device
         # SAM2 low-res logits are 256x256
         prev_logits_tensor = torch.from_numpy(prev_logits.astype(np.float32))
         prev_logits_tensor = prev_logits_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
-        # 3. Normalize location/label to lists
+        # 5. Normalize location/label to lists
         if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
             # Single point: (x, y)
             locations = [location]
@@ -726,7 +734,7 @@ class SAM2StreamingSegmentor:
         else:
             labels = list(label)
 
-        # 4. Scale points to INPUT_SIZE (1024) space
+        # 6. Scale points to INPUT_SIZE (1024) space
         orig_h, orig_w = frame_dims
         scaled_points = []
         for x, y in locations:
@@ -734,7 +742,7 @@ class SAM2StreamingSegmentor:
             scaled_y = y * self.INPUT_SIZE / orig_h
             scaled_points.append([scaled_x, scaled_y])
 
-        # 5. Create point_inputs dict with tensors on device
+        # 7. Create point_inputs dict with tensors on device
         point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
         point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
         point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
@@ -745,13 +753,13 @@ class SAM2StreamingSegmentor:
             "point_labels": point_labels,
         }
 
-        # 6. Get image features and prepare backbone features
+        # 8. Get image features and prepare backbone features
         _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 7. Call track_step with point_inputs and prev_sam_mask_logits
+        # 9. Call track_step with point_inputs and prev_sam_mask_logits
         # is_init_cond_frame=False because we have existing context (the previous mask)
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
@@ -767,7 +775,7 @@ class SAM2StreamingSegmentor:
                 prev_sam_mask_logits=prev_logits_tensor,
             )
 
-        # 8. Extract mask, threshold, resize to original dims
+        # 10. Extract mask, threshold, resize to original dims
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
         mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
         mask_resized = cv2.resize(
@@ -776,13 +784,13 @@ class SAM2StreamingSegmentor:
             interpolation=cv2.INTER_NEAREST,
         )
 
-        # 9. Get updated logits
+        # 11. Get updated logits
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
-        # 10. Update output_dict["cond_frame_outputs"][frame_idx]
+        # 12. Update output_dict["cond_frame_outputs"][frame_idx]
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 11. Return mask and logits (caller saves to storage)
+        # 13. Return mask and logits (caller saves to storage)
         return mask_resized, pred_masks_low_res
 
     def propagate(
