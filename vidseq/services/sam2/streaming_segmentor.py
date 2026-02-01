@@ -1175,6 +1175,34 @@ class SAM2StreamingSegmentor:
 
         return mask_result
 
+    def _compute_iou(self, mask1: np.ndarray, mask2: np.ndarray) -> float:
+        """Compute IoU between two binary masks.
+
+        Handles empty masks specially:
+        - empty-vs-empty = 1.0 (both agree there's nothing)
+        - non-empty-vs-empty = 0.0 (no overlap)
+
+        Args:
+            mask1: First mask (uint8, values 0 or 255).
+            mask2: Second mask (uint8, values 0 or 255).
+
+        Returns:
+            IoU score between 0.0 and 1.0.
+        """
+        bin1 = mask1 > 127
+        bin2 = mask2 > 127
+
+        # Handle empty masks
+        if not bin1.any() and not bin2.any():
+            return 1.0  # Both empty = agreement
+        if not bin1.any() or not bin2.any():
+            return 0.0  # One empty = no overlap
+
+        intersection = np.logical_and(bin1, bin2).sum()
+        union = np.logical_or(bin1, bin2).sum()
+
+        return float(intersection / union) if union > 0 else 0.0
+
     def _backtrack_reprop(
         self,
         video_id: str,
