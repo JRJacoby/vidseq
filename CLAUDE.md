@@ -232,7 +232,7 @@ result = (tensor * 255).to(torch.uint8).cpu().numpy()
 FastAPI Server                          GPU Worker Process
 ─────────────────                       ──────────────────
 segmentation_tcp_client.py    ──TCP──>  segmentation_tcp_server.py
-  └── SAM3Service                         └── segmentation_commands.py
+  └── SAM3TCPClient                         └── segmentation_commands.py
        └── _send_and_wait()                    └── handle_*() functions
                                                     └── streaming_segmentor.py
                                                          └── SAM2 model
