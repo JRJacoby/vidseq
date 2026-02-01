@@ -554,7 +554,8 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         location: tuple[float, float] | list[tuple[float, float]],
         label: int | list[int],
-        frame: np.ndarray,
+        frames,  # Indexable frame source
+        masks,  # Indexable mask source
     ) -> tuple[np.ndarray, np.ndarray]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
@@ -566,7 +567,8 @@ class SAM2StreamingSegmentor:
             frame_idx: Index of the frame to annotate.
             location: (x, y) point or list of points in original frame coords.
             label: Label(s) for each point. 1=positive, 0=negative.
-            frame: BGR uint8 frame data (H, W, 3).
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
 
         Returns:
             Tuple of (mask, logits) where:
@@ -582,7 +584,13 @@ class SAM2StreamingSegmentor:
         output_dict = session["output_dict"]
         cond_frame_indices = session["cond_frame_indices"]
 
-        # 2. Normalize location/label to lists
+        # 2. Prepare memory for arbitrary frame access
+        self._set_memory_frame(video_id, frame_idx, frames, masks)
+
+        # 3. Get frame from source
+        frame = frames[frame_idx]
+
+        # 4. Normalize location/label to lists
         if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
             # Single point: (x, y)
             locations = [location]
@@ -594,7 +602,7 @@ class SAM2StreamingSegmentor:
         else:
             labels = list(label)
 
-        # 3. Scale points to INPUT_SIZE (1024) space
+        # 5. Scale points to INPUT_SIZE (1024) space
         # Original coords are in frame_dims (height, width), need to scale to 1024x1024
         orig_h, orig_w = frame_dims
         scaled_points = []
@@ -604,7 +612,7 @@ class SAM2StreamingSegmentor:
             scaled_y = y * self.INPUT_SIZE / orig_h
             scaled_points.append([scaled_x, scaled_y])
 
-        # 4. Create point_inputs dict with tensors on device
+        # 6. Create point_inputs dict with tensors on device
         point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
         point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
         point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
@@ -615,20 +623,20 @@ class SAM2StreamingSegmentor:
             "point_labels": point_labels,
         }
 
-        # 5. Get image features and prepare backbone features
+        # 7. Get image features and prepare backbone features
         _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 6. Determine is_init_cond_frame (True if no existing memory)
+        # 8. Determine is_init_cond_frame (True if no existing memory)
         has_existing_memory = (
             len(output_dict["cond_frame_outputs"]) > 0
             or len(output_dict["non_cond_frame_outputs"]) > 0
         )
         is_init_cond_frame = not has_existing_memory
 
-        # 7. Call track_step with point_inputs
+        # 9. Call track_step with point_inputs
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
@@ -642,11 +650,11 @@ class SAM2StreamingSegmentor:
                 num_frames=session["num_frames"],
             )
 
-        # 8. Extract mask from pred_masks_high_res
+        # 10. Extract mask from pred_masks_high_res
         # pred_masks_high_res has shape (1, num_objects, H, W), we want first object
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
 
-        # 9. Threshold at 0, convert to uint8 * 255, resize to original dims
+        # 11. Threshold at 0, convert to uint8 * 255, resize to original dims
         mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
         mask_resized = cv2.resize(
             mask_binary,
@@ -654,17 +662,17 @@ class SAM2StreamingSegmentor:
             interpolation=cv2.INTER_NEAREST,
         )
 
-        # 10. Get low-res logits for potential refinement
+        # 12. Get low-res logits for potential refinement
         # pred_masks has shape (1, num_objects, H, W) - low res version
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
-        # 11. Add frame_idx to cond_frame_indices
+        # 13. Add frame_idx to cond_frame_indices
         cond_frame_indices.add(frame_idx)
 
-        # 12. Store compact output in output_dict["cond_frame_outputs"]
+        # 14. Store compact output in output_dict["cond_frame_outputs"]
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 13. Return mask and logits (caller saves to storage)
+        # 15. Return mask and logits (caller saves to storage)
         return mask_resized, pred_masks_low_res
 
     def refine_mask(
