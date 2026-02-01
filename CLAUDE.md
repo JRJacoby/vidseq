@@ -85,6 +85,34 @@ Commands are JSON dicts sent over TCP to the GPU worker:
 
 Handler functions follow: `handle_{command_type}(params, segmentor) -> dict`
 
+### Streaming Segmentor Interface Design
+
+The `streaming_segmentor.py` module should be **storage-agnostic**. It accepts generic indexable sequences for data access, not specific storage types:
+
+```python
+# Good: Generic Sequence interface
+def propagate(self, video_id, frame_idx, frames, masks):
+    """
+    Args:
+        frames: Indexable source, frames[idx] -> np.ndarray (H, W, 3)
+        masks: Indexable source, masks[idx] -> np.ndarray (H, W)
+    """
+    frame = frames[frame_idx]
+    mask = masks[prev_idx]
+
+# Bad: Storage-aware interface
+def propagate(self, video_id, frame_idx, h5_file, video_path):
+    # Don't make segmentor aware of H5, video files, or project structure
+```
+
+**Key principles:**
+- Segmentor methods accept `Sequence`-like objects (support `__getitem__`)
+- Command handlers (`segmentation_commands.py`) bridge storage to segmentor
+- The `VideoResources` dataclass holds open file handles and exposes indexable interfaces
+- Segmentor has no knowledge of H5 files, project paths, or database
+
+This separation allows the segmentor to be tested with simple lists/arrays and makes storage changes transparent to the model layer.
+
 ### GPU & Model Performance
 
 When working with model inference or training loops, apply these optimizations:
