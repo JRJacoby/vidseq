@@ -549,18 +549,18 @@ def handle_propagate_with_detector(
     segmentor: StreamingSegmentor,
     response_callback: Callable[[dict], None],
 ) -> dict:
-    """Propagate tracking with detector-based correction.
+    """Propagate tracking with on-the-fly detection.
 
-    Args:
-        params: Command params with video_id, num_frames, iou_threshold
-        segmentor: StreamingSegmentor instance
-        response_callback: Callback for progress updates
-
-    Returns:
-        Response dict with frames_processed, frames_corrected, corrected_frame_indices
+    Loads detector model and runs detection every check_interval frames.
     """
+    import torch
+    from vidseq.services.detector_model import SegFormerDetector
+    from vidseq.services.h5_storage import open_video_h5
+
     video_id = params["video_id"]
     num_frames = params["num_frames"]
+    project_path = Path(params["project_path"])
+    check_interval = params.get("check_interval", 10)
     iou_threshold = params.get("iou_threshold", 0.5)
 
     if segmentor is None:
@@ -571,51 +571,73 @@ def handle_propagate_with_detector(
 
     resources = _video_resources[video_id]
 
-    # Check that detector masks are available
-    if resources.detector_masks is None:
-        raise RuntimeError(f"No detector masks available for video {video_id}")
+    # Check detector model exists
+    model_path = project_path / "models" / "detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained detector model found. Train first.")
 
-    def progress_callback(frame_idx: int, total: int) -> None:
-        if frame_idx % 50 == 0 or frame_idx == total - 1:
+    # Load detector model
+    print(f"[SAM Worker] Loading detector model from {model_path}")
+    detector = SegFormerDetector(device="cuda")
+    detector.load_decoder(str(model_path))
+    detector.eval()
+    detector = torch.compile(detector, mode="max-autotune", fullgraph=True)
+
+    # GPU preprocessing constants
+    IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+    IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+
+    def get_detector_mask(frame_idx: int, frame: np.ndarray) -> np.ndarray:
+        """Run detector on a single frame."""
+        # GPU preprocessing
+        frame_gpu = torch.from_numpy(frame).to("cuda")
+        pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+        pixel_values = pixel_values.unsqueeze(0)
+        pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
+
+        # Inference
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            logits = detector(pixel_values)
+
+        # Post-process: argmax, resize, to numpy
+        pred = logits.argmax(dim=1)[0]  # (H/4, W/4)
+        pred = torch.nn.functional.interpolate(
+            pred.unsqueeze(0).unsqueeze(0).float(),
+            size=(frame.shape[0], frame.shape[1]),
+            mode="nearest"
+        )[0, 0]
+        mask = (pred * 255).to(torch.uint8).cpu().numpy()
+        return mask
+
+    def on_progress(frame_idx: int) -> None:
+        if frame_idx % 50 == 0 or frame_idx == num_frames - 1:
             response_callback({
                 "type": "progress",
                 "frame_idx": frame_idx,
-                "total": total,
+                "total": num_frames,
             })
 
-    # Callback to write tracker results to HDF5
-    def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray) -> None:
-        resources.mask_dataset[frame_idx] = mask
-        resources.logits_dataset[frame_idx] = logits
+    # Open H5 files with locking
+    with open_video_h5(project_path, video_id, "a") as tracker_h5, \
+         open_video_h5(project_path, video_id, "a", suffix="_detector") as detector_h5, \
+         open_video_h5(project_path, video_id, "a", suffix="_final") as final_h5:
 
-    # Callback to write final (corrected) masks if available
-    def on_final_result(frame_idx: int, mask: np.ndarray) -> None:
-        if resources.final_masks is not None:
-            resources.final_masks[frame_idx] = mask
-
-    # Propagate with detector correction
-    propagated_frames, corrected_frames = segmentor.propagate_with_detector(
-        video_id=str(video_id),
-        num_frames=num_frames,
-        frames=resources.frame_source,
-        detector_masks=resources.detector_masks,
-        on_result=on_result,
-        on_final_result=on_final_result if resources.final_masks is not None else None,
-        iou_threshold=iou_threshold,
-        progress_callback=progress_callback,
-    )
-
-    # Flush HDF5 files to ensure writes are visible
-    resources.mask_file.flush()
-    if resources.final_file is not None:
-        resources.final_file.flush()
+        segmentor.propagate_with_detector(
+            video_id=str(video_id),
+            num_frames=num_frames,
+            frames=resources.frame_source,
+            get_detector_mask=get_detector_mask,
+            tracker_masks=tracker_h5["masks"],
+            detector_masks=detector_h5["masks"],
+            final_masks=final_h5["masks"],
+            on_progress=on_progress,
+            check_interval=check_interval,
+            iou_threshold=iou_threshold,
+        )
 
     return {
         "type": "propagate_with_detector_result",
         "status": "ok",
-        "frames_processed": len(propagated_frames),
-        "frames_corrected": len(corrected_frames),
-        "corrected_frame_indices": corrected_frames,
     }
 
 
