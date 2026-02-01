@@ -342,16 +342,14 @@ def handle_add_prompt(
     mask_before = np.array(resources.mask_dataset[frame_idx])
     before_sum = int(mask_before.sum())
 
-    # Read frame from video
-    frame = resources.frame_source[frame_idx]
-
     # Run segmentation - returns mask and logits
     mask, logits = segmentor.add_point_prompt(
         video_id=str(video_id),
         frame_idx=frame_idx,
         location=(px, py),
         label=label,
-        frame=frame,
+        frames=resources.frame_source,
+        masks=resources.mask_dataset,
     )
 
     # Write results to HDF5
