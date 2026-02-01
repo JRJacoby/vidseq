@@ -1213,13 +1213,47 @@ class SAM2StreamingSegmentor:
         Raises:
             RuntimeError: If no memory exists and detector mask at frame 0 is empty.
         """
-        # TODO: Implement new algorithm in subsequent tasks
-        # Old implementation removed - new implementation will:
-        # 1. Run tracker on every frame
-        # 2. Call get_detector_mask() at check_interval frames
-        # 3. Compare IoU and decide correction strategy
-        # 4. Write results to tracker_masks, detector_masks, final_masks
-        raise NotImplementedError(
-            "propagate_with_detector is being refactored. "
-            "New implementation coming in subsequent tasks."
+        # Get session state
+        session = self.sessions[video_id]
+        output_dict = session["output_dict"]
+
+        # Find first frame with non-empty detector mask
+        start_frame = 0
+        for idx in range(num_frames):
+            frame = frames[idx]
+            detector_mask = get_detector_mask(idx, frame)
+            detector_masks[idx] = detector_mask
+
+            if (detector_mask > 127).any():
+                start_frame = idx
+                break
+            else:
+                # Write empty to tracker and final for skipped frames
+                empty_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+                tracker_masks[idx] = empty_mask
+                final_masks[idx] = empty_mask
+                if on_progress:
+                    on_progress(idx)
+        else:
+            # No object found in entire video - complete successfully
+            print(f"  No object detected in any frame")
+            return
+
+        # Initialize tracker from first detected frame
+        frame = frames[start_frame]
+        detector_mask = np.asarray(detector_masks[start_frame])
+        mask, _ = self._propagate_single_frame(
+            video_id, start_frame, frame, mask_prompt=detector_mask
         )
+        tracker_masks[start_frame] = mask
+        final_masks[start_frame] = mask
+
+        last_successful_check = start_frame
+        searching = False
+
+        if on_progress:
+            on_progress(start_frame)
+
+        # Main loop will be implemented in Task 3
+        # For now, just handle the frames after start_frame
+        pass
