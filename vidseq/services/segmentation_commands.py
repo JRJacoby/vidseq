@@ -528,6 +528,7 @@ def handle_generate_training_masks(
         start_frame=start_frame_idx,
         num_frames=max_frames,
         frames=resources.frame_source,
+        masks=resources.mask_dataset,
         on_result=on_result,
         progress_interval=50,
     )
