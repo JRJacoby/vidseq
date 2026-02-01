@@ -262,24 +262,31 @@ class SAM2StreamingSegmentor:
         }
 
     def _encode_stored_mask(
-        self, video_id: str, frame_idx: int, frame: np.ndarray, mask: np.ndarray
-    ) -> None:
+        self, video_id: str, frame_idx: int, frame: np.ndarray, mask: np.ndarray,
+        store_as_cond: bool = True,
+    ) -> dict | None:
         """Encode a stored mask into the memory bank.
 
         Converts the mask to a tensor and runs through track_step with
         mask_inputs to encode it into the output_dict memory.
 
         This is used to reconstruct conditioning frame memories when opening
-        a video that has existing masks.
+        a video that has existing masks, or to encode non-conditioning frame
+        memories for arbitrary frame access.
 
         Args:
             video_id: The video identifier.
             frame_idx: Frame index whose mask should be encoded.
             frame: BGR uint8 frame data (H, W, 3).
             mask: Binary mask data (H, W) uint8.
+            store_as_cond: If True, store to cond_frame_outputs and return None.
+                If False, return the compact output dict without storing.
+
+        Returns:
+            None if store_as_cond=True, otherwise the compact output dict.
 
         Side Effects:
-            - Stores result in output_dict["cond_frame_outputs"][frame_idx]
+            - If store_as_cond=True, stores result in output_dict["cond_frame_outputs"][frame_idx]
         """
         session = self.sessions[video_id]
         output_dict = session["output_dict"]
@@ -320,8 +327,13 @@ class SAM2StreamingSegmentor:
                 num_frames=session["num_frames"],
             )
 
-        # Store in conditioning frame outputs
-        output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+        # Store or return based on store_as_cond
+        compact = self._make_compact_output(current_out)
+        if store_as_cond:
+            output_dict["cond_frame_outputs"][frame_idx] = compact
+            return None
+        else:
+            return compact
 
     def open_video(
         self,
