@@ -832,6 +832,7 @@ class SAM2StreamingSegmentor:
         start_frame: int,
         num_frames: int,
         frames,  # Indexable frame source
+        masks,  # Indexable mask source
         on_result: Callable[[int, np.ndarray, np.ndarray], None],  # callback(frame_idx, mask, logits)
         progress_interval: int = 10,
     ) -> list[int]:
@@ -846,6 +847,7 @@ class SAM2StreamingSegmentor:
             start_frame: Frame index to start propagation from.
             num_frames: Maximum number of frames to propagate.
             frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
             on_result: Callback called for each frame with (frame_idx, mask, logits).
                        The caller should save the results in this callback.
             progress_interval: Print progress every N frames (0 to disable).
@@ -877,10 +879,13 @@ class SAM2StreamingSegmentor:
                 "Use add_point_prompt() to create an initial mask first."
             )
 
+        # 3. Prepare memory for starting frame
+        self._set_memory_frame(video_id, start_frame, frames, masks)
+
         orig_h, orig_w = frame_dims
         propagated = []
 
-        # 3. Loop for num_frames iterations
+        # 4. Loop for num_frames iterations
         for i in range(num_frames):
             frame_idx = start_frame + i
 
