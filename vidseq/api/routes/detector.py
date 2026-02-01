@@ -112,26 +112,6 @@ async def stop_detector_training():
     return {"stopped": stopped}
 
 
-@router.post("/projects/{project_id}/detector/apply-all")
-async def apply_detector_to_all(
-    project_path: Path = Depends(get_project_folder),
-):
-    """
-    Apply detector to all frames of all videos in the project.
-
-    Runs in background. Skips frames that already have detector masks.
-    Use /training/status or /training/stream to monitor progress.
-    """
-    service = DetectorService.get_instance()
-
-    try:
-        service.apply_to_all(project_path)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return {"message": "Apply started"}
-
-
 @router.get("/projects/{project_id}/detector/training/status")
 async def get_training_status():
     """
