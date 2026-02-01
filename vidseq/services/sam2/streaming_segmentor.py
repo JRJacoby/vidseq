@@ -335,6 +335,61 @@ class SAM2StreamingSegmentor:
         else:
             return compact
 
+    def _set_memory_frame(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frames,  # Indexable frame source: frames[idx] -> np.ndarray (H, W, 3)
+        masks,  # Indexable mask source: masks[idx] -> np.ndarray (H, W)
+    ) -> None:
+        """Prepare non_cond_frame_outputs for tracking at frame_idx.
+
+        Clears all existing non-cond memory, then walks backward from frame_idx-1,
+        loading masks and encoding them into memory. Stops after 6 frames
+        or when hitting a gap (empty mask).
+
+        Args:
+            video_id: The video session ID.
+            frame_idx: Target frame we're about to track/prompt.
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
+        """
+        MEM_WINDOW = 6
+
+        session = self.sessions[video_id]
+        output_dict = session["output_dict"]
+        cond_frame_indices = session["cond_frame_indices"]
+
+        # 1. Clear all existing non-cond memory
+        output_dict["non_cond_frame_outputs"].clear()
+
+        # 2. Early return if no previous frames exist
+        if frame_idx <= 0:
+            return
+
+        # 3. Walk backward, encode into memory
+        frames_added = 0
+        for prev_idx in range(frame_idx - 1, -1, -1):
+            if frames_added >= MEM_WINDOW:
+                break
+
+            # Skip conditioning frames (handled separately by SAM2)
+            if prev_idx in cond_frame_indices:
+                continue
+
+            # Load mask - stop at gaps
+            mask = np.asarray(masks[prev_idx])
+            if mask.sum() == 0:
+                break
+
+            # Encode into memory (store_as_cond=False returns the dict)
+            frame = frames[prev_idx]
+            memory_out = self._encode_stored_mask(
+                video_id, prev_idx, frame, mask, store_as_cond=False
+            )
+            output_dict["non_cond_frame_outputs"][prev_idx] = memory_out
+            frames_added += 1
+
     def open_video(
         self,
         video_id: str,
