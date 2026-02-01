@@ -1175,6 +1175,38 @@ class SAM2StreamingSegmentor:
 
         return mask_result
 
+    def _backtrack_reprop(
+        self,
+        video_id: str,
+        frames,
+        final_masks,
+        start_idx: int,
+        end_idx: int,
+    ) -> None:
+        """Re-propagate frames after a correction, writing only to final_masks.
+
+        Called after adding a new conditioning frame. Uses _set_memory_frame
+        to prepare memory context, then propagates forward through the
+        specified range.
+
+        Args:
+            video_id: The video session ID.
+            frames: Indexable frame source.
+            final_masks: MutableSequence to write corrected masks to.
+            start_idx: First frame to re-propagate (inclusive).
+            end_idx: Last frame to re-propagate (inclusive).
+        """
+        if start_idx > end_idx:
+            return
+
+        for idx in range(start_idx, end_idx + 1):
+            # Prepare memory for this frame (uses new conditioning frame)
+            self._set_memory_frame(video_id, idx, frames, final_masks)
+
+            frame = frames[idx]
+            mask, _ = self._propagate_single_frame(video_id, idx, frame)
+            final_masks[idx] = mask
+
     def propagate_with_detector(
         self,
         video_id: str,
