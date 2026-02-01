@@ -1179,152 +1179,47 @@ class SAM2StreamingSegmentor:
         self,
         video_id: str,
         num_frames: int,
-        frames,  # Indexable frame source (frames[idx] -> np.ndarray)
-        detector_masks,  # Indexable detector mask source (detector_masks[idx] -> np.ndarray)
-        on_result: Callable[[int, np.ndarray, np.ndarray], None],
-        on_final_result: Callable[[int, np.ndarray], None] | None = None,
+        frames,  # Sequence - read frames[idx]
+        get_detector_mask,  # Callable[[int, np.ndarray], np.ndarray]
+        tracker_masks,  # MutableSequence - write tracker output
+        detector_masks,  # MutableSequence - write detector output
+        final_masks,  # MutableSequence - write final output
+        on_progress: Callable[[int], None] | None = None,
+        check_interval: int = 10,
         iou_threshold: float = 0.5,
-        progress_callback=None,
-    ) -> tuple[list[int], list[int]]:
-        """Propagate tracking with detector-guided correction.
+    ) -> None:
+        """Propagate tracking with on-the-fly detector-guided correction.
 
-        Uses the detector mask to correct SAM2 when tracker drift is detected.
-        Drift is detected by comparing bounding box IoU between tracker output
-        and detector mask.
-
-        The tracker output is ALWAYS passed to on_result callback.
-        When on_final_result is provided:
-        - If IoU >= threshold: calls on_final_result with tracker mask
-        - If IoU < threshold: re-prompt with detector, calls on_final_result
-          with corrected mask (tracker mask via on_result remains original)
+        Runs the tracker on every frame, invoking the detector only at check_interval
+        frames (or when drift is detected). Uses IoU comparison between tracker and
+        detector masks to decide when to apply corrections.
 
         Args:
             video_id: The video identifier.
             num_frames: Number of frames to propagate.
-            frames: Indexable frame source (frames[idx] returns BGR numpy array).
-            detector_masks: Indexable detector mask source.
-            on_result: Callback(frame_idx, mask, logits) called for each tracker result.
-            on_final_result: Optional callback(frame_idx, mask) for final (corrected) masks.
+            frames: Sequence of frames - read frames[idx] to get BGR numpy array.
+            get_detector_mask: Callable(frame_idx, frame) -> mask. Called on-the-fly
+                at check_interval frames to get detector prediction.
+            tracker_masks: MutableSequence to write tracker output masks.
+            detector_masks: MutableSequence to write detector output masks.
+            final_masks: MutableSequence to write final (corrected) output masks.
+            on_progress: Optional callback(frame_idx) for progress reporting.
+            check_interval: Run detector every N frames (default 10).
             iou_threshold: Re-prompt when bbox IoU drops below this (default 0.5).
-            progress_callback: Optional callback(frame_idx, num_frames) for progress.
 
         Returns:
-            Tuple of (propagated_frames, corrected_frames) where:
-            - propagated_frames: List of all frame indices that were propagated
-            - corrected_frames: List of frame indices where detector correction was applied
+            None. Results are written to the provided MutableSequences.
 
         Raises:
             RuntimeError: If no memory exists and detector mask at frame 0 is empty.
         """
-        MEM_WINDOW = 7
-
-        session = self.sessions[video_id]
-        output_dict = session["output_dict"]
-
-        # Check output_dict has memory (need at least frame 0 initialized)
-        has_memory = (
-            len(output_dict["cond_frame_outputs"]) > 0
-            or len(output_dict["non_cond_frame_outputs"]) > 0
+        # TODO: Implement new algorithm in subsequent tasks
+        # Old implementation removed - new implementation will:
+        # 1. Run tracker on every frame
+        # 2. Call get_detector_mask() at check_interval frames
+        # 3. Compare IoU and decide correction strategy
+        # 4. Write results to tracker_masks, detector_masks, final_masks
+        raise NotImplementedError(
+            "propagate_with_detector is being refactored. "
+            "New implementation coming in subsequent tasks."
         )
-        if not has_memory:
-            # Initialize from detector mask on frame 0
-            detector_0 = np.array(detector_masks[0])
-            if not (detector_0 > 127).any():
-                raise RuntimeError(
-                    "No memory and detector mask at frame 0 is empty. "
-                    "Need either existing memory or detector mask to start."
-                )
-            print("  Initializing from detector mask at frame 0...")
-            try:
-                frame_0 = frames[0]
-                mask_0, logits_0 = self._propagate_single_frame(
-                    video_id, 0, frame_0, mask_prompt=detector_0
-                )
-                on_result(0, mask_0, logits_0)
-                if on_final_result is not None:
-                    on_final_result(0, mask_0)
-                print("  Frame 0 initialized successfully")
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                raise RuntimeError(f"Failed to initialize frame 0: {e}") from e
-
-        propagated = []
-        corrected_frames = []
-
-        for i in range(num_frames):
-            frame_idx = i
-
-            # Skip frame 0 if already initialized
-            if frame_idx == 0 and 0 in output_dict["cond_frame_outputs"]:
-                propagated.append(frame_idx)
-                continue
-
-            # Load detector mask for this frame
-            try:
-                detector_mask = np.array(detector_masks[frame_idx])
-            except (IndexError, KeyError):
-                break
-
-            detector_has_mask = (detector_mask > 127).any()
-
-            # Get frame data
-            frame = frames[frame_idx]
-
-            # Propagate without prompt to get tracker prediction
-            tracker_mask, tracker_logits = self._propagate_single_frame(
-                video_id, frame_idx, frame
-            )
-            tracker_has_mask = (tracker_mask > 127).any()
-
-            # Always call on_result with tracker output
-            on_result(frame_idx, tracker_mask, tracker_logits)
-
-            # Decide if we need to correct with detector
-            need_correction = False
-            iou = 1.0  # Default if not computed
-
-            if detector_has_mask:
-                if not tracker_has_mask:
-                    # Tracker lost object but detector sees it
-                    need_correction = True
-                    iou = 0.0
-                    print(f"  Frame {frame_idx}: tracker empty, correcting with detector")
-                else:
-                    # Both have masks - check IoU
-                    iou = self._compute_bbox_iou(tracker_mask, detector_mask)
-                    if iou < iou_threshold:
-                        need_correction = True
-                        print(f"  Frame {frame_idx}: IoU={iou:.3f} < {iou_threshold}, correcting")
-
-            # Call on_final_result if provided
-            if on_final_result is not None:
-                if need_correction:
-                    # Get corrected mask without overwriting tracker memory
-                    corrected_mask = self._propagate_single_frame_no_store(
-                        video_id, frame_idx, frame, mask_prompt=detector_mask
-                    )
-                    on_final_result(frame_idx, corrected_mask)
-                    corrected_frames.append(frame_idx)
-                else:
-                    # Trust tracker - pass tracker mask to final
-                    on_final_result(frame_idx, tracker_mask)
-
-            # Memory eviction
-            eviction_threshold = frame_idx - MEM_WINDOW
-            keys_to_evict = [
-                k
-                for k in output_dict["non_cond_frame_outputs"]
-                if k <= eviction_threshold
-            ]
-            for k in keys_to_evict:
-                del output_dict["non_cond_frame_outputs"][k]
-
-            propagated.append(frame_idx)
-
-            # Progress callback
-            if progress_callback:
-                progress_callback(frame_idx, num_frames)
-
-        print(f"  Propagated {len(propagated)} frames, corrected {len(corrected_frames)} frames")
-        return propagated, corrected_frames
