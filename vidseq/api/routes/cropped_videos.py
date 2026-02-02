@@ -29,7 +29,7 @@ async def extract_cropped_videos(
 
     Validates that ALL videos have segmentation_status='segmented'.
     Returns 400 if any videos are not fully segmented.
-    Returns: { "job_ids": [1, 2, 3, ...] }
+    Returns: { "status": "started", "video_count": N }
     """
     # Get all videos
     all_videos = await video_service.get_all_videos(session)
@@ -59,7 +59,7 @@ async def extract_cropped_videos(
         lambda: [v for v in all_videos if _uncropped(v)]
     )
     if not videos:
-        return {"job_ids": [], "message": "All videos already cropped"}
+        return {"status": "skipped", "message": "All videos already cropped", "video_count": 0}
 
     # Start extraction
     service = cropped_video_service.CroppedVideoService.get_instance()
@@ -67,13 +67,12 @@ async def extract_cropped_videos(
     if service.is_extracting():
         raise HTTPException(status_code=400, detail="Extraction already in progress")
 
-    job_ids = service.extract_all_cropped_videos(
-        project_id=project_id,
+    service.extract_all_cropped_videos(
         project_path=project_path,
         videos=videos,
     )
 
-    return {"job_ids": job_ids}
+    return {"status": "started", "video_count": len(videos)}
 
 
 @router.get("/projects/{project_id}/videos/{video_id}/cropped-video/exists")
