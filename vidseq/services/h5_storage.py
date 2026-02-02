@@ -47,6 +47,57 @@ def _get_lock_path(h5_path: Path) -> Path:
 
 
 @contextmanager
+def open_h5_with_lock(h5_path: Path, mode: str):
+    """Context manager for HDF5 file access with file locking.
+
+    Works with any H5 path. Creates parent directories for write modes.
+    Lock file is placed alongside the H5 file as {name}.h5.lock
+
+    Args:
+        h5_path: Path to the HDF5 file
+        mode: File mode - 'r' for read-only, 'a' for append, 'w' for write
+
+    Yields:
+        h5py.File: The opened HDF5 file handle
+
+    Raises:
+        ValueError: If mode is not 'r', 'a', or 'w'
+        RuntimeError: If file is locked by another process (write mode only)
+    """
+    if mode not in ("r", "a", "w"):
+        raise ValueError(f"Invalid mode '{mode}'. Must be 'r', 'a', or 'w'")
+
+    if mode in ("a", "w"):
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = _get_lock_path(h5_path)
+
+    lock_created = False
+    if mode in ("a", "w"):
+        if lock_path.exists():
+            raise RuntimeError(
+                f"HDF5 file is locked by another process. Lock file: {lock_path}"
+            )
+        try:
+            lock_path.touch(exist_ok=False)
+            lock_created = True
+        except FileExistsError:
+            raise RuntimeError(
+                f"HDF5 file is locked by another process. Lock file: {lock_path}"
+            )
+
+    h5_file = None
+    try:
+        h5_file = h5py.File(h5_path, mode)
+        yield h5_file
+    finally:
+        if h5_file is not None:
+            h5_file.close()
+        if lock_created and lock_path.exists():
+            lock_path.unlink()
+
+
+@contextmanager
 def open_video_h5(
     project_path: Path,
     video_id: int,
