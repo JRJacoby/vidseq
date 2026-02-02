@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import ProjectView from '../views/ProjectView.vue'
 import VideoPipeline from '../components/VideoPipeline.vue'
-import JobsList from '../components/JobsList.vue'
 import VideoDetail from '../components/VideoDetail.vue'
 import CroppedVideoDetail from '../components/CroppedVideoDetail.vue'
 import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
@@ -33,11 +32,6 @@ const router = createRouter({
           path: 'first-frames',
           name: 'firstFrames',
           component: FirstFramesView
-        },
-        {
-          path: 'jobs',
-          name: 'jobs',
-          component: JobsList
         },
         {
           path: 'video/:videoId',
