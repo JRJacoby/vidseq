@@ -11,7 +11,6 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-import h5py
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -19,6 +18,8 @@ import joblib
 import numpy as np
 from jax_moseq.models import arhmm
 from jax_moseq.utils.utils import batch, get_durations, unbatch
+
+from vidseq.services.h5_storage import pca_scores_h5
 
 jax.config.update("jax_enable_x64", True)
 
@@ -256,7 +257,8 @@ class ARHMMService:
         h5_files = sorted(scores_dir.glob("*.h5"))
         sessions_dict = {}
         for h5_path in h5_files:
-            with h5py.File(h5_path, "r") as f:
+            video_id = int(h5_path.stem)
+            with pca_scores_h5(project_path, video_id, "r") as f:
                 sessions_dict[h5_path.stem] = f["scores"][:]
         return sessions_dict
 
