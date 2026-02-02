@@ -141,7 +141,7 @@ def open_h5_with_lock(h5_path: Path, mode: str):
 
 @contextmanager
 def tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for tracker masks H5 file: masks/{video_id}.h5
+    """Context manager for tracker masks H5 file: array_data/{video_id}/tracker_masks.h5
 
     Usage:
         with tracker_h5(project_path, video_id) as f:
@@ -150,55 +150,55 @@ def tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
         with tracker_h5(project_path, video_id, mode="a") as f:
             f["masks"][frame_idx] = mask
     """
-    h5_path = project_path / "masks" / f"{video_id}.h5"
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def detector_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for detector masks H5 file: masks/{video_id}_detector.h5"""
-    h5_path = project_path / "masks" / f"{video_id}_detector.h5"
+    """Context manager for detector masks H5 file: array_data/{video_id}/detector_masks.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "detector_masks.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def final_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for final masks H5 file: masks/{video_id}_final.h5"""
-    h5_path = project_path / "masks" / f"{video_id}_final.h5"
+    """Context manager for final masks H5 file: array_data/{video_id}/final_masks.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def cropped_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for cropped masks H5 file: cropped_masks/{video_id}.h5"""
-    h5_path = project_path / "cropped_masks" / f"{video_id}.h5"
+    """Context manager for cropped masks H5 file: array_data/{video_id}/cropped_masks.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "cropped_masks.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for aligned masks H5 file: aligned_masks/{video_id}.h5"""
-    h5_path = project_path / "aligned_masks" / f"{video_id}.h5"
+    """Context manager for aligned masks H5 file: array_data/{video_id}/aligned_masks.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "aligned_masks.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for alignment predictions H5 file: alignment_predictions/{video_id}.h5"""
-    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
+    """Context manager for alignment keypoints H5 file: array_data/{video_id}/alignment_keypoints.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
 def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for PCA scores H5 file: pca_scores/{video_id}.h5"""
-    h5_path = project_path / "pca_scores" / f"{video_id}.h5"
+    """Context manager for PCA scores H5 file: array_data/{video_id}/pca_scores.h5"""
+    h5_path = project_path / "array_data" / str(video_id) / "pca_scores.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
