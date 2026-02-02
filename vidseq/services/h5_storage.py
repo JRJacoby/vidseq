@@ -155,6 +155,8 @@ def open_video_h5(
 ):
     """Context manager for per-video HDF5 mask file access with file locking.
 
+    DEPRECATED: Prefer using the explicit openers (open_tracker_h5, open_detector_h5, etc.)
+
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
@@ -164,48 +166,13 @@ def open_video_h5(
 
     Yields:
         h5py.File: The opened HDF5 file handle
-
-    Raises:
-        ValueError: If mode is not 'r' or 'a'
-        FileNotFoundError: If project_path doesn't exist
-        RuntimeError: If file is locked by another process (write mode only)
     """
-    if mode not in ("r", "a", "w"):
-        raise ValueError(f"Invalid mode '{mode}'. Must be 'r', 'a', or 'w'")
-
     if not project_path.exists():
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    masks_dir = _get_masks_dir(project_path, mask_subdir)
-    if mode in ("a", "w"):
-        masks_dir.mkdir(parents=True, exist_ok=True)
-
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir, suffix)
-    lock_path = _get_lock_path(h5_path)
-
-    lock_created = False
-    if mode in ("a", "w"):
-        if lock_path.exists():
-            raise RuntimeError(
-                f"HDF5 file is locked by another process. Lock file: {lock_path}"
-            )
-        try:
-            lock_path.touch(exist_ok=False)
-            lock_created = True
-        except FileExistsError:
-            raise RuntimeError(
-                f"HDF5 file is locked by another process. Lock file: {lock_path}"
-            )
-
-    h5_file = None
-    try:
-        h5_file = h5py.File(h5_path, mode)
-        yield h5_file
-    finally:
-        if h5_file is not None:
-            h5_file.close()
-        if lock_created and lock_path.exists():
-            lock_path.unlink()
+    h5_path = project_path / mask_subdir / f"{video_id}{suffix}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
 
 
 def _ensure_dataset(
