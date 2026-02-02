@@ -18,8 +18,8 @@ from vidseq.schemas.segmentation import (
 )
 from vidseq.services import (
     frame_data_service,
-    sam3_service,
     segmentation_service,
+    segmentation_tcp_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ async def run_segmentation(
         if has_existing_mask:
             # Refine existing mask using previous logits as dense prompt
             # Convert single point to array format
-            mask = sam3_service.refine_mask(
+            mask = segmentation_tcp_client.refine_mask(
                 project_id=project_id,
                 video_id=video.id,
                 frame_idx=frame_idx,
@@ -65,7 +65,7 @@ async def run_segmentation(
             )
         else:
             # Create new mask on blank frame
-            mask = sam3_service.add_point_prompt(
+            mask = segmentation_tcp_client.add_point_prompt(
                 project_id=project_id,
                 video_id=video.id,
                 video_path=video_path,
@@ -89,14 +89,14 @@ async def run_segmentation(
     # If refinement resulted in an empty mask, reset the frame's SAM state
     # to avoid corrupted memory state on next interaction
     if has_existing_mask and not has_content:
-        sam3_service.reset_frame(
+        segmentation_tcp_client.reset_frame(
             project_id=project_id,
             video_id=video.id,
             project_path=project_path,
             frame_idx=frame_idx,
         )
 
-    # Note: conditioning_service.add_conditioning_frame is now handled by sam3_service
+    # Note: conditioning_service.add_conditioning_frame is now handled by segmentation_tcp_client
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
@@ -121,7 +121,7 @@ async def propagate_mask(
     Use mark-training endpoint to explicitly mark frames for YOLO training.
     """
     try:
-        frame_indices = sam3_service.generate_training_masks(
+        frame_indices = segmentation_tcp_client.generate_training_masks(
             project_id=project_id,
             video_id=video.id,
             start_frame_idx=request.start_frame_idx,
@@ -168,7 +168,7 @@ async def refine_mask_multipoint(
     labels = [1 if p.type == "positive_point" else 0 for p in request.points]
 
     try:
-        mask = sam3_service.refine_mask(
+        mask = segmentation_tcp_client.refine_mask(
             project_id=project_id,
             video_id=video.id,
             frame_idx=frame_idx,
@@ -186,7 +186,7 @@ async def refine_mask_multipoint(
 
     # If refinement resulted in an empty mask, reset the frame's SAM state
     if not has_content:
-        sam3_service.reset_frame(
+        segmentation_tcp_client.reset_frame(
             project_id=project_id,
             video_id=video.id,
             project_path=project_path,

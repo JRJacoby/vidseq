@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder
-from vidseq.services import sam3_service, yolo_service
+from vidseq.services import segmentation_tcp_client, yolo_service
 
 router = APIRouter()
 
@@ -28,10 +28,10 @@ async def train_model(
         raise HTTPException(status_code=400, detail="Training already in progress")
     
     # Shutdown SAM3 to free GPU memory before training
-    sam3_status = sam3_service.get_status()
+    sam3_status = segmentation_tcp_client.get_status()
     if sam3_status["status"] == "ready":
         print("[YOLO API] Shutting down SAM3 to free GPU memory for training...")
-        sam3_service.shutdown_worker()
+        segmentation_tcp_client.shutdown_worker()
     
     try:
         service.train_model(project_path)

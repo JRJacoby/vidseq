@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import sam3_service, video_service
+from vidseq.services import segmentation_tcp_client, video_service
 
 router = APIRouter()
 
@@ -39,7 +39,7 @@ async def segment_all_videos_route(
             detail="Detector model not found. Please train the detector first."
         )
 
-    job_ids = await sam3_service.segment_all_videos(
+    job_ids = await segmentation_tcp_client.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
@@ -51,7 +51,7 @@ async def segment_all_videos_route(
 @router.get("/segmentation/status")
 async def get_segmentation_status():
     """Get the current SAM3 model loading status."""
-    return sam3_service.get_status()
+    return segmentation_tcp_client.get_status()
 
 
 @router.get("/segmentation/status/stream")
@@ -60,7 +60,7 @@ async def stream_segmentation_status():
     async def event_generator():
         last_status_str = None
         while True:
-            current_status = sam3_service.get_status()
+            current_status = segmentation_tcp_client.get_status()
             current_status_str = json.dumps(current_status)
 
             if current_status_str != last_status_str:
@@ -82,7 +82,7 @@ async def stream_segmentation_status():
 @router.post("/segmentation/preload")
 async def preload_segmentation():
     """Start loading SAM3 model in background."""
-    sam3_service.start_loading_in_background()
+    segmentation_tcp_client.start_loading_in_background()
     return {"message": "Loading started"}
 
 
@@ -102,7 +102,7 @@ async def init_video_session(
     video_path = Path(video.path)
 
     try:
-        session_info = sam3_service.init_session(project_id, video.id, video_path, project_path)
+        session_info = segmentation_tcp_client.init_session(project_id, video.id, video_path, project_path)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -124,5 +124,5 @@ async def close_video_session(
 
     Frees GPU memory. Call this when leaving the video detail view.
     """
-    closed = sam3_service.close_session(project_id, video_id)
+    closed = segmentation_tcp_client.close_session(project_id, video_id)
     return {"closed": closed}
