@@ -595,69 +595,77 @@ def handle_propagate_with_detector(
     if not model_path.exists():
         raise RuntimeError("No trained detector model found. Train first.")
 
-    # Load detector model
-    print(f"[SAM Worker] Loading detector model from {model_path}")
-    detector = SegFormerDetector(device="cuda")
-    detector.load_decoder(str(model_path))
-    detector.eval()
-    detector = torch.compile(detector, mode="max-autotune", fullgraph=True)
+    # Load detector model with cleanup on exit
+    detector = None
+    try:
+        print(f"[SAM Worker] Loading detector model from {model_path}")
+        detector = SegFormerDetector(device="cuda")
+        detector.load_decoder(str(model_path))
+        detector.eval()
+        detector = torch.compile(detector, mode="max-autotune", fullgraph=True)
 
-    # GPU preprocessing constants
-    IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
-    IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+        # GPU preprocessing constants
+        IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
+        IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
 
-    def get_detector_mask(frame_idx: int, frame: np.ndarray) -> np.ndarray:
-        """Run detector on a single frame."""
-        # GPU preprocessing
-        frame_gpu = torch.from_numpy(frame).to("cuda")
-        pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
-        pixel_values = pixel_values.unsqueeze(0)
-        pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
+        def get_detector_mask(frame_idx: int, frame: np.ndarray) -> np.ndarray:
+            """Run detector on a single frame."""
+            # GPU preprocessing
+            frame_gpu = torch.from_numpy(frame).to("cuda")
+            pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+            pixel_values = pixel_values.unsqueeze(0)
+            pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
 
-        # Inference
-        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
-            logits = detector(pixel_values)
+            # Inference
+            with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+                logits = detector(pixel_values)
 
-        # Post-process: argmax, resize, to numpy
-        pred = logits.argmax(dim=1)[0]  # (H/4, W/4)
-        pred = torch.nn.functional.interpolate(
-            pred.unsqueeze(0).unsqueeze(0).float(),
-            size=(frame.shape[0], frame.shape[1]),
-            mode="nearest"
-        )[0, 0]
-        mask = (pred * 255).to(torch.uint8).cpu().numpy()
-        return mask
+            # Post-process: argmax, resize, to numpy
+            pred = logits.argmax(dim=1)[0]  # (H/4, W/4)
+            pred = torch.nn.functional.interpolate(
+                pred.unsqueeze(0).unsqueeze(0).float(),
+                size=(frame.shape[0], frame.shape[1]),
+                mode="nearest"
+            )[0, 0]
+            mask = (pred * 255).to(torch.uint8).cpu().numpy()
+            return mask
 
-    def on_progress(frame_idx: int) -> None:
-        if frame_idx % 50 == 0 or frame_idx == num_frames - 1:
-            response_callback({
-                "type": "progress",
-                "frame_idx": frame_idx,
-                "total": num_frames,
-            })
+        def on_progress(frame_idx: int) -> None:
+            if frame_idx % 50 == 0 or frame_idx == num_frames - 1:
+                response_callback({
+                    "type": "progress",
+                    "frame_idx": frame_idx,
+                    "total": num_frames,
+                })
 
-    # Open H5 files with locking
-    with open_video_h5(project_path, video_id, "a") as tracker_h5, \
-         open_video_h5(project_path, video_id, "a", suffix="_detector") as detector_h5, \
-         open_video_h5(project_path, video_id, "a", suffix="_final") as final_h5:
+        # Open H5 files with locking
+        with open_video_h5(project_path, video_id, "a") as tracker_h5, \
+             open_video_h5(project_path, video_id, "a", suffix="_detector") as detector_h5, \
+             open_video_h5(project_path, video_id, "a", suffix="_final") as final_h5:
 
-        segmentor.propagate_with_detector(
-            video_id=str(video_id),
-            num_frames=num_frames,
-            frames=resources.frame_source,
-            get_detector_mask=get_detector_mask,
-            tracker_masks=tracker_h5["masks"],
-            detector_masks=detector_h5["masks"],
-            final_masks=final_h5["masks"],
-            on_progress=on_progress,
-            check_interval=check_interval,
-            iou_threshold=iou_threshold,
-        )
+            segmentor.propagate_with_detector(
+                video_id=str(video_id),
+                num_frames=num_frames,
+                frames=resources.frame_source,
+                get_detector_mask=get_detector_mask,
+                tracker_masks=tracker_h5["masks"],
+                detector_masks=detector_h5["masks"],
+                final_masks=final_h5["masks"],
+                on_progress=on_progress,
+                check_interval=check_interval,
+                iou_threshold=iou_threshold,
+            )
 
-    return {
-        "type": "propagate_with_detector_result",
-        "status": "ok",
-    }
+        return {
+            "type": "propagate_with_detector_result",
+            "status": "ok",
+        }
+
+    finally:
+        # Clean up detector model to free GPU memory
+        if detector is not None:
+            del detector
+            torch.cuda.empty_cache()
 
 
 def handle_reset_frame(
