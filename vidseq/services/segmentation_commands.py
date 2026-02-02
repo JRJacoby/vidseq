@@ -14,7 +14,7 @@ import cv2
 import h5py
 import numpy as np
 
-from vidseq.services.sam2.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
+from vidseq.services.segmentation_model.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
 
 
 # ---------------------------------------------------------------------------
