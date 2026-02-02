@@ -17,6 +17,24 @@ import h5py
 import numpy as np
 
 
+# Module-level cache for H5 file handles
+_cache: dict[Path, h5py.File] = {}
+
+
+def close_all_h5() -> None:
+    """Close all cached H5 file handles.
+
+    Call this during cleanup/shutdown or when you need to ensure
+    all files are flushed and closed.
+    """
+    for f in _cache.values():
+        try:
+            f.close()
+        except Exception:
+            pass
+    _cache.clear()
+
+
 def _get_masks_dir(project_path: Path, mask_subdir: str = "masks") -> Path:
     """Get the masks directory for a project.
 
@@ -48,101 +66,139 @@ def _get_lock_path(h5_path: Path) -> Path:
 
 @contextmanager
 def open_h5_with_lock(h5_path: Path, mode: str):
-    """Context manager for HDF5 file access with file locking.
+    """Context manager for HDF5 file access with file locking and caching.
 
-    Works with any H5 path. Creates parent directories for write modes.
-    Lock file is placed alongside the H5 file as {name}.h5.lock
+    Files are cached at module level and kept open for performance.
+    Lock files coordinate writes across processes but don't close handles.
+
+    - mode='r': Returns cached handle, no locking (read-only by convention)
+    - mode='a': Returns cached handle with lock held during context
+    - mode='w': Truncates file (closes cache first), not cached after
 
     Args:
         h5_path: Path to the HDF5 file
-        mode: File mode - 'r' for read-only, 'a' for append, 'w' for write
+        mode: File mode - 'r' for read, 'a' for append/write, 'w' for truncate
 
     Yields:
-        h5py.File: The opened HDF5 file handle
+        h5py.File: The HDF5 file handle (cached for 'r' and 'a' modes)
 
     Raises:
         ValueError: If mode is not 'r', 'a', or 'w'
-        RuntimeError: If file is locked by another process (write mode only)
+        RuntimeError: If file is locked by another process (write modes only)
     """
     if mode not in ("r", "a", "w"):
         raise ValueError(f"Invalid mode '{mode}'. Must be 'r', 'a', or 'w'")
 
-    if mode in ("a", "w"):
-        h5_path.parent.mkdir(parents=True, exist_ok=True)
-
+    h5_path = h5_path.resolve()  # Normalize for cache key
     lock_path = _get_lock_path(h5_path)
 
-    lock_created = False
-    if mode in ("a", "w"):
+    # mode='w' is special: truncates file, not cached
+    if mode == "w":
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        # Close cached handle if exists
+        if h5_path in _cache:
+            try:
+                _cache[h5_path].close()
+            except Exception:
+                pass
+            del _cache[h5_path]
+        # Lock, create, yield, close, unlock
         if lock_path.exists():
             raise RuntimeError(
                 f"HDF5 file is locked by another process. Lock file: {lock_path}"
             )
+        lock_path.touch()
         try:
-            lock_path.touch(exist_ok=False)
-            lock_created = True
-        except FileExistsError:
+            with h5py.File(h5_path, "w") as f:
+                yield f
+        finally:
+            lock_path.unlink(missing_ok=True)
+        return
+
+    # mode='r' or 'a': use cache
+    if h5_path not in _cache:
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        _cache[h5_path] = h5py.File(h5_path, "a")
+
+    if mode == "a":
+        # Write mode: acquire lock, yield, release lock (handle stays cached)
+        if lock_path.exists():
             raise RuntimeError(
                 f"HDF5 file is locked by another process. Lock file: {lock_path}"
             )
-
-    h5_file = None
-    try:
-        h5_file = h5py.File(h5_path, mode)
-        yield h5_file
-    finally:
-        if h5_file is not None:
-            h5_file.close()
-        if lock_created and lock_path.exists():
-            lock_path.unlink()
+        lock_path.touch()
+        try:
+            yield _cache[h5_path]
+        finally:
+            lock_path.unlink(missing_ok=True)
+    else:
+        # Read mode: just yield cached handle, no locking
+        yield _cache[h5_path]
 
 
 @contextmanager
-def open_tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open tracker masks H5 file: masks/{video_id}.h5"""
+def tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for tracker masks H5 file: masks/{video_id}.h5
+
+    Usage:
+        with tracker_h5(project_path, video_id) as f:
+            mask = f["masks"][frame_idx]
+
+        with tracker_h5(project_path, video_id, mode="a") as f:
+            f["masks"][frame_idx] = mask
+    """
     h5_path = project_path / "masks" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
-def open_detector_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open detector masks H5 file: masks/{video_id}_detector.h5"""
+def detector_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for detector masks H5 file: masks/{video_id}_detector.h5"""
     h5_path = project_path / "masks" / f"{video_id}_detector.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
-def open_final_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open final masks H5 file: masks/{video_id}_final.h5"""
+def final_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for final masks H5 file: masks/{video_id}_final.h5"""
     h5_path = project_path / "masks" / f"{video_id}_final.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
-def open_cropped_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open cropped masks H5 file: cropped_masks/{video_id}.h5"""
+def cropped_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for cropped masks H5 file: cropped_masks/{video_id}.h5"""
     h5_path = project_path / "cropped_masks" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
-def open_aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open aligned masks H5 file: aligned_masks/{video_id}.h5"""
+def aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for aligned masks H5 file: aligned_masks/{video_id}.h5"""
     h5_path = project_path / "aligned_masks" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
 
 @contextmanager
-def open_predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Open predictions H5 file: predictions/{video_id}.h5"""
+def predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for predictions H5 file: predictions/{video_id}.h5"""
     h5_path = project_path / "predictions" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
+
+
+# Backwards-compatible aliases (deprecated)
+open_tracker_h5 = tracker_h5
+open_detector_h5 = detector_h5
+open_final_h5 = final_h5
+open_cropped_h5 = cropped_h5
+open_aligned_h5 = aligned_h5
+open_predictions_h5 = predictions_h5
 
 
 @contextmanager

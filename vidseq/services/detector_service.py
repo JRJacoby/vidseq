@@ -1,7 +1,6 @@
 """Detector Service for SegFormer-based segmentation training and inference."""
 
 import logging
-import os
 import threading
 import time
 from pathlib import Path
@@ -13,7 +12,6 @@ if TYPE_CHECKING:
     from vidseq.services.detector_model import SegFormerDetector
 
 import cv2
-import h5py
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -25,9 +23,7 @@ from vidseq.models.video import Video
 from vidseq.models.frame_data import FrameData
 from vidseq.schemas.detector import DetectorTrainingProgress
 from vidseq.services.database_manager import DatabaseManager
-
-# Disable HDF5's internal file locking
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+from vidseq.services.h5_storage import tracker_h5, detector_h5
 
 logger = logging.getLogger("vidseq.detector")
 logger.setLevel(logging.DEBUG)
@@ -61,18 +57,10 @@ class DetectorDataset(Dataset):
         """
         self.frames = frames
         self.project_path = project_path
-        self._h5_cache: dict[int, h5py.File] = {}
         self._video_cache: dict[str, cv2.VideoCapture] = {}
 
     def __len__(self) -> int:
         return len(self.frames)
-
-    def _get_h5_file(self, video_id: int) -> h5py.File:
-        """Get or open HDF5 file for video."""
-        if video_id not in self._h5_cache:
-            h5_path = self.project_path / "masks" / f"{video_id}.h5"
-            self._h5_cache[video_id] = h5py.File(h5_path, "r")
-        return self._h5_cache[video_id]
 
     def _get_video_capture(self, video_path: str) -> cv2.VideoCapture:
         """Get or open VideoCapture for video."""
@@ -94,9 +82,9 @@ class DetectorDataset(Dataset):
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Load mask from HDF5 (values are 0 or 255)
-        h5_file = self._get_h5_file(video_id)
-        mask = np.array(h5_file["masks"][frame_idx], dtype=np.uint8)
+        # Load mask from HDF5 (values are 0 or 255, cached by h5_storage)
+        with tracker_h5(self.project_path, video_id) as h5_file:
+            mask = np.array(h5_file["masks"][frame_idx], dtype=np.uint8)
 
         # Convert 0/255 to 0/1 class labels
         mask_labels = (mask > 127).astype(np.uint8)
@@ -105,10 +93,7 @@ class DetectorDataset(Dataset):
         return frame_rgb, mask_labels
 
     def close(self):
-        """Close all HDF5 and video files."""
-        for f in self._h5_cache.values():
-            f.close()
-        self._h5_cache.clear()
+        """Close video files. H5 files are managed by h5_storage module."""
         for cap in self._video_cache.values():
             cap.release()
         self._video_cache.clear()
@@ -576,15 +561,12 @@ class DetectorService:
         # Use bfloat16 for faster inference
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for video_id, frame_list in frames_by_video.items():
-                tracker_h5_path = project_path / "masks" / f"{video_id}.h5"
-                detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
-
                 # Read original mask shape from tracker h5 file
-                with h5py.File(tracker_h5_path, "r") as tracker_h5:
-                    mask_shape = tracker_h5["masks"].shape  # (N, H, W)
+                with tracker_h5(project_path, video_id) as tracker_file:
+                    mask_shape = tracker_file["masks"].shape  # (N, H, W)
                     _, orig_h, orig_w = mask_shape
 
-                with h5py.File(detector_h5_path, "a") as h5_file:
+                with detector_h5(project_path, video_id, mode="a") as h5_file:
                     # Create or get masks dataset
                     if "masks" not in h5_file:
                         h5_file.create_dataset(
