@@ -66,25 +66,25 @@ def _get_lock_path(h5_path: Path) -> Path:
 
 @contextmanager
 def open_h5_with_lock(h5_path: Path, mode: str):
-    """Context manager for HDF5 file access with file locking and caching.
+    """Context manager for HDF5 file access with caching and locking.
 
-    Files are cached at module level and kept open for performance.
-    Lock files coordinate writes across processes but don't close handles.
+    Caching strategy:
+    - mode='r': Cached at module level for fast repeated reads
+    - mode='a'/'w': NOT cached - opens fresh with lock, closes on exit
 
-    - mode='r': Returns cached handle, no locking (read-only by convention)
-    - mode='a': Returns cached handle with lock held during context
-    - mode='w': Truncates file (closes cache first), not cached after
+    If 'r' is cached and 'a'/'w' is requested, the cached handle is evicted first.
 
     Args:
         h5_path: Path to the HDF5 file
         mode: File mode - 'r' for read, 'a' for append/write, 'w' for truncate
 
     Yields:
-        h5py.File: The HDF5 file handle (cached for 'r' and 'a' modes)
+        h5py.File: The HDF5 file handle
 
     Raises:
         ValueError: If mode is not 'r', 'a', or 'w'
         RuntimeError: If file is locked by another process (write modes only)
+        FileNotFoundError: If file doesn't exist (read mode only)
     """
     if mode not in ("r", "a", "w"):
         raise ValueError(f"Invalid mode '{mode}'. Must be 'r', 'a', or 'w'")
@@ -92,21 +92,17 @@ def open_h5_with_lock(h5_path: Path, mode: str):
     h5_path = h5_path.resolve()  # Normalize for cache key
     lock_path = _get_lock_path(h5_path)
 
-    # mode='w' is special: truncates file, not cached
+    # mode='w' truncates - evict cache, lock, create fresh, close on exit
     if mode == "w":
         h5_path.parent.mkdir(parents=True, exist_ok=True)
-        # Close cached handle if exists
         if h5_path in _cache:
             try:
                 _cache[h5_path].close()
             except Exception:
                 pass
             del _cache[h5_path]
-        # Lock, create, yield, close, unlock
         if lock_path.exists():
-            raise RuntimeError(
-                f"HDF5 file is locked by another process. Lock file: {lock_path}"
-            )
+            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         lock_path.touch()
         try:
             with h5py.File(h5_path, "w") as f:
@@ -115,25 +111,32 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             lock_path.unlink(missing_ok=True)
         return
 
-    # mode='r' or 'a': use cache
-    if h5_path not in _cache:
-        h5_path.parent.mkdir(parents=True, exist_ok=True)
-        _cache[h5_path] = h5py.File(h5_path, "a")
-
+    # mode='a' - evict cache if exists, lock, open fresh, close on exit (not cached)
     if mode == "a":
-        # Write mode: acquire lock, yield, release lock (handle stays cached)
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        if h5_path in _cache:
+            try:
+                _cache[h5_path].close()
+            except Exception:
+                pass
+            del _cache[h5_path]
         if lock_path.exists():
-            raise RuntimeError(
-                f"HDF5 file is locked by another process. Lock file: {lock_path}"
-            )
+            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         lock_path.touch()
+        h5_file = h5py.File(h5_path, "a")
         try:
-            yield _cache[h5_path]
+            yield h5_file
         finally:
+            h5_file.close()
             lock_path.unlink(missing_ok=True)
-    else:
-        # Read mode: just yield cached handle, no locking
-        yield _cache[h5_path]
+        return
+
+    # mode='r' - use cache
+    if h5_path not in _cache:
+        if not h5_path.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
+        _cache[h5_path] = h5py.File(h5_path, "r")
+    yield _cache[h5_path]
 
 
 @contextmanager
@@ -188,6 +191,14 @@ def aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
 def predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
     """Context manager for predictions H5 file: predictions/{video_id}.h5"""
     h5_path = project_path / "predictions" / f"{video_id}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for PCA scores H5 file: pca_scores/{video_id}.h5"""
+    h5_path = project_path / "pca_scores" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 
