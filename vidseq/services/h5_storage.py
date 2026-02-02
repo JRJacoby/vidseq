@@ -203,15 +203,6 @@ def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
         yield f
 
 
-# Backwards-compatible aliases (deprecated)
-open_tracker_h5 = tracker_h5
-open_detector_h5 = detector_h5
-open_final_h5 = final_h5
-open_cropped_h5 = cropped_h5
-open_aligned_h5 = aligned_h5
-open_predictions_h5 = predictions_h5
-
-
 @contextmanager
 def open_video_h5(
     project_path: Path,
