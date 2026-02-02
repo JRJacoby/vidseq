@@ -5,7 +5,6 @@ import json
 import logging
 from pathlib import Path
 
-import h5py
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
@@ -15,6 +14,7 @@ from vidseq.api.dependencies import get_project_folder, get_video
 from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService
 from vidseq.services import segmentation_service
+from vidseq.services.h5_storage import detector_h5
 
 logger = logging.getLogger(__name__)
 
@@ -185,13 +185,13 @@ async def get_detector_mask(
         return Response(content=mask_png, media_type="image/png")
 
     try:
-        with h5py.File(h5_path, "r") as f:
+        with detector_h5(project_path, video.id, "r") as f:
             if "masks" not in f:
                 # No masks dataset
                 mask = np.zeros((video.height, video.width), dtype=np.uint8)
             else:
                 mask = np.array(f["masks"][frame_idx])
-    except (OSError, KeyError) as e:
+    except (OSError, KeyError, FileNotFoundError) as e:
         logger.warning(f"Error reading detector mask: {e}")
         mask = np.zeros((video.height, video.width), dtype=np.uint8)
 
@@ -228,7 +228,7 @@ async def get_detector_masks_batch(
             masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
     else:
         try:
-            with h5py.File(h5_path, "r") as f:
+            with detector_h5(project_path, video.id, "r") as f:
                 if "masks" not in f:
                     # No masks dataset - return empty
                     for i in range(actual_count):
@@ -242,7 +242,7 @@ async def get_detector_masks_batch(
                         png_bytes = segmentation_service.mask_to_png(mask)
                         png_base64 = base64.b64encode(png_bytes).decode('ascii')
                         masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
-        except (OSError, KeyError) as e:
+        except (OSError, KeyError, FileNotFoundError) as e:
             logger.warning(f"Error reading detector masks batch: {e}")
             for i in range(actual_count):
                 mask = np.zeros((video.height, video.width), dtype=np.uint8)
