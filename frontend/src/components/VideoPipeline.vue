@@ -23,7 +23,6 @@ import {
 } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
-import { useYOLO } from '@/composables/useYOLO'
 import { useDetector } from '@/composables/useDetector'
 
 const router = useRouter()
@@ -60,15 +59,6 @@ const getStatusClass = (video: Video) => {
   if (video.segmentation_status === 'segmented') return 'segmented'
   return null
 }
-
-const {
-  isTraining,
-  isApplying,
-  modelExists,
-  trainModel,
-  runInitialDetection,
-  checkModelStatus,
-} = useYOLO(projectId)
 
 const {
   isTraining: isDetectorTraining,
@@ -162,24 +152,6 @@ const handleFilePickerCancel = () => {
 const handleVideoDoubleClick = (videoId: number) => {
   if (projectStore.currentProjectId) {
     router.push(`/project/${projectStore.currentProjectId}/video/${videoId}`)
-  }
-}
-
-const handleTrainModel = async () => {
-  if (!projectId.value || isTraining.value) return
-  try {
-    await trainModel(projectId.value)
-  } catch (e) {
-    console.error('Failed to train model:', e)
-  }
-}
-
-const handleRunInitialDetection = async () => {
-  if (!projectId.value || isApplying.value || !modelExists.value) return
-  try {
-    await runInitialDetection(projectId.value)
-  } catch (e) {
-    console.error('Failed to run initial detection:', e)
   }
 }
 
@@ -480,23 +452,7 @@ const formatScore = (score: number | undefined) => {
           </div>
         <aside class="sidebar">
           <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
-          
-          <h4 class="sidebar-section-title">Initial Detection</h4>
-          <button 
-            class="sidebar-button train-button"
-            @click="handleTrainModel"
-            :disabled="isTraining || isApplying"
-          >
-            <span class="button-label">{{ isTraining ? 'Training...' : 'Train Initial Detection Model' }}</span>
-          </button>
-          <button 
-            class="sidebar-button apply-button"
-            @click="handleRunInitialDetection"
-            :disabled="isTraining || isApplying || !modelExists"
-          >
-            <span class="button-label">{{ isApplying ? 'Running...' : 'Run Initial Detection' }}</span>
-          </button>
-          
+
           <h4 class="sidebar-section-title">Segmentation</h4>
           <button
             class="sidebar-button segment-button"
@@ -614,8 +570,8 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">View Detector Training</span>
           </button>
 
-          <div v-if="isTraining || isApplying || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
-            {{ isTraining ? 'Training model...' : isApplying ? 'Running initial detection...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
+          <div v-if="isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
+            {{ isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
           </div>
         </aside>
       </div>
