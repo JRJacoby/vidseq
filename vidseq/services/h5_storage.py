@@ -475,7 +475,7 @@ def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
 
 
 def video_has_masks(project_path: Path, video_id: int) -> bool:
-    """Check if a video has an HDF5 mask file.
+    """Check if a video has tracker masks (array_data/{video_id}/tracker_masks.h5).
 
     Args:
         project_path: Path to the project folder
@@ -484,22 +484,17 @@ def video_has_masks(project_path: Path, video_id: int) -> bool:
     Returns:
         True if the mask file exists, False otherwise
     """
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     return h5_path.exists()
 
 
 # ----- Final masks support -----
-# Final masks are stored in {video_id}_final.h5 and contain the
+# Final masks are stored in array_data/{video_id}/final_masks.h5 and contain the
 # tracker-detector fusion result (tracker if IoU >= 0.5, corrected otherwise)
 
 
-def _get_final_h5_path(project_path: Path, video_id: int) -> Path:
-    """Get path to the final masks HDF5 file."""
-    return project_path / "masks" / f"{video_id}_final.h5"
-
-
 def video_has_final_masks(project_path: Path, video_id: int) -> bool:
-    """Check if a video has final (corrected) masks.
+    """Check if a video has final (corrected) masks (array_data/{video_id}/final_masks.h5).
 
     Args:
         project_path: Path to the project folder
@@ -508,7 +503,7 @@ def video_has_final_masks(project_path: Path, video_id: int) -> bool:
     Returns:
         True if the final mask file exists, False otherwise
     """
-    h5_path = _get_final_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
     return h5_path.exists()
 
 
@@ -533,16 +528,16 @@ def load_final_mask(
     Returns:
         Mask array (height, width) with dtype uint8
     """
-    h5_path = _get_final_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
     if not h5_path.exists():
         return np.zeros((height, width), dtype=np.uint8)
 
     try:
-        with h5py.File(h5_path, "r") as f:
+        with final_h5(project_path, video_id, mode="r") as f:
             if "masks" not in f:
                 return np.zeros((height, width), dtype=np.uint8)
             return np.array(f["masks"][frame_idx])
-    except (OSError, KeyError):
+    except (OSError, KeyError, FileNotFoundError):
         return np.zeros((height, width), dtype=np.uint8)
 
 
@@ -572,16 +567,16 @@ def load_final_masks_batch(
     end_frame = min(start_frame + count, num_frames)
     actual_count = end_frame - start_frame
 
-    h5_path = _get_final_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
     if not h5_path.exists():
         return np.zeros((actual_count, height, width), dtype=np.uint8)
 
     try:
-        with h5py.File(h5_path, "r") as f:
+        with final_h5(project_path, video_id, mode="r") as f:
             if "masks" not in f:
                 return np.zeros((actual_count, height, width), dtype=np.uint8)
             return np.array(f["masks"][start_frame:end_frame])
-    except (OSError, KeyError):
+    except (OSError, KeyError, FileNotFoundError):
         return np.zeros((actual_count, height, width), dtype=np.uint8)
 
 
@@ -596,11 +591,11 @@ def delete_tracker_mask(project_path: Path, video_id: int, frame_idx: int) -> No
         video_id: ID of the video
         frame_idx: Frame index (0-based)
     """
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, mode="a") as f:
+    with tracker_h5(project_path, video_id, mode="a") as f:
         if "masks" in f:
             f["masks"][frame_idx] = 0
             f.flush()
@@ -614,11 +609,11 @@ def delete_tracker_logits(project_path: Path, video_id: int, frame_idx: int) -> 
         video_id: ID of the video
         frame_idx: Frame index (0-based)
     """
-    h5_path = _get_video_h5_path(project_path, video_id)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, mode="a") as f:
+    with tracker_h5(project_path, video_id, mode="a") as f:
         if "logits" in f:
             f["logits"][frame_idx] = 0.0
             f.flush()
@@ -632,11 +627,11 @@ def delete_detector_mask(project_path: Path, video_id: int, frame_idx: int) -> N
         video_id: ID of the video
         frame_idx: Frame index (0-based)
     """
-    h5_path = _get_video_h5_path(project_path, video_id, suffix="_detector")
+    h5_path = project_path / "array_data" / str(video_id) / "detector_masks.h5"
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, mode="a", suffix="_detector") as f:
+    with detector_h5(project_path, video_id, mode="a") as f:
         if "masks" in f:
             f["masks"][frame_idx] = 0
             f.flush()
@@ -650,11 +645,11 @@ def delete_final_mask(project_path: Path, video_id: int, frame_idx: int) -> None
         video_id: ID of the video
         frame_idx: Frame index (0-based)
     """
-    h5_path = _get_video_h5_path(project_path, video_id, suffix="_final")
+    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, mode="a", suffix="_final") as f:
+    with final_h5(project_path, video_id, mode="a") as f:
         if "masks" in f:
             f["masks"][frame_idx] = 0
             f.flush()
