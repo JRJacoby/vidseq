@@ -24,6 +24,8 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import h5py
 import imageio_ffmpeg
 
+from vidseq.services.h5_storage import open_cropped_h5, open_aligned_h5, open_predictions_h5
+
 import cv2
 import numpy as np
 import segmentation_models_pytorch as smp
@@ -2175,118 +2177,110 @@ class AlignmentService:
                     cap.release()
                     continue
 
-                # Open cropped masks HDF5 for reading
-                cropped_mask_h5_path = cropped_masks_dir / f"{video.id}.h5"
-                cropped_mask_h5 = h5py.File(cropped_mask_h5_path, "r")
+                # Use context managers for H5 files with proper locking
+                with open_cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
+                     open_aligned_h5(project_path, video.id, "w") as aligned_mask_h5, \
+                     open_predictions_h5(project_path, video.id, "w") as predictions_h5:
 
-                # Get mask dimensions from cropped masks (may differ from video dimensions)
-                mask_shape = cropped_mask_h5["masks"].shape
-                mask_height, mask_width = mask_shape[1], mask_shape[2]
+                    # Get mask dimensions from cropped masks (may differ from video dimensions)
+                    mask_shape = cropped_mask_h5["masks"].shape
+                    mask_height, mask_width = mask_shape[1], mask_shape[2]
 
-                # Create aligned masks HDF5 for writing (use mask dimensions, not video dimensions)
-                aligned_mask_h5_path = aligned_masks_dir / f"{video.id}.h5"
-                aligned_mask_h5 = h5py.File(aligned_mask_h5_path, "w")
-                aligned_mask_h5.create_dataset(
-                    "masks",
-                    shape=(frame_count, mask_height, mask_width),
-                    dtype=np.uint8,
-                    fillvalue=0,
-                    chunks=(1, mask_height, mask_width),
-                    compression=None,
-                )
+                    # Create aligned masks dataset
+                    aligned_mask_h5.create_dataset(
+                        "masks",
+                        shape=(frame_count, mask_height, mask_width),
+                        dtype=np.uint8,
+                        fillvalue=0,
+                        chunks=(1, mask_height, mask_width),
+                        compression=None,
+                    )
 
-                # Open predictions HDF5 for writing (keep open for whole video)
-                predictions_dir = _get_predictions_dir(project_path)
-                predictions_dir.mkdir(parents=True, exist_ok=True)
-                predictions_h5_path = _get_predictions_h5_path(project_path, video.id)
-                predictions_h5 = h5py.File(predictions_h5_path, "w")
-                predictions_h5.create_dataset(
-                    "heatmaps",
-                    shape=(frame_count, height, width, 2),
-                    dtype=np.float32,
-                    chunks=(1, height, width, 2),
-                    compression=None,
-                )
+                    # Create predictions dataset
+                    predictions_h5.create_dataset(
+                        "heatmaps",
+                        shape=(frame_count, height, width, 2),
+                        dtype=np.float32,
+                        chunks=(1, height, width, 2),
+                        compression=None,
+                    )
 
-                # Process each frame
-                for frame_idx in range(frame_count):
-                    ret, frame = cap.read()
-                    if not ret:
-                        logger.warning(f"apply_alignment_sync: failed to read frame {frame_idx}")
-                        break
+                    # Process each frame
+                    for frame_idx in range(frame_count):
+                        ret, frame = cap.read()
+                        if not ret:
+                            logger.warning(f"apply_alignment_sync: failed to read frame {frame_idx}")
+                            break
 
-                    # Run prediction to get heatmap
-                    heatmap = self.predict_sync(project_path, frame)
+                        # Run prediction to get heatmap
+                        heatmap = self.predict_sync(project_path, frame)
 
-                    # Save prediction for debugging
-                    predictions_h5["heatmaps"][frame_idx] = heatmap
+                        # Save prediction for debugging
+                        predictions_h5["heatmaps"][frame_idx] = heatmap
 
-                    # Find keypoints using DARK post-processing for sub-pixel accuracy
-                    front_heatmap = heatmap[:, :, 0]
-                    rear_heatmap = heatmap[:, :, 1]
-                    front_x_px, front_y_px = dark_postprocess(front_heatmap)
-                    rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
+                        # Find keypoints using DARK post-processing for sub-pixel accuracy
+                        front_heatmap = heatmap[:, :, 0]
+                        rear_heatmap = heatmap[:, :, 1]
+                        front_x_px, front_y_px = dark_postprocess(front_heatmap)
+                        rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
 
-                    # Normalize to 0-1
-                    h, w = front_heatmap.shape
-                    front_x, front_y = front_x_px / w, front_y_px / h
-                    rear_x, rear_y = rear_x_px / w, rear_y_px / h
+                        # Normalize to 0-1
+                        h, w = front_heatmap.shape
+                        front_x, front_y = front_x_px / w, front_y_px / h
+                        rear_x, rear_y = rear_x_px / w, rear_y_px / h
 
-                    # Calculate raw rotation angle
-                    raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+                        # Calculate raw rotation angle
+                        raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
 
-                    # Unwrap angle to handle -180/180 discontinuity
-                    if prev_raw_angle is None:
-                        unwrapped_angle = raw_angle
-                    else:
-                        delta = raw_angle - prev_raw_angle
-                        # Take the shortest path across the boundary
-                        if delta > 180:
-                            delta -= 360
-                        elif delta < -180:
-                            delta += 360
-                        unwrapped_angle += delta
-                    prev_raw_angle = raw_angle
+                        # Unwrap angle to handle -180/180 discontinuity
+                        if prev_raw_angle is None:
+                            unwrapped_angle = raw_angle
+                        else:
+                            delta = raw_angle - prev_raw_angle
+                            # Take the shortest path across the boundary
+                            if delta > 180:
+                                delta -= 360
+                            elif delta < -180:
+                                delta += 360
+                            unwrapped_angle += delta
+                        prev_raw_angle = raw_angle
 
-                    # Apply temporal smoothing to the unwrapped angle
-                    angle = angle_filter(unwrapped_angle)
+                        # Apply temporal smoothing to the unwrapped angle
+                        angle = angle_filter(unwrapped_angle)
 
-                    # Rotate frame
-                    rotated = rotate_frame(frame, angle)
+                        # Rotate frame
+                        rotated = rotate_frame(frame, angle)
 
-                    # Write rotated frame
-                    writer.write(rotated)
+                        # Write rotated frame
+                        writer.write(rotated)
 
-                    # Load cropped mask, rotate, threshold, and save
-                    cropped_mask = np.array(cropped_mask_h5["masks"][frame_idx])
-                    aligned_mask = rotate_mask(cropped_mask, angle)
-                    aligned_mask_h5["masks"][frame_idx] = aligned_mask
+                        # Load cropped mask, rotate, threshold, and save
+                        cropped_mask = np.array(cropped_mask_h5["masks"][frame_idx])
+                        aligned_mask = rotate_mask(cropped_mask, angle)
+                        aligned_mask_h5["masks"][frame_idx] = aligned_mask
 
-                    # Track frame timestamp for FPS calculation
-                    self._fps_timestamps.append(time.time())
+                        # Track frame timestamp for FPS calculation
+                        self._fps_timestamps.append(time.time())
 
-                    # Update progress every second
-                    now = time.time()
-                    if now - last_progress_update >= 1.0:
-                        self._alignment_progress.current_frame = frame_idx + 1
-                        self._alignment_progress.fps = self._calculate_rolling_fps()
+                        # Update progress every second
+                        now = time.time()
+                        if now - last_progress_update >= 1.0:
+                            self._alignment_progress.current_frame = frame_idx + 1
+                            self._alignment_progress.fps = self._calculate_rolling_fps()
 
-                        # Calculate ETA based on remaining frames and current FPS
-                        if self._alignment_progress.fps > 0:
-                            remaining_frames = frame_count - (frame_idx + 1)
-                            self._alignment_progress.eta_seconds = remaining_frames / self._alignment_progress.fps
+                            # Calculate ETA based on remaining frames and current FPS
+                            if self._alignment_progress.fps > 0:
+                                remaining_frames = frame_count - (frame_idx + 1)
+                                self._alignment_progress.eta_seconds = remaining_frames / self._alignment_progress.fps
 
-                        last_progress_update = now
+                            last_progress_update = now
 
-                # Final progress update for this video
-                self._alignment_progress.current_frame = frame_count
+                    # Final progress update for this video
+                    self._alignment_progress.current_frame = frame_count
 
-                # Release resources
+                # Release video resources outside the H5 context managers
                 cap.release()
                 writer.release()
-                cropped_mask_h5.close()
-                aligned_mask_h5.close()
-                predictions_h5.close()
 
                 # Re-encode to H.264 for browser compatibility
                 # Write to a _tmp file first, then atomically rename so that
