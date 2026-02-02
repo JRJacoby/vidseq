@@ -1,5 +1,5 @@
 """
-SAM2 TCP Server Worker.
+Segmentation TCP Server Worker.
 
 Runs as standalone TCP server process. Accepts multiple connections,
 queues all commands, processes them sequentially for GPU safety.
@@ -45,8 +45,8 @@ from vidseq.services.segmentation_config import (
 )
 
 
-class SAM2TCPServer:
-    """TCP server for SAM2 worker with sequential command processing."""
+class SegmentationTCPServer:
+    """TCP server for segmentation worker with sequential command processing."""
 
     def __init__(self, port: Optional[int] = None):
         """
@@ -65,7 +65,7 @@ class SAM2TCPServer:
         self.running = False
         self._is_processing = False
 
-        # SAM2 state - StreamingSegmentor manages sessions internally
+        # Segmentation state - StreamingSegmentor manages sessions internally
         self._segmentor = None
 
     def _recover_stale_in_progress_states(self) -> None:
@@ -105,22 +105,22 @@ class SAM2TCPServer:
 
                                 proj_session.commit()
                                 print(
-                                    f"[SAM2 Worker] Recovered {len(in_progress_videos)} stale "
+                                    f"[Segmentation Worker] Recovered {len(in_progress_videos)} stale "
                                     f"'in_progress' videos in project {project.name}"
                                 )
                     except Exception as e:
-                        print(f"[SAM2 Worker] Warning: Failed to recover project {project.name}: {e}")
+                        print(f"[Segmentation Worker] Warning: Failed to recover project {project.name}: {e}")
                         continue
 
                 if recovered_count > 0:
-                    print(f"[SAM2 Worker] Total recovered videos: {recovered_count}")
+                    print(f"[Segmentation Worker] Total recovered videos: {recovered_count}")
         except Exception as e:
-            print(f"[SAM2 Worker] Warning: Failed to recover stale states: {e}")
+            print(f"[Segmentation Worker] Warning: Failed to recover stale states: {e}")
 
     def start(self) -> None:
         """Start the TCP server."""
-        # SAM2 checkpoint is handled by SAM2StreamingSegmentor.__init__()
-        print("[SAM2 Worker] Checkpoint managed by StreamingSegmentor")
+        # Checkpoint is handled by StreamingSegmentor.__init__()
+        print("[Segmentation Worker] Checkpoint managed by StreamingSegmentor")
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -129,7 +129,7 @@ class SAM2TCPServer:
         self.server_socket.settimeout(1.0)
         self.running = True
 
-        print(f"[SAM2 Worker] TCP server started on localhost:{self.port}")
+        print(f"[Segmentation Worker] TCP server started on localhost:{self.port}")
 
         # Write port and PID files
         write_port_file(self.port)
@@ -150,7 +150,7 @@ class SAM2TCPServer:
                 with self.connection_lock:
                     conn_count = len(self.active_connections)
                 if conn_count == 0:
-                    print(f"[SAM2 Worker] First client connected from {addr}")
+                    print(f"[Segmentation Worker] First client connected from {addr}")
                 client_thread = threading.Thread(
                     target=self._handle_client,
                     args=(conn, addr),
@@ -176,7 +176,7 @@ class SAM2TCPServer:
 
         # Only log if this is the first connection
         if conn_count == 1:
-            print(f"[SAM2 Worker] Client connected from {addr}")
+            print(f"[Segmentation Worker] Client connected from {addr}")
 
         try:
             # Set a short timeout for initial read to detect quick disconnects
@@ -209,7 +209,7 @@ class SAM2TCPServer:
         except Exception as e:
             # Only log actual errors, not quick disconnects
             if "timed out" not in str(e).lower():
-                print(f"[SAM2 Worker] Error handling client {addr}: {e}")
+                print(f"[Segmentation Worker] Error handling client {addr}: {e}")
         finally:
             # Connection closed
             with self.connection_lock:
@@ -218,7 +218,7 @@ class SAM2TCPServer:
                 # If no connections left, schedule shutdown
                 if len(self.active_connections) == 0:
                     if was_last:
-                        print(f"[SAM2 Worker] Last client disconnected from {addr}")
+                        print(f"[Segmentation Worker] Last client disconnected from {addr}")
                     self._schedule_shutdown()
             try:
                 conn.close()
@@ -256,7 +256,7 @@ class SAM2TCPServer:
             # Connection may have closed, remove it
             with self.connection_lock:
                 self.active_connections.discard(conn)
-            print(f"[SAM2 Worker] Error sending response: {e}")
+            print(f"[Segmentation Worker] Error sending response: {e}")
 
     def _process_commands(self) -> None:
         """Process commands sequentially from queue."""
@@ -270,7 +270,7 @@ class SAM2TCPServer:
                 self._is_processing = True
                 self._handle_command(cmd, response_callback)
             except Exception as e:
-                print(f"[SAM2 Worker] Error processing command: {e}")
+                print(f"[Segmentation Worker] Error processing command: {e}")
                 import traceback
 
                 traceback.print_exc()
@@ -294,7 +294,7 @@ class SAM2TCPServer:
 
         try:
             if cmd_type == "load_model":
-                # SAM2 handles checkpoint loading internally in StreamingSegmentor
+                # Checkpoint loading handled internally by StreamingSegmentor
                 result, self._segmentor = handle_load_model(None)
 
             elif cmd_type == "init_session":
@@ -362,7 +362,7 @@ class SAM2TCPServer:
                 self.running = False
 
             else:
-                print(f"[SAM2 Worker] Unknown command type: {cmd_type}")
+                print(f"[Segmentation Worker] Unknown command type: {cmd_type}")
                 result = {
                     "type": "error",
                     "error": f"Unknown command type: {cmd_type}",
@@ -375,7 +375,7 @@ class SAM2TCPServer:
             response_callback(result)
 
         except Exception as e:
-            print(f"[SAM2 Worker] Error in command {cmd_type}: {e}")
+            print(f"[Segmentation Worker] Error in command {cmd_type}: {e}")
             import traceback
             traceback.print_exc()
             result = {
@@ -394,9 +394,9 @@ class SAM2TCPServer:
             time.sleep(self.shutdown_timeout)
             with self.connection_lock:
                 if len(self.active_connections) == 0 and not self._is_processing:
-                    print("[SAM2 Worker] No connections and not processing, shutting down...")
+                    print("[Segmentation Worker] No connections and not processing, shutting down...")
                     self.stop()
-                    print("[SAM2 Worker] Exiting process...")
+                    print("[Segmentation Worker] Exiting process...")
                     os._exit(0)
 
         if self.shutdown_timer:
@@ -431,7 +431,7 @@ class SAM2TCPServer:
             del self._segmentor
             self._segmentor = None
             torch.cuda.empty_cache()
-            print("[SAM2 Worker] GPU memory cleared")
+            print("[Segmentation Worker] GPU memory cleared")
 
         cleanup_port_files()
 
@@ -440,7 +440,7 @@ def main():
     """Main entry point for standalone server."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="SAM2 TCP Worker Server")
+    parser = argparse.ArgumentParser(description="Segmentation TCP Worker Server")
     parser.add_argument(
         "--port",
         type=int,
@@ -449,10 +449,10 @@ def main():
     )
     args = parser.parse_args()
 
-    server = SAM2TCPServer(port=args.port)
+    server = SegmentationTCPServer(port=args.port)
 
     def signal_handler(signum, frame):
-        print("\n[SAM2 Worker] Received shutdown signal, cleaning up...")
+        print("\n[Segmentation Worker] Received shutdown signal, cleaning up...")
         server.stop()
         sys.exit(0)
 
@@ -462,7 +462,7 @@ def main():
     try:
         server.start()
     except KeyboardInterrupt:
-        print("\n[SAM2 Worker] Interrupted, shutting down...")
+        print("\n[Segmentation Worker] Interrupted, shutting down...")
         server.stop()
     finally:
         cleanup_port_files()
