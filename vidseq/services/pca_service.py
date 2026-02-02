@@ -9,7 +9,6 @@ import pickle
 from functools import partial
 from pathlib import Path
 
-import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib
@@ -17,6 +16,8 @@ matplotlib.use('Agg')  # Headless backend
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+
+from vidseq.services.h5_storage import aligned_h5, pca_scores_h5
 
 logger = logging.getLogger(__name__)
 
@@ -433,14 +434,13 @@ def _compute_and_store_scores(
     scores_dir.mkdir(exist_ok=True)
 
     for h5_path in tqdm(h5_files, desc="Computing scores"):
-        video_id = h5_path.stem
-        scores_path = scores_dir / f"{video_id}.h5"
+        video_id = int(h5_path.stem)
 
-        with h5py.File(h5_path, "r") as f_in:
+        with aligned_h5(project_path, video_id, "r") as f_in:
             masks = f_in["masks"]
             n_frames = masks.shape[0]
 
-            with h5py.File(scores_path, "w") as f_out:
+            with pca_scores_h5(project_path, video_id, "w") as f_out:
                 # Pre-allocate scores dataset
                 scores_ds = f_out.create_dataset(
                     "scores",
@@ -484,7 +484,8 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     logger.info(f"[PCA] Found {len(h5_files)} aligned mask files")
 
     # Get mask dimensions from first file
-    with h5py.File(h5_files[0], "r") as f:
+    first_video_id = int(h5_files[0].stem)
+    with aligned_h5(project_path, first_video_id, "r") as f:
         mask_shape = f["masks"].shape
         height, width = mask_shape[1], mask_shape[2]
         logger.info(f"[PCA] Mask dimensions: {height}x{width} ({height * width} features)")
@@ -496,8 +497,9 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     total_frames = 0
     for h5_path in h5_files:
         logger.info(f"[PCA] Processing {h5_path.name}")
+        video_id = int(h5_path.stem)
 
-        with h5py.File(h5_path, "r") as f:
+        with aligned_h5(project_path, video_id, "r") as f:
             masks = f["masks"]
             n_frames = masks.shape[0]
             total_frames += n_frames
@@ -624,7 +626,7 @@ def get_pca_scores_downsampled(
     if not scores_path.exists():
         raise FileNotFoundError(f"PCA scores not found for video {video_id}")
 
-    with h5py.File(scores_path, "r") as f:
+    with pca_scores_h5(project_path, video_id, "r") as f:
         scores_ds = f["scores"]
         n_frames, n_components = scores_ds.shape
 
