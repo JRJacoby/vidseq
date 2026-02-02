@@ -1,8 +1,9 @@
 """Mask storage - per-video HDF5 files for segmentation masks.
 
 This module handles storage of binary segmentation masks in per-video HDF5 files.
-Each video's masks are stored in a separate file at `masks/{video_id}.h5`, which
-allows concurrent writes to different videos without locking conflicts.
+Each video's masks are stored in a directory at `array_data/{video_id}/` with separate
+files for tracker, detector, and final masks, allowing concurrent writes to different
+videos without locking conflicts.
 """
 
 import os
@@ -33,30 +34,6 @@ def close_all_h5() -> None:
         except Exception:
             pass
     _cache.clear()
-
-
-def _get_masks_dir(project_path: Path, mask_subdir: str = "masks") -> Path:
-    """Get the masks directory for a project.
-
-    Args:
-        project_path: Path to the project folder
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
-    """
-    return project_path / mask_subdir
-
-
-def _get_video_h5_path(
-    project_path: Path, video_id: int, mask_subdir: str = "masks", suffix: str = ""
-) -> Path:
-    """Get path to the HDF5 file for a specific video's masks.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
-        suffix: Optional suffix like "_detector" or "_final"
-    """
-    return _get_masks_dir(project_path, mask_subdir) / f"{video_id}{suffix}.h5"
 
 
 def _get_lock_path(h5_path: Path) -> Path:
@@ -203,36 +180,6 @@ def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
         yield f
 
 
-@contextmanager
-def open_video_h5(
-    project_path: Path,
-    video_id: int,
-    mode: str,
-    mask_subdir: str = "masks",
-    suffix: str = "",
-):
-    """Context manager for per-video HDF5 mask file access with file locking.
-
-    DEPRECATED: Prefer using the explicit openers (open_tracker_h5, open_detector_h5, etc.)
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        mode: File mode - 'r' for read-only, 'a' for append/write
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
-        suffix: Optional suffix like "_detector" or "_final"
-
-    Yields:
-        h5py.File: The opened HDF5 file handle
-    """
-    if not project_path.exists():
-        raise FileNotFoundError(f"Project path does not exist: {project_path}")
-
-    h5_path = project_path / mask_subdir / f"{video_id}{suffix}.h5"
-    with open_h5_with_lock(h5_path, mode) as f:
-        yield f
-
-
 def _ensure_dataset(
     h5_file: h5py.File,
     num_frames: int,
@@ -261,9 +208,8 @@ def save_mask(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
-    mask_subdir: str = "masks",
 ) -> None:
-    """Save a mask to the per-video HDF5 file.
+    """Save a tracker mask to the HDF5 file (array_data/{video_id}/tracker_masks.h5).
 
     Args:
         project_path: Path to the project folder
@@ -274,13 +220,12 @@ def save_mask(
         height: Video height in pixels
         width: Video width in pixels
         h5_file: Optional pre-opened h5py.File in write mode
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
     """
     if h5_file is not None:
         _ensure_dataset(h5_file, num_frames, height, width)
         h5_file["masks"][frame_idx] = mask
     else:
-        with open_video_h5(project_path, video_id, "a", mask_subdir) as f:
+        with tracker_h5(project_path, video_id, "a") as f:
             _ensure_dataset(f, num_frames, height, width)
             f["masks"][frame_idx] = mask
             f.flush()
@@ -294,9 +239,8 @@ def load_mask(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
-    mask_subdir: str = "masks",
 ) -> np.ndarray:
-    """Load a mask from the per-video HDF5 file.
+    """Load a tracker mask from the HDF5 file (array_data/{video_id}/tracker_masks.h5).
 
     Returns zeros if the file or dataset doesn't exist.
 
@@ -308,7 +252,6 @@ def load_mask(
         height: Video height in pixels
         width: Video width in pixels
         h5_file: Optional pre-opened h5py.File
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
 
     Returns:
         Mask array (height, width) with dtype uint8
@@ -321,14 +264,14 @@ def load_mask(
         print(f"[DEBUG load_mask] from h5_file: frame={frame_idx}, sum={int(mask.sum())}")
         return mask
 
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     print(f"[DEBUG load_mask] h5_path={h5_path}, exists={h5_path.exists()}")
     if not h5_path.exists():
         print(f"[DEBUG load_mask] file doesn't exist, returning zeros")
         return np.zeros((height, width), dtype=np.uint8)
 
     try:
-        with open_video_h5(project_path, video_id, "r", mask_subdir) as f:
+        with tracker_h5(project_path, video_id, "r") as f:
             if "masks" not in f:
                 print(f"[DEBUG load_mask] 'masks' dataset not in file")
                 return np.zeros((height, width), dtype=np.uint8)
@@ -350,9 +293,10 @@ def load_masks_batch(
     height: int,
     width: int,
     h5_file: Optional[h5py.File] = None,
-    mask_subdir: str = "masks",
 ) -> np.ndarray:
-    """Load multiple masks efficiently using HDF5 slice indexing.
+    """Load multiple tracker masks efficiently using HDF5 slice indexing.
+
+    Loads from array_data/{video_id}/tracker_masks.h5.
 
     Args:
         project_path: Path to the project folder
@@ -361,9 +305,8 @@ def load_masks_batch(
         count: Number of frames to load
         num_frames: Total number of frames in the video
         height: Video height in pixels
-        width: Video height in pixels
+        width: Video width in pixels
         h5_file: Optional pre-opened h5py.File
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
 
     Returns:
         Array of shape (actual_count, height, width) where actual_count
@@ -377,12 +320,12 @@ def load_masks_batch(
             return np.zeros((actual_count, height, width), dtype=np.uint8)
         return np.array(h5_file["masks"][start_frame:end_frame])
 
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     if not h5_path.exists():
         return np.zeros((actual_count, height, width), dtype=np.uint8)
 
     try:
-        with open_video_h5(project_path, video_id, "r", mask_subdir) as f:
+        with tracker_h5(project_path, video_id, "r") as f:
             if "masks" not in f:
                 return np.zeros((actual_count, height, width), dtype=np.uint8)
             return np.array(f["masks"][start_frame:end_frame])
@@ -395,16 +338,16 @@ def clear_mask(
     video_id: int,
     frame_idx: int,
     h5_file: Optional[h5py.File] = None,
-    mask_subdir: str = "masks",
 ) -> None:
-    """Clear (zero out) a mask for a specific frame.
+    """Clear (zero out) a tracker mask for a specific frame.
+
+    Operates on array_data/{video_id}/tracker_masks.h5.
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         frame_idx: Frame index (0-based)
         h5_file: Optional pre-opened h5py.File in write mode
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
     """
     if h5_file is not None:
         if "masks" in h5_file:
@@ -413,38 +356,15 @@ def clear_mask(
             h5_file.flush()
         return
 
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
     if not h5_path.exists():
         return
 
-    with open_video_h5(project_path, video_id, "a", mask_subdir) as f:
+    with tracker_h5(project_path, video_id, "a") as f:
         if "masks" in f:
             ds = f["masks"]
             ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
             f.flush()
-
-
-def clear_all_masks(
-    project_path: Path, video_id: int, mask_subdir: str = "masks"
-) -> None:
-    """Delete all masks for a video by removing the HDF5 file.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        mask_subdir: Subdirectory name ("masks", "cropped_masks", or "aligned_masks")
-    """
-    h5_path = _get_video_h5_path(project_path, video_id, mask_subdir)
-    lock_path = _get_lock_path(h5_path)
-
-    # Check for lock
-    if lock_path.exists():
-        raise RuntimeError(
-            f"Cannot delete - file is locked by another process: {lock_path}"
-        )
-
-    if h5_path.exists():
-        h5_path.unlink()
 
 
 def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
