@@ -683,7 +683,10 @@ def create_video_h5_files(
     """Create all segmentation H5 files for a video upfront.
 
     Creates tracker, detector, and final mask files with pre-allocated datasets.
-    Uses file locking via open_video_h5.
+    Files are stored in array_data/{video_id}/ directory:
+      - tracker_masks.h5: masks and logits
+      - detector_masks.h5: compressed masks
+      - final_masks.h5: masks
 
     Args:
         project_path: Path to the project folder
@@ -693,12 +696,12 @@ def create_video_h5_files(
         width: Video width in pixels
         logits_size: Size of low-res logits (SAM2=256)
     """
-    # Create masks directory
-    masks_dir = project_path / "masks"
-    masks_dir.mkdir(parents=True, exist_ok=True)
+    # Create video directory under array_data
+    video_dir = project_path / "array_data" / str(video_id)
+    video_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Tracker: {video_id}.h5 with 'masks' and 'logits'
-    with open_video_h5(project_path, video_id, mode="w") as f:
+    # 1. Tracker: tracker_masks.h5 with 'masks' and 'logits'
+    with tracker_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
             shape=(num_frames, height, width),
@@ -714,8 +717,8 @@ def create_video_h5_files(
             fillvalue=0.0,
         )
 
-    # 2. Detector: {video_id}_detector.h5 (compressed)
-    with open_video_h5(project_path, video_id, mode="w", suffix="_detector") as f:
+    # 2. Detector: detector_masks.h5 (compressed)
+    with detector_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
             shape=(num_frames, height, width),
@@ -725,8 +728,8 @@ def create_video_h5_files(
             fillvalue=0,
         )
 
-    # 3. Final: {video_id}_final.h5
-    with open_video_h5(project_path, video_id, mode="w", suffix="_final") as f:
+    # 3. Final: final_masks.h5
+    with final_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
             shape=(num_frames, height, width),
