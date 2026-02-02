@@ -1,10 +1,10 @@
 """
-SAM3 Service with TCP IPC.
+Segmentation Service with TCP IPC.
 
-Manages a separate worker process for SAM3 inference to avoid
+Manages a separate worker process for segmentation inference to avoid
 CUDA/signal conflicts with FastAPI's event loop.
 
-Uses SAM3's detector+tracker video model with point prompts and lazy frame loading.
+Uses detector+tracker video model with point prompts and lazy frame loading.
 Communicates with worker via TCP sockets.
 """
 
@@ -35,8 +35,8 @@ from vidseq.services.segmentation_config import (
 # ---------------------------------------------------------------------------
 
 
-class SAM3TCPClient:
-    """TCP client for SAM3 worker communication."""
+class SegmentationTCPClient:
+    """TCP client for segmentation worker communication."""
 
     def __init__(self):
         self.socket: Optional[socket.socket] = None
@@ -44,7 +44,7 @@ class SAM3TCPClient:
         self.port: Optional[int] = None
 
     def connect(self, host: str, port: int, timeout: float = 10.0) -> None:
-        """Connect to SAM3 worker server."""
+        """Connect to segmentation worker server."""
         if self.socket is not None:
             self.disconnect()
 
@@ -56,7 +56,7 @@ class SAM3TCPClient:
             self.port = port
         except Exception as e:
             self.socket = None
-            raise ConnectionError(f"Failed to connect to SAM3 worker at {host}:{port}: {e}")
+            raise ConnectionError(f"Failed to connect to segmentation worker at {host}:{port}: {e}")
 
     def disconnect(self) -> None:
         """Close connection to server."""
@@ -72,7 +72,7 @@ class SAM3TCPClient:
     def send_command(self, cmd: dict, timeout: float = 120.0) -> dict:
         """Send command to server and wait for response."""
         if self.socket is None:
-            raise ConnectionError("Not connected to SAM3 worker")
+            raise ConnectionError("Not connected to segmentation worker")
 
         old_timeout = self.socket.gettimeout()
         self.socket.settimeout(timeout)
@@ -99,14 +99,14 @@ class SAM3TCPClient:
         except Exception as e:
             if isinstance(e, (ConnectionError, TimeoutError)):
                 raise
-            raise ConnectionError(f"Error communicating with SAM3 worker: {e}")
+            raise ConnectionError(f"Error communicating with segmentation worker: {e}")
         finally:
             self.socket.settimeout(old_timeout)
 
     def send_command_streaming(self, cmd: dict, timeout: float = 120.0):
         """Send command to server and yield multiple responses."""
         if self.socket is None:
-            raise ConnectionError("Not connected to SAM3 worker")
+            raise ConnectionError("Not connected to segmentation worker")
 
         old_timeout = self.socket.gettimeout()
         self.socket.settimeout(timeout)
@@ -141,7 +141,7 @@ class SAM3TCPClient:
         except Exception as e:
             if isinstance(e, (ConnectionError, TimeoutError)):
                 raise
-            raise ConnectionError(f"Error communicating with SAM3 worker: {e}")
+            raise ConnectionError(f"Error communicating with segmentation worker: {e}")
         finally:
             self.socket.settimeout(old_timeout)
 
@@ -195,7 +195,7 @@ def _decode_mask_rle(mask_rle: str, shape: tuple[int, ...], dtype: str = "uint8"
     return flat_array.reshape(shape).astype(dtype)
 
 
-class SAM3Status(str, Enum):
+class SegmentationStatus(str, Enum):
     NOT_LOADED = "not_loaded"
     LOADING_MODEL = "loading_model"
     READY = "ready"
@@ -215,18 +215,18 @@ class VideoSessionInfo:
     has_object: bool = False
 
 
-class SAM3Service:
+class SegmentationService:
     """
-    Singleton service for managing SAM3 inference.
+    Singleton service for managing segmentation inference.
 
     Manages a separate worker process to avoid CUDA/signal conflicts
     with FastAPI's event loop.
     """
 
-    _instance: Optional["SAM3Service"] = None
+    _instance: Optional["SegmentationService"] = None
     _lock = threading.Lock()
 
-    def __new__(cls) -> "SAM3Service":
+    def __new__(cls) -> "SegmentationService":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -239,8 +239,8 @@ class SAM3Service:
             return
 
         self._worker_process: Optional[subprocess.Popen] = None
-        self._tcp_client: Optional[SAM3TCPClient] = None
-        self._status = SAM3Status.NOT_LOADED
+        self._tcp_client: Optional[SegmentationTCPClient] = None
+        self._status = SegmentationStatus.NOT_LOADED
         self._error_message: Optional[str] = None
         # Sessions keyed by (project_id, video_id) to avoid collisions across projects
         self._sessions: dict[tuple[int, int], VideoSessionInfo] = {}
@@ -248,7 +248,7 @@ class SAM3Service:
         self._initialized = True
 
     @classmethod
-    def get_instance(cls) -> "SAM3Service":
+    def get_instance(cls) -> "SegmentationService":
         """Get the singleton instance."""
         return cls()
 
@@ -261,15 +261,15 @@ class SAM3Service:
                 cls._instance = None
 
     def get_status(self) -> dict:
-        """Get the current SAM3 loading status."""
+        """Get the current segmentation loading status."""
         # Only check if worker is running if we have a client connection
         # This avoids creating new connections on every status check
-        if self._status == SAM3Status.READY:
+        if self._status == SegmentationStatus.READY:
             # If we have a client, assume it's still connected unless we get an error
             # Only check worker if we don't have a client
             if self._tcp_client is None:
                 if not is_sam3_worker_running():
-                    self._status = SAM3Status.NOT_LOADED
+                    self._status = SegmentationStatus.NOT_LOADED
                     self._worker_process = None
                     self._sessions.clear()
 
@@ -279,25 +279,25 @@ class SAM3Service:
         }
 
     def _start_worker(self) -> None:
-        """Start the SAM3 worker process and begin loading the model."""
+        """Start the segmentation worker process and begin loading the model."""
         # Check if worker is already running
         if is_sam3_worker_running():
             port = get_sam3_port()
             if port:
-                self._tcp_client = SAM3TCPClient()
+                self._tcp_client = SegmentationTCPClient()
                 try:
                     self._tcp_client.connect("localhost", port)
                     # Still need to load model - worker may have been started manually
-                    self._status = SAM3Status.LOADING_MODEL
+                    self._status = SegmentationStatus.LOADING_MODEL
                     result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
                     if result.get("status") == "ready":
-                        self._status = SAM3Status.READY
+                        self._status = SegmentationStatus.READY
                     else:
-                        self._status = SAM3Status.ERROR
+                        self._status = SegmentationStatus.ERROR
                         self._error_message = result.get("error", "Unknown error loading model")
                     return
                 except Exception as e:
-                    print(f"[SAM3 Service] Failed to connect to existing worker: {e}")
+                    print(f"[Segmentation Service] Failed to connect to existing worker: {e}")
                     self._tcp_client = None
 
         # Start new worker process
@@ -323,36 +323,36 @@ class SAM3Service:
             time.sleep(0.1)
 
         if port is None:
-            self._status = SAM3Status.ERROR
-            self._error_message = "Failed to start SAM3 worker (timeout waiting for port file)"
+            self._status = SegmentationStatus.ERROR
+            self._error_message = "Failed to start segmentation worker (timeout waiting for port file)"
             return
 
         # Connect to worker
-        self._tcp_client = SAM3TCPClient()
+        self._tcp_client = SegmentationTCPClient()
         try:
             self._tcp_client.connect("localhost", port, timeout=10.0)
         except Exception as e:
-            self._status = SAM3Status.ERROR
-            self._error_message = f"Failed to connect to SAM3 worker: {e}"
+            self._status = SegmentationStatus.ERROR
+            self._error_message = f"Failed to connect to segmentation worker: {e}"
             self._tcp_client = None
             return
 
-        self._status = SAM3Status.LOADING_MODEL
+        self._status = SegmentationStatus.LOADING_MODEL
 
         # Send load_model command
         try:
             result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
             if result.get("status") == "ready":
-                self._status = SAM3Status.READY
+                self._status = SegmentationStatus.READY
             elif result.get("status") == "error":
-                self._status = SAM3Status.ERROR
+                self._status = SegmentationStatus.ERROR
                 self._error_message = result.get("error", "Unknown error")
         except Exception as e:
-            self._status = SAM3Status.ERROR
+            self._status = SegmentationStatus.ERROR
             self._error_message = str(e)
 
     def start_loading_in_background(self) -> None:
-        """Start loading SAM3 model in background (via worker process)."""
+        """Start loading segmentation model in background (via worker process)."""
         # Don't start if YOLO is training (to avoid GPU memory conflicts)
         try:
             from vidseq.services import yolo_service
@@ -362,22 +362,22 @@ class SAM3Service:
         except Exception:
             pass
 
-        if self._status == SAM3Status.NOT_LOADED:
+        if self._status == SegmentationStatus.NOT_LOADED:
             self._start_worker()
 
     def _ensure_worker_ready(self) -> None:
         """Ensure worker is running and model is loaded."""
-        if self._status != SAM3Status.READY:
-            raise RuntimeError("SAM3 model not loaded. Call preload first.")
+        if self._status != SegmentationStatus.READY:
+            raise RuntimeError("segmentation model not loaded. Call preload first.")
 
         # Only create client if it doesn't exist
         # Don't check is_connected() here - let send_command() handle connection errors
         if self._tcp_client is None:
             if not is_sam3_worker_running():
-                raise RuntimeError("SAM3 worker process not running.")
+                raise RuntimeError("segmentation worker process not running.")
             port = get_sam3_port()
             if port:
-                self._tcp_client = SAM3TCPClient()
+                self._tcp_client = SegmentationTCPClient()
                 self._tcp_client.connect("localhost", port)
 
     def _send_and_wait(self, cmd: dict, timeout: float = 120.0) -> dict:
@@ -395,11 +395,11 @@ class SAM3Service:
             if result.get("type") == "status":
                 status_str = result.get("status")
                 if status_str == "loading_model":
-                    self._status = SAM3Status.LOADING_MODEL
+                    self._status = SegmentationStatus.LOADING_MODEL
                 elif status_str == "ready":
-                    self._status = SAM3Status.READY
+                    self._status = SegmentationStatus.READY
                 elif status_str == "error":
-                    self._status = SAM3Status.ERROR
+                    self._status = SegmentationStatus.ERROR
                     self._error_message = result.get("error")
 
             return result
@@ -408,7 +408,7 @@ class SAM3Service:
             if isinstance(e, (ConnectionError, TimeoutError)) or "Connection" in str(e):
                 self._tcp_client = None
                 # Don't change status - might be temporary connection issue
-            raise RuntimeError(f"Failed to communicate with SAM3 worker: {e}") from e
+            raise RuntimeError(f"Failed to communicate with segmentation worker: {e}") from e
 
     def _send_streaming(self, cmd: dict, timeout: float = 120.0) -> dict:
         """Send a command and stream responses until final result.
@@ -429,7 +429,7 @@ class SAM3Service:
                 if resp_type == "progress":
                     frame_idx = response.get("frame_idx", 0)
                     total = response.get("total", 0)
-                    print(f"[SAM3 Service] Progress: {frame_idx}/{total}")
+                    print(f"[Segmentation Service] Progress: {frame_idx}/{total}")
                     continue
                 # Final result
                 final_result = response
@@ -437,7 +437,7 @@ class SAM3Service:
         except Exception as e:
             if isinstance(e, (ConnectionError, TimeoutError)) or "Connection" in str(e):
                 self._tcp_client = None
-            raise RuntimeError(f"Failed to communicate with SAM3 worker: {e}") from e
+            raise RuntimeError(f"Failed to communicate with segmentation worker: {e}") from e
 
     def init_session(self, project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
         """Initialize a segmentation session for a video."""
@@ -849,20 +849,20 @@ class SAM3Service:
             return []
 
         # Ensure model is loaded
-        if self._status == SAM3Status.NOT_LOADED:
+        if self._status == SegmentationStatus.NOT_LOADED:
             self.start_loading_in_background()
 
         # Wait if still loading
         timeout = 600.0
         start_time = time.time()
-        while self._status == SAM3Status.LOADING_MODEL and time.time() - start_time < timeout:
+        while self._status == SegmentationStatus.LOADING_MODEL and time.time() - start_time < timeout:
             time.sleep(1.0)
 
         self._ensure_worker_ready()
 
         # Process each video sequentially
         for video in videos:
-            print(f"[SAM3 Service] Segmenting video {video.id} ({video.name})...")
+            print(f"[Segmentation Service] Segmenting video {video.id} ({video.name})...")
 
             # Initialize session (this also loads detector masks)
             try:
@@ -878,7 +878,7 @@ class SAM3Service:
                 }, timeout=600.0)
 
                 if result.get("status") != "ok":
-                    print(f"[SAM3 Service] Failed to init session for video {video.id}: {result.get('error')}")
+                    print(f"[Segmentation Service] Failed to init session for video {video.id}: {result.get('error')}")
                     continue
 
                 # Run propagate_with_detector (uses streaming for progress callbacks)
@@ -891,10 +891,10 @@ class SAM3Service:
 
                 if result.get("status") == "ok":
                     frames_corrected = result.get("frames_corrected", 0)
-                    print(f"[SAM3 Service] Video {video.id} complete: "
+                    print(f"[Segmentation Service] Video {video.id} complete: "
                           f"{video.num_frames} frames, {frames_corrected} corrected by detector")
                 else:
-                    print(f"[SAM3 Service] Failed to segment video {video.id}: {result.get('error')}")
+                    print(f"[Segmentation Service] Failed to segment video {video.id}: {result.get('error')}")
 
                 # Close session
                 self._send_and_wait({
@@ -903,7 +903,7 @@ class SAM3Service:
                 }, timeout=30.0)
 
             except Exception as e:
-                print(f"[SAM3 Service] Error segmenting video {video.id}: {e}")
+                print(f"[Segmentation Service] Error segmenting video {video.id}: {e}")
                 # Try to close session on error
                 try:
                     self._send_and_wait({
@@ -929,33 +929,33 @@ class SAM3Service:
         # used by other clients (e.g., job executor). The worker will auto-shutdown
         # when no connections remain.
         self._worker_process = None
-        self._status = SAM3Status.NOT_LOADED
+        self._status = SegmentationStatus.NOT_LOADED
         self._sessions.clear()
 
 
 def get_status() -> dict:
-    """Get the current SAM3 loading status."""
-    return SAM3Service.get_instance().get_status()
+    """Get the current segmentation loading status."""
+    return SegmentationService.get_instance().get_status()
 
 
 def start_loading_in_background() -> None:
-    """Start loading SAM3 model in background (via worker process)."""
-    SAM3Service.get_instance().start_loading_in_background()
+    """Start loading segmentation model in background (via worker process)."""
+    SegmentationService.get_instance().start_loading_in_background()
 
 
 def init_session(project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
     """Initialize a segmentation session for a video."""
-    return SAM3Service.get_instance().init_session(project_id, video_id, video_path, project_path)
+    return SegmentationService.get_instance().init_session(project_id, video_id, video_path, project_path)
 
 
 def get_session(project_id: int, video_id: int) -> Optional[VideoSessionInfo]:
     """Get session info if it exists."""
-    return SAM3Service.get_instance().get_session(project_id, video_id)
+    return SegmentationService.get_instance().get_session(project_id, video_id)
 
 
 def close_session(project_id: int, video_id: int) -> bool:
     """Close a video session."""
-    return SAM3Service.get_instance().close_session(project_id, video_id)
+    return SegmentationService.get_instance().close_session(project_id, video_id)
 
 
 def add_point_prompt(
@@ -984,7 +984,7 @@ def add_point_prompt(
     Returns:
         Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
-    return SAM3Service.get_instance().add_point_prompt(
+    return SegmentationService.get_instance().add_point_prompt(
         project_id, video_id, video_path, project_path, frame_idx, x, y, label
     )
 
@@ -1009,7 +1009,7 @@ def refine_mask(
     Returns:
         Refined binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
-    return SAM3Service.get_instance().refine_mask(
+    return SegmentationService.get_instance().refine_mask(
         project_id, video_id, frame_idx, points, labels
     )
 
@@ -1030,7 +1030,7 @@ def propagate(
     Returns:
         Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
-    return SAM3Service.get_instance().propagate(project_id, video_id, frame_idx)
+    return SegmentationService.get_instance().propagate(project_id, video_id, frame_idx)
 
 
 def reset_frame(
@@ -1048,7 +1048,7 @@ def reset_frame(
         project_path: Path to the project folder
         frame_idx: Frame index to reset
     """
-    SAM3Service.get_instance().reset_frame(project_id, video_id, project_path, frame_idx)
+    SegmentationService.get_instance().reset_frame(project_id, video_id, project_path, frame_idx)
 
 
 def reset_frame_memory(
@@ -1067,7 +1067,7 @@ def reset_frame_memory(
         video_id: ID of the video
         frame_idx: Frame index to clear from memory
     """
-    SAM3Service.get_instance().reset_frame_memory(project_id, video_id, frame_idx)
+    SegmentationService.get_instance().reset_frame_memory(project_id, video_id, frame_idx)
 
 
 def reset_video(
@@ -1083,7 +1083,7 @@ def reset_video(
         video_id: ID of the video
         project_path: Path to the project folder
     """
-    SAM3Service.get_instance().reset_video(project_id, video_id, project_path)
+    SegmentationService.get_instance().reset_video(project_id, video_id, project_path)
 
 
 def generate_training_masks(
@@ -1097,14 +1097,14 @@ def generate_training_masks(
     width: int,
 ) -> list[int]:
     """Generate training masks by propagating tracking forward and save to H5."""
-    return SAM3Service.get_instance().generate_training_masks(
+    return SegmentationService.get_instance().generate_training_masks(
         project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
     )
 
 
 def shutdown_worker() -> None:
     """Shutdown the worker process gracefully."""
-    SAM3Service.get_instance().shutdown()
+    SegmentationService.get_instance().shutdown()
 
 
 async def segment_all_videos(
@@ -1113,6 +1113,6 @@ async def segment_all_videos(
     videos: list,
 ) -> list[int]:
     """Start batch segmentation for all videos using detector-tracker approach."""
-    return await SAM3Service.get_instance().segment_all_videos(
+    return await SegmentationService.get_instance().segment_all_videos(
         project_id, project_path, videos
     )
