@@ -27,10 +27,10 @@ async def train_model(
     if service.is_training():
         raise HTTPException(status_code=400, detail="Training already in progress")
     
-    # Shutdown SAM3 to free GPU memory before training
-    sam3_status = segmentation_tcp_client.get_status()
-    if sam3_status["status"] == "ready":
-        print("[YOLO API] Shutting down SAM3 to free GPU memory for training...")
+    # Shutdown segmentation worker to free GPU memory before training
+    segmentation_status = segmentation_tcp_client.get_status()
+    if segmentation_status["status"] == "ready":
+        print("[YOLO API] Shutting down segmentation worker to free GPU memory for training...")
         segmentation_tcp_client.shutdown_worker()
     
     try:
