@@ -98,6 +98,54 @@ def open_h5_with_lock(h5_path: Path, mode: str):
 
 
 @contextmanager
+def open_tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open tracker masks H5 file: masks/{video_id}.h5"""
+    h5_path = project_path / "masks" / f"{video_id}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def open_detector_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open detector masks H5 file: masks/{video_id}_detector.h5"""
+    h5_path = project_path / "masks" / f"{video_id}_detector.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def open_final_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open final masks H5 file: masks/{video_id}_final.h5"""
+    h5_path = project_path / "masks" / f"{video_id}_final.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def open_cropped_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open cropped masks H5 file: cropped_masks/{video_id}.h5"""
+    h5_path = project_path / "cropped_masks" / f"{video_id}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def open_aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open aligned masks H5 file: aligned_masks/{video_id}.h5"""
+    h5_path = project_path / "aligned_masks" / f"{video_id}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
+def open_predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Open predictions H5 file: predictions/{video_id}.h5"""
+    h5_path = project_path / "predictions" / f"{video_id}.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
 def open_video_h5(
     project_path: Path,
     video_id: int,
