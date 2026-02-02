@@ -43,17 +43,15 @@
 
 Concrete improvements with estimated impact.
 
-### 2.1 GPU Transfer Inefficiency
+### 2.1 GPU Transfer Inefficiency - RESOLVED
 
-**Impact:** 4x larger transfers (float32 vs uint8)
+**Status:** Fixed in commit `perf(streaming_segmentor): do GPU dtype conversion before CPU transfer`
 
-**What:** Pattern `(tensor > 0).cpu().numpy().astype(np.uint8) * 255` transfers float32, then converts on CPU.
+**Impact:** 4x smaller transfers (uint8 vs float32)
 
-**Locations:** `vidseq/services/sam2/streaming_segmentor.py:658, 667, 780, 788`
-
-**Fix per CLAUDE.md:**
+**Resolution:** Changed 5 occurrences of the pattern to do dtype conversion on GPU before transfer:
 ```python
-# Before (inefficient):
+# Before:
 mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
 
 # After:
@@ -134,7 +132,7 @@ Things that will make future changes harder.
 
 | # | Issue | Location | Status |
 |---|-------|----------|--------|
-| 3 | Fix GPU transfer patterns - do dtype conversion on GPU | streaming_segmentor.py | |
+| 3 | ~~Fix GPU transfer patterns - do dtype conversion on GPU~~ | streaming_segmentor.py | DONE |
 | 4 | ~~Add H5 locking to alignment_service and cropped_video_service~~ | alignment_service.py, cropped_video_service.py | DONE |
 
 ### P2 - Improve Later
@@ -155,7 +153,7 @@ Things that will make future changes harder.
 | Category | Critical | High | Medium | Low | Resolved |
 |----------|----------|------|--------|-----|----------|
 | Resource Leaks | ~~3~~ | - | - | - | 3 |
-| Performance | - | 1 | - | - | - |
+| Performance | - | ~~1~~ | - | - | 1 |
 | Maintainability | - | 1 | 4 | - | - |
 | API/Validation | - | - | 3 | - | - |
 
