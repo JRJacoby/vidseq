@@ -189,8 +189,8 @@ def aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
 
 @contextmanager
 def predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for predictions H5 file: predictions/{video_id}.h5"""
-    h5_path = project_path / "predictions" / f"{video_id}.h5"
+    """Context manager for alignment predictions H5 file: alignment_predictions/{video_id}.h5"""
+    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
     with open_h5_with_lock(h5_path, mode) as f:
         yield f
 

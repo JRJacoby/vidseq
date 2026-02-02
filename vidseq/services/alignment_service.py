@@ -21,10 +21,9 @@ from typing import Optional
 # Disable HDF5's internal file locking (we use our own approach)
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
-import h5py
 import imageio_ffmpeg
 
-from vidseq.services.h5_storage import open_cropped_h5, open_aligned_h5, open_predictions_h5
+from vidseq.services.h5_storage import cropped_h5, aligned_h5, predictions_h5
 
 import cv2
 import numpy as np
@@ -865,16 +864,6 @@ def heatmap_to_png(heatmap: np.ndarray) -> bytes:
 # --- Prediction Storage (HDF5) ---
 
 
-def _get_predictions_dir(project_path: Path) -> Path:
-    """Get the alignment predictions directory for a project."""
-    return project_path / "alignment_predictions"
-
-
-def _get_predictions_h5_path(project_path: Path, video_id: int) -> Path:
-    """Get path to the HDF5 file for a video's alignment predictions."""
-    return _get_predictions_dir(project_path) / f"{video_id}.h5"
-
-
 def save_prediction(
     project_path: Path,
     video_id: int,
@@ -889,12 +878,7 @@ def save_prediction(
         frame_idx: Frame index
         heatmap: (H, W, 2) float32 array with front/rear probabilities
     """
-    predictions_dir = _get_predictions_dir(project_path)
-    predictions_dir.mkdir(parents=True, exist_ok=True)
-
-    h5_path = _get_predictions_h5_path(project_path, video_id)
-
-    with h5py.File(h5_path, "a") as f:
+    with predictions_h5(project_path, video_id, "a") as f:
         # Create predictions group if it doesn't exist
         if "predictions" not in f:
             f.create_group("predictions")
@@ -930,13 +914,12 @@ def load_prediction(
     Returns:
         (H, W, 2) float32 array or None if not found
     """
-    h5_path = _get_predictions_h5_path(project_path, video_id)
-
+    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
     if not h5_path.exists():
         return None
 
     try:
-        with h5py.File(h5_path, "r") as f:
+        with predictions_h5(project_path, video_id, "r") as f:
             if "predictions" not in f:
                 return None
 
@@ -962,13 +945,12 @@ def predictions_exist(project_path: Path, video_id: int) -> bool:
     Returns:
         True if predictions HDF5 file exists and has data
     """
-    h5_path = _get_predictions_h5_path(project_path, video_id)
-
+    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
     if not h5_path.exists():
         return False
 
     try:
-        with h5py.File(h5_path, "r") as f:
+        with predictions_h5(project_path, video_id, "r") as f:
             if "predictions" not in f:
                 return False
             return len(f["predictions"]) > 0
@@ -2178,9 +2160,9 @@ class AlignmentService:
                     continue
 
                 # Use context managers for H5 files with proper locking
-                with open_cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
-                     open_aligned_h5(project_path, video.id, "w") as aligned_mask_h5, \
-                     open_predictions_h5(project_path, video.id, "w") as predictions_h5:
+                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
+                     aligned_h5(project_path, video.id, "w") as aligned_mask_h5, \
+                     predictions_h5(project_path, video.id, "w") as preds_h5:
 
                     # Get mask dimensions from cropped masks (may differ from video dimensions)
                     mask_shape = cropped_mask_h5["masks"].shape
@@ -2197,7 +2179,7 @@ class AlignmentService:
                     )
 
                     # Create predictions dataset
-                    predictions_h5.create_dataset(
+                    preds_h5.create_dataset(
                         "heatmaps",
                         shape=(frame_count, height, width, 2),
                         dtype=np.float32,
@@ -2216,7 +2198,7 @@ class AlignmentService:
                         heatmap = self.predict_sync(project_path, frame)
 
                         # Save prediction for debugging
-                        predictions_h5["heatmaps"][frame_idx] = heatmap
+                        preds_h5["heatmaps"][frame_idx] = heatmap
 
                         # Find keypoints using DARK post-processing for sub-pixel accuracy
                         front_heatmap = heatmap[:, :, 0]
