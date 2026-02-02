@@ -25,8 +25,8 @@ from typing import Optional
 import numpy as np
 
 from vidseq.services.segmentation_config import (
-    get_sam3_port,
-    is_sam3_worker_running,
+    get_segmentation_port,
+    is_segmentation_worker_running,
 )
 
 
@@ -268,7 +268,7 @@ class SegmentationService:
             # If we have a client, assume it's still connected unless we get an error
             # Only check worker if we don't have a client
             if self._tcp_client is None:
-                if not is_sam3_worker_running():
+                if not is_segmentation_worker_running():
                     self._status = SegmentationStatus.NOT_LOADED
                     self._worker_process = None
                     self._sessions.clear()
@@ -281,8 +281,8 @@ class SegmentationService:
     def _start_worker(self) -> None:
         """Start the segmentation worker process and begin loading the model."""
         # Check if worker is already running
-        if is_sam3_worker_running():
-            port = get_sam3_port()
+        if is_segmentation_worker_running():
+            port = get_segmentation_port()
             if port:
                 self._tcp_client = SegmentationTCPClient()
                 try:
@@ -317,7 +317,7 @@ class SegmentationService:
         port = None
 
         while time.time() - start_time < timeout:
-            port = get_sam3_port()
+            port = get_segmentation_port()
             if port is not None:
                 break
             time.sleep(0.1)
@@ -373,9 +373,9 @@ class SegmentationService:
         # Only create client if it doesn't exist
         # Don't check is_connected() here - let send_command() handle connection errors
         if self._tcp_client is None:
-            if not is_sam3_worker_running():
+            if not is_segmentation_worker_running():
                 raise RuntimeError("segmentation worker process not running.")
-            port = get_sam3_port()
+            port = get_segmentation_port()
             if port:
                 self._tcp_client = SegmentationTCPClient()
                 self._tcp_client.connect("localhost", port)
