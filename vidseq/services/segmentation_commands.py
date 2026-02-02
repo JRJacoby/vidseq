@@ -222,79 +222,98 @@ def handle_init_session(
     if video_id in _video_resources:
         _close_video_resources(video_id, segmentor)
 
-    # Open frame source
-    frame_source = VideoFrameSource(video_path)
-
-    # Open/create mask file with both masks and logits datasets
-    mask_path = _get_mask_path(project_path, video_id)
-    mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
-        mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
-    )
-
-    # Open detector masks if available
-    detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
+    # Track resources for cleanup on failure
+    frame_source = None
+    mask_file = None
     detector_file = None
-    detector_masks = None
-    if detector_h5_path.exists():
-        try:
-            detector_file = h5py.File(detector_h5_path, "r")
-            if "masks" in detector_file:
-                detector_masks = detector_file["masks"]
-                print(f"[SAM2 Worker] Loaded detector masks from {detector_h5_path}")
-            else:
-                # No masks dataset - close file handle
-                print(f"[SAM2 Worker] Warning: No 'masks' dataset in {detector_h5_path}")
-                detector_file.close()
-                detector_file = None
-        except Exception as e:
-            print(f"[SAM2 Worker] Warning: Failed to load detector masks: {e}")
-            if detector_file is not None:
-                detector_file.close()
-                detector_file = None
-
-    # Open/create final masks file if detector masks available
     final_file = None
-    final_masks = None
-    if detector_masks is not None:
-        final_h5_path = project_path / "masks" / f"{video_id}_final.h5"
-        try:
-            final_file = h5py.File(final_h5_path, "a")
-            if "masks" not in final_file:
-                final_file.create_dataset(
-                    "masks",
-                    shape=(num_frames, height, width),
-                    dtype=np.uint8,
-                    chunks=(1, height, width),
-                    fillvalue=0,
-                )
-            final_masks = final_file["masks"]
-            print(f"[SAM2 Worker] Opened final masks file: {final_h5_path}")
-        except Exception as e:
-            print(f"[SAM2 Worker] Warning: Failed to open final masks file: {e}")
-            if final_file is not None:
-                final_file.close()
-                final_file = None
-                final_masks = None
 
-    # Store resources
-    _video_resources[video_id] = VideoResources(
-        frame_source=frame_source,
-        mask_file=mask_file,
-        mask_dataset=mask_dataset,
-        logits_dataset=logits_dataset,
-        detector_file=detector_file,
-        detector_masks=detector_masks,
-        final_file=final_file,
-        final_masks=final_masks,
-    )
+    try:
+        # Open frame source
+        frame_source = VideoFrameSource(video_path)
 
-    # Initialize StreamingSegmentor session
-    # Session only holds modeling state - no H5 handles
-    segmentor.open_video(
-        video_id=str(video_id),
-        frame_dims=(height, width),
-        cond_frame_indices=cond_frame_indices,
-    )
+        # Open/create mask file with both masks and logits datasets
+        mask_path = _get_mask_path(project_path, video_id)
+        mask_file, mask_dataset, logits_dataset = _ensure_mask_dataset(
+            mask_path, num_frames, height, width, logits_size=segmentor.LOGITS_SIZE
+        )
+
+        # Open detector masks if available
+        detector_h5_path = project_path / "masks" / f"{video_id}_detector.h5"
+        detector_masks = None
+        if detector_h5_path.exists():
+            try:
+                detector_file = h5py.File(detector_h5_path, "r")
+                if "masks" in detector_file:
+                    detector_masks = detector_file["masks"]
+                    print(f"[SAM2 Worker] Loaded detector masks from {detector_h5_path}")
+                else:
+                    # No masks dataset - close file handle
+                    print(f"[SAM2 Worker] Warning: No 'masks' dataset in {detector_h5_path}")
+                    detector_file.close()
+                    detector_file = None
+            except Exception as e:
+                print(f"[SAM2 Worker] Warning: Failed to load detector masks: {e}")
+                if detector_file is not None:
+                    detector_file.close()
+                    detector_file = None
+
+        # Open/create final masks file if detector masks available
+        final_masks = None
+        if detector_masks is not None:
+            final_h5_path = project_path / "masks" / f"{video_id}_final.h5"
+            try:
+                final_file = h5py.File(final_h5_path, "a")
+                if "masks" not in final_file:
+                    final_file.create_dataset(
+                        "masks",
+                        shape=(num_frames, height, width),
+                        dtype=np.uint8,
+                        chunks=(1, height, width),
+                        fillvalue=0,
+                    )
+                final_masks = final_file["masks"]
+                print(f"[SAM2 Worker] Opened final masks file: {final_h5_path}")
+            except Exception as e:
+                print(f"[SAM2 Worker] Warning: Failed to open final masks file: {e}")
+                if final_file is not None:
+                    final_file.close()
+                    final_file = None
+                    final_masks = None
+
+        # Initialize StreamingSegmentor session BEFORE storing resources
+        # This way if it fails, we clean up and don't have orphaned entries
+        segmentor.open_video(
+            video_id=str(video_id),
+            frame_dims=(height, width),
+            cond_frame_indices=cond_frame_indices,
+            frames=frame_source,
+            masks=mask_dataset,
+        )
+
+        # Only store resources after everything succeeded
+        _video_resources[video_id] = VideoResources(
+            frame_source=frame_source,
+            mask_file=mask_file,
+            mask_dataset=mask_dataset,
+            logits_dataset=logits_dataset,
+            detector_file=detector_file,
+            detector_masks=detector_masks,
+            final_file=final_file,
+            final_masks=final_masks,
+        )
+
+    except Exception:
+        # Cleanup on failure - close in reverse order of opening
+        if final_file is not None:
+            final_file.close()
+        if detector_file is not None:
+            detector_file.close()
+        if mask_file is not None:
+            mask_file.close()
+        if frame_source is not None:
+            frame_source.close()
+        raise
 
     return {
         "type": "init_session_result",
