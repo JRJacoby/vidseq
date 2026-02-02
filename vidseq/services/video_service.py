@@ -177,7 +177,7 @@ async def reset_video(
         segmentation_tcp_client.close_session(project_id, video_id)
 
     # 3. Reset H5 files (all segmentation H5s: tracker, detector, final)
-    h5_storage.reset_video_h5_files(
+    h5_storage.reset_video_segmentation_files(
         project_path=project_path,
         video_id=video_id,
         num_frames=video.num_frames,

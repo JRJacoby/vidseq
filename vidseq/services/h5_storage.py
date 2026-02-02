@@ -739,19 +739,23 @@ def create_video_h5_files(
         )
 
 
-def delete_video_h5_files(project_path: Path, video_id: int) -> None:
+def delete_video_segmentation_files(project_path: Path, video_id: int) -> None:
     """Delete all segmentation H5 files for a video.
 
-    Deletes tracker, detector, and final mask files.
+    Deletes tracker, detector, and final mask files from array_data/{video_id}/.
     Does NOT touch cropped/aligned masks.
+
+    Also evicts any cached read handles for these files.
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
     """
-    masks_dir = project_path / "masks"
-    for suffix in ["", "_detector", "_final"]:
-        h5_path = masks_dir / f"{video_id}{suffix}.h5"
+    video_dir = project_path / "array_data" / str(video_id)
+    file_names = ["tracker_masks.h5", "detector_masks.h5", "final_masks.h5"]
+
+    for file_name in file_names:
+        h5_path = video_dir / file_name
         lock_path = _get_lock_path(h5_path)
 
         # Check for lock before deleting
@@ -760,11 +764,20 @@ def delete_video_h5_files(project_path: Path, video_id: int) -> None:
                 f"Cannot delete - file is locked by another process: {lock_path}"
             )
 
+        # Evict from cache if present
+        resolved = h5_path.resolve()
+        if resolved in _cache:
+            try:
+                _cache[resolved].close()
+            except Exception:
+                pass
+            del _cache[resolved]
+
         if h5_path.exists():
             h5_path.unlink()
 
 
-def reset_video_h5_files(
+def reset_video_segmentation_files(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -774,7 +787,8 @@ def reset_video_h5_files(
 ) -> None:
     """Reset all segmentation H5 files by deleting and recreating with zeros.
 
-    Resets tracker, detector, and final masks. Does NOT touch cropped/aligned.
+    Resets tracker, detector, and final masks in array_data/{video_id}/.
+    Does NOT touch cropped/aligned masks.
 
     Args:
         project_path: Path to the project folder
@@ -784,5 +798,5 @@ def reset_video_h5_files(
         width: Video width in pixels
         logits_size: Size of low-res logits (SAM2=256)
     """
-    delete_video_h5_files(project_path, video_id)
+    delete_video_segmentation_files(project_path, video_id)
     create_video_h5_files(project_path, video_id, num_frames, height, width, logits_size)
