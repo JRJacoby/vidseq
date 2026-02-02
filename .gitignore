@@ -1,4 +1,5 @@
 *.code-workspace
+.worktrees/
 __pycache__
 *.egg-info
 design_docs/notes
