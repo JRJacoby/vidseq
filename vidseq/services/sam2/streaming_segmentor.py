@@ -655,7 +655,7 @@ class SAM2StreamingSegmentor:
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
 
         # 11. Threshold at 0, convert to uint8 * 255, resize to original dims
-        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_resized = cv2.resize(
             mask_binary,
             (orig_w, orig_h),  # (width, height) for cv2.resize
@@ -777,7 +777,7 @@ class SAM2StreamingSegmentor:
 
         # 10. Extract mask, threshold, resize to original dims
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
-        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_resized = cv2.resize(
             mask_binary,
             (orig_w, orig_h),  # (width, height) for cv2.resize
@@ -924,7 +924,7 @@ class SAM2StreamingSegmentor:
             pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
 
             # Threshold at 0, convert to uint8 * 255, resize to original dims
-            mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+            mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
             mask_resized = cv2.resize(
                 mask_binary,
                 (orig_w, orig_h),  # (width, height) for cv2.resize
@@ -1088,7 +1088,7 @@ class SAM2StreamingSegmentor:
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
 
         # Threshold at 0, convert to uint8 * 255, resize to original dims
-        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_resized = cv2.resize(
             mask_binary,
             (orig_w, orig_h),
@@ -1167,7 +1167,7 @@ class SAM2StreamingSegmentor:
 
         # Extract mask
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
-        mask_binary = (pred_mask_high_res > 0).cpu().numpy().astype(np.uint8) * 255
+        mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_result = cv2.resize(mask_binary, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
 
         # Store in cond_frame_outputs for memory (so future frames benefit)
