@@ -128,25 +128,6 @@ export async function getDirectoryListing(path: string): Promise<DirectoryEntry[
     return response.json()
 }
 
-export interface Job {
-    id: number
-    type: string
-    status: string
-    project_id: number
-    details: object
-    log_path: string
-    created_at: string
-    updated_at: string
-}
-
-export async function getJobs(): Promise<Job[]> {
-    const response = await fetch(`${API_BASE}/jobs`)
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch jobs'))
-    }
-    return response.json()
-}
-
 export async function runSegmentation(
     projectId: number,
     videoId: number,
