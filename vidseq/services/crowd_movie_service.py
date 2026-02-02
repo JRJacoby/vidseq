@@ -13,10 +13,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
-import h5py
 import imageio_ffmpeg
 import joblib
 import numpy as np
+
+from vidseq.services.h5_storage import tracker_h5
 
 logger = logging.getLogger(__name__)
 
@@ -255,33 +256,17 @@ class CrowdMovieService:
             f"(from {len(expanded)} valid / {len(instances)} total)"
         )
 
-        # Open mask HDF5 files for involved videos
-        involved_video_ids = set(vid for vid, _ in sampled)
-        h5_files: dict[str, h5py.File] = {}
-
-        try:
-            for vid in involved_video_ids:
-                h5_path = project_path / "masks" / f"{vid}.h5"
-                if h5_path.exists():
-                    h5_files[vid] = h5py.File(h5_path, "r")
-                else:
-                    logger.warning(f"[CrowdMovie] Mask file not found: {h5_path}")
-
-            # Write video
-            self._write_crowd_video(
-                sampled, h5_files, fps, video_height, video_width, final_path
-            )
-
-        finally:
-            for f in h5_files.values():
-                f.close()
+        # Write video - H5 files are opened inline via cached context managers
+        self._write_crowd_video(
+            sampled, project_path, fps, video_height, video_width, final_path
+        )
 
         return len(sampled)
 
     def _write_crowd_video(
         self,
         instances: list[tuple[str, int]],
-        h5_files: dict[str, h5py.File],
+        project_path: Path,
         fps: float,
         height: int,
         width: int,
@@ -301,6 +286,20 @@ class CrowdMovieService:
             str(raw_tmp), fourcc, fps, (write_width, write_height)
         )
 
+        # Cache mask datasets - h5_storage caches "r" handles at module level
+        mask_datasets: dict[str, object] = {}
+        involved_video_ids = set(vid for vid, _ in instances)
+        for vid in involved_video_ids:
+            h5_path = project_path / "masks" / f"{vid}.h5"
+            if h5_path.exists():
+                try:
+                    # Context manager returns cached handle for "r" mode
+                    with tracker_h5(project_path, int(vid), "r") as f:
+                        if "masks" in f:
+                            mask_datasets[vid] = f["masks"]
+                except FileNotFoundError:
+                    logger.warning(f"[CrowdMovie] Mask file not found: {h5_path}")
+
         try:
             blue_bgr = BLUE_COLOR[::-1]  # RGB → BGR for OpenCV
 
@@ -312,11 +311,11 @@ class CrowdMovieService:
 
                 for video_id, clip_start in instances:
                     frame_idx = clip_start + frame_t
-                    h5 = h5_files.get(video_id)
-                    if h5 is None or "masks" not in h5:
+                    mask_ds = mask_datasets.get(video_id)
+                    if mask_ds is None:
                         continue
 
-                    mask = h5["masks"][frame_idx]  # (H, W) uint8
+                    mask = mask_ds[frame_idx]  # (H, W) uint8
                     mask_bool = mask > 0
                     canvas[mask_bool] += blue_bgr * OPACITY
 
@@ -362,10 +361,13 @@ class CrowdMovieService:
         for video_id in states_dict:
             h5_path = project_path / "masks" / f"{video_id}.h5"
             if h5_path.exists():
-                with h5py.File(h5_path, "r") as f:
-                    if "masks" in f:
-                        _, h, w = f["masks"].shape
-                        return int(h), int(w)
+                try:
+                    with tracker_h5(project_path, int(video_id), "r") as f:
+                        if "masks" in f:
+                            _, h, w = f["masks"].shape
+                            return int(h), int(w)
+                except FileNotFoundError:
+                    continue
         raise ValueError("No mask HDF5 files found to determine video dimensions")
 
     @staticmethod
@@ -377,9 +379,12 @@ class CrowdMovieService:
         for video_id in states_dict:
             h5_path = project_path / "masks" / f"{video_id}.h5"
             if h5_path.exists():
-                with h5py.File(h5_path, "r") as f:
-                    if "masks" in f:
-                        result[video_id] = f["masks"].shape[0]
+                try:
+                    with tracker_h5(project_path, int(video_id), "r") as f:
+                        if "masks" in f:
+                            result[video_id] = f["masks"].shape[0]
+                except FileNotFoundError:
+                    continue
         return result
 
     @staticmethod
