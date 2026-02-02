@@ -15,6 +15,7 @@ import imageio_ffmpeg
 import numpy as np
 
 from vidseq.services import h5_storage
+from vidseq.services.h5_storage import open_cropped_h5
 
 
 # =============================================================================
@@ -295,107 +296,102 @@ def process_single_video(
         cap.release()
         return False
 
-    # Open source HDF5 mask file (read-only)
-    h5_path = project_path / "masks" / f"{video.id}.h5"
-    h5_file = None
-    if h5_path.exists():
+    # Use context manager for cropped H5 (write operation needs locking)
+    with open_cropped_h5(project_path, video.id, "w") as cropped_h5_file:
+        # Create dataset for cropped masks
+        cropped_h5_file.create_dataset(
+            "masks",
+            shape=(video.num_frames, crop_size, crop_size),
+            dtype=np.uint8,
+            fillvalue=0,
+            chunks=(1, crop_size, crop_size),
+            compression=None,
+        )
+
+        # Open source HDF5 mask file (read-only, optional, no lock needed)
+        tracker_h5_path = project_path / "masks" / f"{video.id}.h5"
+        h5_file = None
+        if tracker_h5_path.exists():
+            try:
+                h5_file = h5py.File(tracker_h5_path, "r")
+            except Exception as e:
+                print(f"[Cropped Video] Warning: Could not open mask file: {e}")
+
         try:
-            h5_file = h5py.File(h5_path, "r")
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # Load mask for this frame
+                if h5_file is not None and "masks" in h5_file:
+                    mask = np.array(h5_file["masks"][frame_idx])
+                else:
+                    mask = np.zeros((video.height, video.width), dtype=np.uint8)
+
+                # Compute centroid
+                cx, cy = compute_centroid(mask)
+
+                # Compute crop bounds
+                half_size = crop_size // 2
+                x1 = cx - half_size
+                y1 = cy - half_size
+                x2 = x1 + crop_size
+                y2 = y1 + crop_size
+
+                # Create output frame (black background)
+                cropped_frame = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+
+                # Compute valid source and destination regions
+                src_x1 = max(0, x1)
+                src_y1 = max(0, y1)
+                src_x2 = min(video.width, x2)
+                src_y2 = min(video.height, y2)
+
+                dst_x1 = src_x1 - x1
+                dst_y1 = src_y1 - y1
+                dst_x2 = dst_x1 + (src_x2 - src_x1)
+                dst_y2 = dst_y1 + (src_y2 - src_y1)
+
+                # Copy valid region from source frame
+                if src_x2 > src_x1 and src_y2 > src_y1:
+                    cropped_frame[dst_y1:dst_y2, dst_x1:dst_x2] = frame[src_y1:src_y2, src_x1:src_x2]
+
+                # Apply mask - zero out non-mask pixels
+                # Need to crop the mask the same way
+                cropped_mask = np.zeros((crop_size, crop_size), dtype=np.uint8)
+                if src_x2 > src_x1 and src_y2 > src_y1:
+                    cropped_mask[dst_y1:dst_y2, dst_x1:dst_x2] = mask[src_y1:src_y2, src_x1:src_x2]
+
+                # Save cropped mask to HDF5
+                cropped_h5_file["masks"][frame_idx] = cropped_mask
+
+                # Zero out pixels where mask is 0
+                mask_3ch = np.stack([cropped_mask, cropped_mask, cropped_mask], axis=2)
+                cropped_frame = np.where(mask_3ch > 0, cropped_frame, 0)
+
+                # Write frame
+                writer.write(cropped_frame)
+
+                # Progress callback
+                if progress_callback is not None and frame_idx % 100 == 0:
+                    progress_callback(frame_idx)
+
+                frame_idx += 1
+
+            print(f"[Cropped Video] Processed {frame_idx} frames for video {video.id}")
+
         except Exception as e:
-            print(f"[Cropped Video] Warning: Could not open mask file: {e}")
-
-    # Open cropped masks HDF5 file for writing
-    cropped_masks_dir = project_path / "cropped_masks"
-    cropped_masks_dir.mkdir(parents=True, exist_ok=True)
-    cropped_h5_path = cropped_masks_dir / f"{video.id}.h5"
-    cropped_h5_file = h5py.File(cropped_h5_path, "w")
-
-    # Create dataset for cropped masks
-    cropped_h5_file.create_dataset(
-        "masks",
-        shape=(video.num_frames, crop_size, crop_size),
-        dtype=np.uint8,
-        fillvalue=0,
-        chunks=(1, crop_size, crop_size),
-        compression=None,
-    )
-
-    try:
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Load mask for this frame
-            if h5_file is not None and "masks" in h5_file:
-                mask = np.array(h5_file["masks"][frame_idx])
-            else:
-                mask = np.zeros((video.height, video.width), dtype=np.uint8)
-
-            # Compute centroid
-            cx, cy = compute_centroid(mask)
-
-            # Compute crop bounds
-            half_size = crop_size // 2
-            x1 = cx - half_size
-            y1 = cy - half_size
-            x2 = x1 + crop_size
-            y2 = y1 + crop_size
-
-            # Create output frame (black background)
-            cropped_frame = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
-
-            # Compute valid source and destination regions
-            src_x1 = max(0, x1)
-            src_y1 = max(0, y1)
-            src_x2 = min(video.width, x2)
-            src_y2 = min(video.height, y2)
-
-            dst_x1 = src_x1 - x1
-            dst_y1 = src_y1 - y1
-            dst_x2 = dst_x1 + (src_x2 - src_x1)
-            dst_y2 = dst_y1 + (src_y2 - src_y1)
-
-            # Copy valid region from source frame
-            if src_x2 > src_x1 and src_y2 > src_y1:
-                cropped_frame[dst_y1:dst_y2, dst_x1:dst_x2] = frame[src_y1:src_y2, src_x1:src_x2]
-
-            # Apply mask - zero out non-mask pixels
-            # Need to crop the mask the same way
-            cropped_mask = np.zeros((crop_size, crop_size), dtype=np.uint8)
-            if src_x2 > src_x1 and src_y2 > src_y1:
-                cropped_mask[dst_y1:dst_y2, dst_x1:dst_x2] = mask[src_y1:src_y2, src_x1:src_x2]
-
-            # Save cropped mask to HDF5
-            cropped_h5_file["masks"][frame_idx] = cropped_mask
-
-            # Zero out pixels where mask is 0
-            mask_3ch = np.stack([cropped_mask, cropped_mask, cropped_mask], axis=2)
-            cropped_frame = np.where(mask_3ch > 0, cropped_frame, 0)
-
-            # Write frame
-            writer.write(cropped_frame)
-
-            # Progress callback
-            if progress_callback is not None and frame_idx % 100 == 0:
-                progress_callback(frame_idx)
-
-            frame_idx += 1
-
-        print(f"[Cropped Video] Processed {frame_idx} frames for video {video.id}")
-
-    except Exception as e:
-        print(f"[Cropped Video] Error processing video {video.id}: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-    finally:
-        cap.release()
-        writer.release()
-        if h5_file is not None:
-            h5_file.close()
-        cropped_h5_file.close()
+            print(f"[Cropped Video] Error processing video {video.id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            if h5_file is not None:
+                h5_file.close()
+            cap.release()
+            writer.release()
 
     # Re-encode to H.264 for browser compatibility
     # Write to a _tmp file first, then atomically rename so that
