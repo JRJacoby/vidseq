@@ -176,7 +176,7 @@ async def get_detector_mask(
 
     Returns PNG binary. If no detector mask exists, returns a transparent (all zeros) mask.
     """
-    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
+    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
 
     if not h5_path.exists():
         # Return empty mask
@@ -213,7 +213,7 @@ async def get_detector_masks_batch(
     """
     import base64
 
-    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
+    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
     end_frame = min(start_frame + count, video.num_frames)
     actual_count = end_frame - start_frame
 
@@ -266,6 +266,6 @@ async def check_detector_masks_exist(
 
     Returns true if the detector h5 file exists.
     """
-    h5_path = project_path / "masks" / f"{video.id}_detector.h5"
+    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
 
     return DetectorMasksExistsResponse(exists=h5_path.exists())
