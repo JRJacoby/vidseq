@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from vidseq import __version__
-from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, jobs, pca, projects, segmentation, yolo, videos
+from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, yolo, videos
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -34,7 +34,6 @@ app.add_middleware(
 app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(videos.router, prefix="/api", tags=["videos"])
 app.include_router(filesystem.router, prefix="/api", tags=["filesystem"])
-app.include_router(jobs.router, prefix="/api", tags=["jobs"])
 app.include_router(segmentation.router, prefix="/api", tags=["segmentation"])
 app.include_router(yolo.router, prefix="/api", tags=["yolo"])
 app.include_router(cropped_videos.router, prefix="/api", tags=["cropped_videos"])
