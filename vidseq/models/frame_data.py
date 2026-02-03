@@ -29,9 +29,11 @@ class FrameData(Base):
     # Segmentation confidence score (-1.0 = not computed)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
 
-    # Mask presence flag: 1 = has mask, 0 = no mask, NULL = unknown
+    # Mask presence flags: 1 = has mask, 0 = no mask, NULL = unknown
     # Using Integer for SQLite compatibility (no native boolean type)
-    has_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    has_tracker_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    has_detector_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    has_final_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
     __table_args__ = (
         # Primary lookup: video + frame (unique constraint)
@@ -39,5 +41,7 @@ class FrameData(Base):
         # Training frame queries: find all frames with a specific type
         Index("ix_frame_data_video_type", "video_id", "frame_type"),
         # Mask presence queries: find all frames with masks for a video
-        Index("ix_frame_data_video_has_mask", "video_id", "has_mask"),
+        Index("ix_frame_data_video_has_tracker_mask", "video_id", "has_tracker_mask"),
+        Index("ix_frame_data_video_has_detector_mask", "video_id", "has_detector_mask"),
+        Index("ix_frame_data_video_has_final_mask", "video_id", "has_final_mask"),
     )
