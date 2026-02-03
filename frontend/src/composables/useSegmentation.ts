@@ -1,14 +1,11 @@
 import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
-    getMask,
-    getMasksBatch,
+    getTrackerMask,
+    getTrackerMasks,
     getDetectorMasksBatch,
-    getFinalMask,
-    getFinalMasksBatch,
-    runSegmentation,
-    refineMaskMultiPoint,
-    resetFrame,
-    resetVideo,
+    submitPrompt,
+    deleteSegmentation,
+    deleteVideoSegmentation,
     getDetectorMask,
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
@@ -82,14 +79,9 @@ export function useSegmentation(
         isPrefetching = true
         try {
             // Select batch function based on mask view mode
-            let batchFn
-            if (maskViewMode.value === 'detector') {
-                batchFn = getDetectorMasksBatch
-            } else if (maskViewMode.value === 'final') {
-                batchFn = getFinalMasksBatch
-            } else {
-                batchFn = getMasksBatch
-            }
+            const batchFn = maskViewMode.value === 'detector'
+                ? getDetectorMasksBatch
+                : getTrackerMasks
 
             const maskResponse = await batchFn(
                 projectId.value,
@@ -120,13 +112,9 @@ export function useSegmentation(
         if (!projectId.value || !videoId.value) return null
 
         try {
-            if (maskViewMode.value === 'detector') {
-                return await getDetectorMask(projectId.value, videoId.value, frameIdx)
-            } else if (maskViewMode.value === 'final') {
-                return await getFinalMask(projectId.value, videoId.value, frameIdx)
-            } else {
-                return await getMask(projectId.value, videoId.value, frameIdx)
-            }
+            return maskViewMode.value === 'detector'
+                ? await getDetectorMask(projectId.value, videoId.value, frameIdx)
+                : await getTrackerMask(projectId.value, videoId.value, frameIdx)
         } catch {
             return null
         }
@@ -187,35 +175,19 @@ export function useSegmentation(
         localPrompts.value.set(currentFrameIdx.value, framePrompts)
 
         try {
-            let maskBlob: Blob
-
-            // Check if this frame already has a mask (refinement vs new)
-            const hasExistingMask = maskCache.has(currentFrameIdx.value) && maskCache.get(currentFrameIdx.value) !== null
-
-            if (hasExistingMask && framePrompts.length > 1) {
-                // Refinement with accumulated points - send ALL prompts
-                maskBlob = await refineMaskMultiPoint(
-                    projectId.value,
-                    videoId.value,
-                    currentFrameIdx.value,
-                    framePrompts
-                )
-            } else {
-                // First point on frame - use single-point API
-                maskBlob = await runSegmentation(
-                    projectId.value,
-                    videoId.value,
-                    currentFrameIdx.value,
-                    point.type,
-                    { x: point.x, y: point.y }
-                )
-            }
+            // Always send all accumulated prompts - backend determines workflow
+            const maskBlob = await submitPrompt(
+                projectId.value,
+                videoId.value,
+                currentFrameIdx.value,
+                framePrompts
+            )
 
             const bitmap = await createImageBitmap(maskBlob)
             currentMask.value = bitmap
             maskCache.set(currentFrameIdx.value, bitmap)
         } catch (e) {
-            console.error('Failed to add point:', e)
+            console.error('Failed to submit prompt:', e)
             // Rollback: remove the point we just added
             framePrompts.pop()
             if (framePrompts.length === 0) {
@@ -230,7 +202,7 @@ export function useSegmentation(
         if (!projectId.value || !videoId.value) return
 
         try {
-            await resetFrame(projectId.value, videoId.value, currentFrameIdx.value)
+            await deleteSegmentation(projectId.value, videoId.value, currentFrameIdx.value)
             maskCache.delete(currentFrameIdx.value)
             localPrompts.value.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
@@ -243,7 +215,7 @@ export function useSegmentation(
         if (!projectId.value || !videoId.value) return
 
         try {
-            await resetVideo(projectId.value, videoId.value)
+            await deleteVideoSegmentation(projectId.value, videoId.value)
             localPrompts.value.clear()
             maskCache.clear()
             prefetchedUpTo = -1
