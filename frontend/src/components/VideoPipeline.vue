@@ -5,7 +5,7 @@ import {
   getProject,
   getVideos,
   addVideos,
-  segmentAllVideos,
+  createVideosSegmentation,
   extractCroppedVideos,
   getCroppedVideoExists,
   getAlignedVideoExists,
@@ -159,7 +159,7 @@ const handleSegmentAll = async () => {
   if (!projectId.value || isSegmenting.value) return
   isSegmenting.value = true
   try {
-    await segmentAllVideos(projectId.value)
+    await createVideosSegmentation(projectId.value)
     await loadVideos()
   } catch (e: any) {
     console.error('Failed to segment all videos:', e)

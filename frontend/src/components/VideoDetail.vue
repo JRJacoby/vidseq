@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, propagateMask, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
+import { getVideo, getVideoStreamUrl, createPropagation, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -173,7 +173,7 @@ const handlePropagateMask = async () => {
 
   isPropagating.value = true
   try {
-    await propagateMask(
+    await createPropagation(
       projectId.value,
       videoId.value,
       currentFrameIdx.value,
