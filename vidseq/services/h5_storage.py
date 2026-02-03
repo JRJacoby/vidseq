@@ -133,6 +133,22 @@ def tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
 
 
 @contextmanager
+def logits_h5(project_path: Path, video_id: int, mode: str = "r"):
+    """Context manager for tracker logits H5 file: array_data/{video_id}/tracker_logits.h5
+
+    Usage:
+        with logits_h5(project_path, video_id) as f:
+            logits = f["logits"][frame_idx]
+
+        with logits_h5(project_path, video_id, mode="a") as f:
+            f["logits"][frame_idx] = logits
+    """
+    h5_path = project_path / "array_data" / str(video_id) / "tracker_logits.h5"
+    with open_h5_with_lock(h5_path, mode) as f:
+        yield f
+
+
+@contextmanager
 def detector_h5(project_path: Path, video_id: int, mode: str = "r"):
     """Context manager for detector masks H5 file: array_data/{video_id}/detector_masks.h5"""
     h5_path = project_path / "array_data" / str(video_id) / "detector_masks.h5"
