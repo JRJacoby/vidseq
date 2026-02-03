@@ -23,7 +23,13 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 import imageio_ffmpeg
 
-from vidseq.services.h5_storage import cropped_h5, aligned_h5, predictions_h5
+from vidseq.services.h5_storage import (
+    cropped_h5,
+    aligned_h5,
+    predictions_h5,
+    create_aligned_h5,
+    create_alignment_predictions_h5,
+)
 
 import cv2
 import numpy as np
@@ -2159,33 +2165,19 @@ class AlignmentService:
                     cap.release()
                     continue
 
-                # Use context managers for H5 files with proper locking
-                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
-                     aligned_h5(project_path, video.id, "w") as aligned_mask_h5, \
-                     predictions_h5(project_path, video.id, "w") as preds_h5:
-
-                    # Get mask dimensions from cropped masks (may differ from video dimensions)
+                # Get mask dimensions from cropped masks (may differ from video dimensions)
+                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5:
                     mask_shape = cropped_mask_h5["masks"].shape
                     mask_height, mask_width = mask_shape[1], mask_shape[2]
 
-                    # Create aligned masks dataset
-                    aligned_mask_h5.create_dataset(
-                        "masks",
-                        shape=(frame_count, mask_height, mask_width),
-                        dtype=np.uint8,
-                        fillvalue=0,
-                        chunks=(1, mask_height, mask_width),
-                        compression=None,
-                    )
+                # Create H5 files upfront using h5_storage create functions
+                create_aligned_h5(project_path, video.id, frame_count, mask_height)
+                create_alignment_predictions_h5(project_path, video.id, frame_count, height)
 
-                    # Create predictions dataset
-                    preds_h5.create_dataset(
-                        "heatmaps",
-                        shape=(frame_count, height, width, 2),
-                        dtype=np.float32,
-                        chunks=(1, height, width, 2),
-                        compression=None,
-                    )
+                # Use context managers for H5 files with proper locking (append mode)
+                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
+                     aligned_h5(project_path, video.id, "a") as aligned_mask_h5, \
+                     predictions_h5(project_path, video.id, "a") as preds_h5:
 
                     # Process each frame
                     for frame_idx in range(frame_count):
