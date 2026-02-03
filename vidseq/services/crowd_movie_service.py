@@ -290,15 +290,13 @@ class CrowdMovieService:
         mask_datasets: dict[str, object] = {}
         involved_video_ids = set(vid for vid, _ in instances)
         for vid in involved_video_ids:
-            h5_path = project_path / "masks" / f"{vid}.h5"
-            if h5_path.exists():
-                try:
-                    # Context manager returns cached handle for "r" mode
-                    with tracker_h5(project_path, int(vid), "r") as f:
-                        if "masks" in f:
-                            mask_datasets[vid] = f["masks"]
-                except FileNotFoundError:
-                    logger.warning(f"[CrowdMovie] Mask file not found: {h5_path}")
+            try:
+                # Context manager returns cached handle for "r" mode
+                with tracker_h5(project_path, int(vid), "r") as f:
+                    if "masks" in f:
+                        mask_datasets[vid] = f["masks"]
+            except FileNotFoundError:
+                logger.warning(f"[CrowdMovie] Mask file not found for video {vid}")
 
         try:
             blue_bgr = BLUE_COLOR[::-1]  # RGB → BGR for OpenCV
@@ -359,15 +357,13 @@ class CrowdMovieService:
     ) -> tuple[int, int]:
         """Get video (height, width) from the first mask HDF5 file."""
         for video_id in states_dict:
-            h5_path = project_path / "masks" / f"{video_id}.h5"
-            if h5_path.exists():
-                try:
-                    with tracker_h5(project_path, int(video_id), "r") as f:
-                        if "masks" in f:
-                            _, h, w = f["masks"].shape
-                            return int(h), int(w)
-                except FileNotFoundError:
-                    continue
+            try:
+                with tracker_h5(project_path, int(video_id), "r") as f:
+                    if "masks" in f:
+                        _, h, w = f["masks"].shape
+                        return int(h), int(w)
+            except FileNotFoundError:
+                continue
         raise ValueError("No mask HDF5 files found to determine video dimensions")
 
     @staticmethod
@@ -377,14 +373,12 @@ class CrowdMovieService:
         """Get num_frames for each video from mask HDF5 files."""
         result = {}
         for video_id in states_dict:
-            h5_path = project_path / "masks" / f"{video_id}.h5"
-            if h5_path.exists():
-                try:
-                    with tracker_h5(project_path, int(video_id), "r") as f:
-                        if "masks" in f:
-                            result[video_id] = f["masks"].shape[0]
-                except FileNotFoundError:
-                    continue
+            try:
+                with tracker_h5(project_path, int(video_id), "r") as f:
+                    if "masks" in f:
+                        result[video_id] = f["masks"].shape[0]
+            except FileNotFoundError:
+                continue
         return result
 
     @staticmethod
