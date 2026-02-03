@@ -3,7 +3,7 @@ from vidseq.services.video_service import VideoMetadata, VideoMetadataError, get
 from vidseq.services.segmentation_tcp_client import SegmentationService, SegmentationStatus, VideoSessionInfo
 from vidseq.services import (
     frame_data_service,
-    h5_storage,
+    array_storage,
     segmentation_service,
     conditioning_service,
     lttb,
@@ -13,5 +13,5 @@ __all__ = [
     "DatabaseManager",
     "VideoMetadata", "VideoMetadataError", "get_video_metadata", "get_video_by_id",
     "SegmentationService", "SegmentationStatus", "VideoSessionInfo",
-    "frame_data_service", "h5_storage", "segmentation_service", "conditioning_service", "lttb",
+    "frame_data_service", "array_storage", "segmentation_service", "conditioning_service", "lttb",
 ]

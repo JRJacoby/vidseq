@@ -13,7 +13,8 @@ from PIL import Image
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
-from vidseq.services import h5_storage, video_service
+from vidseq.services import video_service
+from vidseq.services.array_storage import create_video_segmentation_arrays
 from vidseq.services.video_service import (
     VideoMetadataError,
     get_video_metadata,
@@ -70,7 +71,7 @@ async def add_videos(
     # Create H5 files upfront for each video
     for video in added_videos:
         await session.refresh(video)
-        h5_storage.create_video_segmentation_files(
+        create_video_segmentation_arrays(
             project_path=project_path,
             video_id=video.id,
             num_frames=video.num_frames,

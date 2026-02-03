@@ -17,7 +17,7 @@ import imageio_ffmpeg
 import joblib
 import numpy as np
 
-from vidseq.services.h5_storage import tracker_h5
+from vidseq.services.array_storage import tracker_masks
 
 logger = logging.getLogger(__name__)
 
@@ -286,15 +286,14 @@ class CrowdMovieService:
             str(raw_tmp), fourcc, fps, (write_width, write_height)
         )
 
-        # Cache mask datasets - h5_storage caches "r" handles at module level
+        # Cache mask datasets - array_storage caches "r" handles at module level
         mask_datasets: dict[str, object] = {}
         involved_video_ids = set(vid for vid, _ in instances)
         for vid in involved_video_ids:
             try:
                 # Context manager returns cached handle for "r" mode
-                with tracker_h5(project_path, int(vid), "r") as f:
-                    if "masks" in f:
-                        mask_datasets[vid] = f["masks"]
+                with tracker_masks(project_path, int(vid), "r") as masks:
+                    mask_datasets[vid] = masks
             except FileNotFoundError:
                 logger.warning(f"[CrowdMovie] Mask file not found for video {vid}")
 
@@ -355,28 +354,26 @@ class CrowdMovieService:
     def _get_video_dimensions(
         project_path: Path, states_dict: dict
     ) -> tuple[int, int]:
-        """Get video (height, width) from the first mask HDF5 file."""
+        """Get video (height, width) from the first mask array."""
         for video_id in states_dict:
             try:
-                with tracker_h5(project_path, int(video_id), "r") as f:
-                    if "masks" in f:
-                        _, h, w = f["masks"].shape
-                        return int(h), int(w)
+                with tracker_masks(project_path, int(video_id), "r") as masks:
+                    _, h, w = masks.shape
+                    return int(h), int(w)
             except FileNotFoundError:
                 continue
-        raise ValueError("No mask HDF5 files found to determine video dimensions")
+        raise ValueError("No mask arrays found to determine video dimensions")
 
     @staticmethod
     def _get_video_num_frames(
         project_path: Path, states_dict: dict
     ) -> dict[str, int]:
-        """Get num_frames for each video from mask HDF5 files."""
+        """Get num_frames for each video from mask arrays."""
         result = {}
         for video_id in states_dict:
             try:
-                with tracker_h5(project_path, int(video_id), "r") as f:
-                    if "masks" in f:
-                        result[video_id] = f["masks"].shape[0]
+                with tracker_masks(project_path, int(video_id), "r") as masks:
+                    result[video_id] = masks.shape[0]
             except FileNotFoundError:
                 continue
         return result

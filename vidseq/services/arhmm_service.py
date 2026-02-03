@@ -19,7 +19,7 @@ import numpy as np
 from jax_moseq.models import arhmm
 from jax_moseq.utils.utils import batch, get_durations, unbatch
 
-from vidseq.services.h5_storage import pca_scores_h5
+from vidseq.services.array_storage import pca_scores
 
 jax.config.update("jax_enable_x64", True)
 
@@ -264,8 +264,8 @@ class ARHMMService:
 
         sessions_dict = {}
         for video_id in video_ids:
-            with pca_scores_h5(project_path, video_id, "r") as f:
-                sessions_dict[str(video_id)] = f["scores"][:]
+            with pca_scores(project_path, video_id, "r") as scores:
+                sessions_dict[str(video_id)] = scores[:]
         return sessions_dict
 
     # ── Binary search with checkpointing ───────────────────────────────

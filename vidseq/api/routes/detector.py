@@ -13,7 +13,7 @@ from vidseq.api.dependencies import get_project_folder, get_video
 from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService
 from vidseq.services import segmentation_service
-from vidseq.services.h5_storage import detector_h5
+from vidseq.services.array_storage import detector_masks
 
 router = APIRouter()
 
@@ -173,8 +173,8 @@ async def get_detector_mask(
 
     Returns PNG binary.
     """
-    with detector_h5(project_path, video.id, "r") as f:
-        mask = np.array(f["masks"][frame_idx])
+    with detector_masks(project_path, video.id, "r") as masks:
+        mask = np.array(masks[frame_idx])
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
@@ -197,9 +197,9 @@ async def get_detector_masks_batch(
     end_frame = min(start_frame + count, video.num_frames)
     masks_list = []
 
-    with detector_h5(project_path, video.id, "r") as f:
-        masks = np.array(f["masks"][start_frame:end_frame])
-        for i, mask in enumerate(masks):
+    with detector_masks(project_path, video.id, "r") as masks_ds:
+        masks_array = np.array(masks_ds[start_frame:end_frame])
+        for i, mask in enumerate(masks_array):
             png_bytes = segmentation_service.mask_to_png(mask)
             png_base64 = base64.b64encode(png_bytes).decode('ascii')
             masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
