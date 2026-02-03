@@ -10,7 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vidseq.models.conditioning_frame import ConditioningFrame
 from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
-from vidseq.services import h5_storage, segmentation_service, segmentation_tcp_client
+from vidseq.services import segmentation_service, segmentation_tcp_client
+from vidseq.services.array_storage import (
+    tracker_masks,
+    tracker_logits,
+    detector_masks,
+    final_masks,
+    reset_video_segmentation_arrays,
+)
 
 
 @dataclass(frozen=True)
@@ -124,14 +131,14 @@ async def delete_frame_data(
         session: Async database session
     """
     # 1. Clear H5 files
-    with h5_storage.tracker_h5(project_path, video_id, "a") as f:
-        f["masks"][frame_idx] = 0
-    with h5_storage.logits_h5(project_path, video_id, "a") as f:
-        f["logits"][frame_idx] = 0
-    with h5_storage.detector_h5(project_path, video_id, "a") as f:
-        f["masks"][frame_idx] = 0
-    with h5_storage.final_h5(project_path, video_id, "a") as f:
-        f["masks"][frame_idx] = 0
+    with tracker_masks(project_path, video_id, "a") as masks:
+        masks[frame_idx] = 0
+    with tracker_logits(project_path, video_id, "a") as logits:
+        logits[frame_idx] = 0
+    with detector_masks(project_path, video_id, "a") as masks:
+        masks[frame_idx] = 0
+    with final_masks(project_path, video_id, "a") as masks:
+        masks[frame_idx] = 0
 
     # 2. Clear database tables
     await session.execute(
@@ -181,7 +188,7 @@ async def reset_video(
         segmentation_tcp_client.close_session(project_id, video_id)
 
     # 3. Reset H5 files (all segmentation H5s: tracker, detector, final)
-    h5_storage.reset_video_segmentation_files(
+    reset_video_segmentation_arrays(
         project_path=project_path,
         video_id=video_id,
         num_frames=video.num_frames,
