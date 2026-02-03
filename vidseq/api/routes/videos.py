@@ -185,8 +185,8 @@ async def get_frame(
     return Response(content=img_bytes.read(), media_type="image/jpeg")
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/frame-data/{frame_idx}")
-async def delete_frame_data(
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}")
+async def delete_segmentation(
     project_id: int,
     frame_idx: int,
     video: Video = Depends(get_video),
@@ -194,10 +194,10 @@ async def delete_frame_data(
     session: AsyncSession = Depends(get_project_session),
 ):
     """
-    Delete all annotation data for a frame.
+    Delete all segmentation data for a frame.
 
-    Clears masks, logits, database entries (conditioning_frame, frame_data),
-    and SAM memory state for the specified frame.
+    Clears tracker masks, tracker logits, detector masks, final masks,
+    database entries (conditioning_frame, frame_data), and SAM memory state.
 
     Args:
         project_id: ID of the project
@@ -217,15 +217,15 @@ async def delete_frame_data(
     return {"status": "ok"}
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/frame-data")
-async def reset_video_data(
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation")
+async def delete_video_segmentation(
     project_id: int,
     video: Video = Depends(get_video),
     project_path: Path = Depends(get_project_folder),
     session: AsyncSession = Depends(get_project_session),
 ):
     """
-    Reset all annotation data for a video.
+    Delete all segmentation data for a video.
 
     Clears all masks (tracker, detector, final), logits, database entries
     (conditioning_frames, frame_data), and SAM memory state.
