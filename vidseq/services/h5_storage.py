@@ -180,53 +180,28 @@ def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
         yield f
 
 
-def _ensure_dataset(
-    h5_file: h5py.File,
-    num_frames: int,
-    height: int,
-    width: int,
-) -> None:
-    """Ensure the masks dataset exists in the file."""
-    if "masks" not in h5_file:
-        h5_file.create_dataset(
-            "masks",
-            shape=(num_frames, height, width),
-            dtype=np.uint8,
-            fillvalue=0,
-            chunks=(1, height, width),
-            compression=None,
-        )
-        h5_file.flush()
-
-
 def save_mask(
     project_path: Path,
     video_id: int,
     frame_idx: int,
     mask: np.ndarray,
-    num_frames: int,
-    height: int,
-    width: int,
     h5_file: Optional[h5py.File] = None,
 ) -> None:
     """Save a tracker mask to the HDF5 file (array_data/{video_id}/tracker_masks.h5).
+
+    The H5 file and masks dataset must already exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         frame_idx: Frame index (0-based)
         mask: Binary mask array (height, width) with dtype uint8
-        num_frames: Total number of frames in the video
-        height: Video height in pixels
-        width: Video width in pixels
         h5_file: Optional pre-opened h5py.File in write mode
     """
     if h5_file is not None:
-        _ensure_dataset(h5_file, num_frames, height, width)
         h5_file["masks"][frame_idx] = mask
     else:
         with tracker_h5(project_path, video_id, "a") as f:
-            _ensure_dataset(f, num_frames, height, width)
             f["masks"][frame_idx] = mask
             f.flush()
 
@@ -235,53 +210,30 @@ def load_mask(
     project_path: Path,
     video_id: int,
     frame_idx: int,
-    num_frames: int,
-    height: int,
-    width: int,
     h5_file: Optional[h5py.File] = None,
 ) -> np.ndarray:
     """Load a tracker mask from the HDF5 file (array_data/{video_id}/tracker_masks.h5).
 
-    Returns zeros if the file or dataset doesn't exist.
+    The H5 file must exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         frame_idx: Frame index (0-based)
-        num_frames: Total number of frames in the video
-        height: Video height in pixels
-        width: Video width in pixels
         h5_file: Optional pre-opened h5py.File
 
     Returns:
         Mask array (height, width) with dtype uint8
+
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+        KeyError: If the masks dataset doesn't exist
     """
     if h5_file is not None:
-        if "masks" not in h5_file:
-            print(f"[DEBUG load_mask] h5_file provided but no 'masks' dataset")
-            return np.zeros((height, width), dtype=np.uint8)
-        mask = np.array(h5_file["masks"][frame_idx])
-        print(f"[DEBUG load_mask] from h5_file: frame={frame_idx}, sum={int(mask.sum())}")
-        return mask
+        return np.array(h5_file["masks"][frame_idx])
 
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    print(f"[DEBUG load_mask] h5_path={h5_path}, exists={h5_path.exists()}")
-    if not h5_path.exists():
-        print(f"[DEBUG load_mask] file doesn't exist, returning zeros")
-        return np.zeros((height, width), dtype=np.uint8)
-
-    try:
-        with tracker_h5(project_path, video_id, "r") as f:
-            if "masks" not in f:
-                print(f"[DEBUG load_mask] 'masks' dataset not in file")
-                return np.zeros((height, width), dtype=np.uint8)
-            mask = np.array(f["masks"][frame_idx])
-            print(f"[DEBUG load_mask] loaded: frame={frame_idx}, sum={int(mask.sum())}, "
-                  f"shape={mask.shape}, dtype={mask.dtype}")
-            return mask
-    except (OSError, KeyError) as e:
-        print(f"[DEBUG load_mask] exception: {e}")
-        return np.zeros((height, width), dtype=np.uint8)
+    with tracker_h5(project_path, video_id, "r") as f:
+        return np.array(f["masks"][frame_idx])
 
 
 def load_masks_batch(
@@ -290,13 +242,11 @@ def load_masks_batch(
     start_frame: int,
     count: int,
     num_frames: int,
-    height: int,
-    width: int,
     h5_file: Optional[h5py.File] = None,
 ) -> np.ndarray:
     """Load multiple tracker masks efficiently using HDF5 slice indexing.
 
-    Loads from array_data/{video_id}/tracker_masks.h5.
+    The H5 file must exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
@@ -304,33 +254,23 @@ def load_masks_batch(
         start_frame: Starting frame index (0-based)
         count: Number of frames to load
         num_frames: Total number of frames in the video
-        height: Video height in pixels
-        width: Video width in pixels
         h5_file: Optional pre-opened h5py.File
 
     Returns:
         Array of shape (actual_count, height, width) where actual_count
         may be less than count if start_frame + count exceeds num_frames.
+
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+        KeyError: If the masks dataset doesn't exist
     """
     end_frame = min(start_frame + count, num_frames)
-    actual_count = end_frame - start_frame
 
     if h5_file is not None:
-        if "masks" not in h5_file:
-            return np.zeros((actual_count, height, width), dtype=np.uint8)
         return np.array(h5_file["masks"][start_frame:end_frame])
 
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    if not h5_path.exists():
-        return np.zeros((actual_count, height, width), dtype=np.uint8)
-
-    try:
-        with tracker_h5(project_path, video_id, "r") as f:
-            if "masks" not in f:
-                return np.zeros((actual_count, height, width), dtype=np.uint8)
-            return np.array(f["masks"][start_frame:end_frame])
-    except (OSError, KeyError):
-        return np.zeros((actual_count, height, width), dtype=np.uint8)
+    with tracker_h5(project_path, video_id, "r") as f:
+        return np.array(f["masks"][start_frame:end_frame])
 
 
 def clear_mask(
@@ -341,30 +281,27 @@ def clear_mask(
 ) -> None:
     """Clear (zero out) a tracker mask for a specific frame.
 
-    Operates on array_data/{video_id}/tracker_masks.h5.
+    The H5 file must exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         frame_idx: Frame index (0-based)
         h5_file: Optional pre-opened h5py.File in write mode
+
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
     """
     if h5_file is not None:
-        if "masks" in h5_file:
-            ds = h5_file["masks"]
-            ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
-            h5_file.flush()
-        return
-
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    if not h5_path.exists():
+        ds = h5_file["masks"]
+        ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
+        h5_file.flush()
         return
 
     with tracker_h5(project_path, video_id, "a") as f:
-        if "masks" in f:
-            ds = f["masks"]
-            ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
-            f.flush()
+        ds = f["masks"]
+        ds[frame_idx] = np.zeros((ds.shape[1], ds.shape[2]), dtype=np.uint8)
+        f.flush()
 
 
 def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
@@ -394,71 +331,34 @@ def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
     return np.array([x1, y1, x2, y2], dtype=np.float32)
 
 
-def video_has_masks(project_path: Path, video_id: int) -> bool:
-    """Check if a video has tracker masks (array_data/{video_id}/tracker_masks.h5).
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-
-    Returns:
-        True if the mask file exists, False otherwise
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    return h5_path.exists()
-
-
 # ----- Final masks support -----
 # Final masks are stored in array_data/{video_id}/final_masks.h5 and contain the
 # tracker-detector fusion result (tracker if IoU >= 0.5, corrected otherwise)
-
-
-def video_has_final_masks(project_path: Path, video_id: int) -> bool:
-    """Check if a video has final (corrected) masks (array_data/{video_id}/final_masks.h5).
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-
-    Returns:
-        True if the final mask file exists, False otherwise
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
-    return h5_path.exists()
 
 
 def load_final_mask(
     project_path: Path,
     video_id: int,
     frame_idx: int,
-    height: int,
-    width: int,
 ) -> np.ndarray:
     """Load a final (corrected) mask from the HDF5 file.
 
-    Returns zeros if the file or dataset doesn't exist.
+    The H5 file must exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         frame_idx: Frame index (0-based)
-        height: Video height in pixels
-        width: Video width in pixels
 
     Returns:
         Mask array (height, width) with dtype uint8
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
-    if not h5_path.exists():
-        return np.zeros((height, width), dtype=np.uint8)
 
-    try:
-        with final_h5(project_path, video_id, mode="r") as f:
-            if "masks" not in f:
-                return np.zeros((height, width), dtype=np.uint8)
-            return np.array(f["masks"][frame_idx])
-    except (OSError, KeyError, FileNotFoundError):
-        return np.zeros((height, width), dtype=np.uint8)
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+        KeyError: If the masks dataset doesn't exist
+    """
+    with final_h5(project_path, video_id, mode="r") as f:
+        return np.array(f["masks"][frame_idx])
 
 
 def load_final_masks_batch(
@@ -467,10 +367,10 @@ def load_final_masks_batch(
     start_frame: int,
     count: int,
     num_frames: int,
-    height: int,
-    width: int,
 ) -> np.ndarray:
     """Load multiple final (corrected) masks efficiently.
+
+    The H5 file must exist (created by create_video_segmentation_files).
 
     Args:
         project_path: Path to the project folder
@@ -478,26 +378,18 @@ def load_final_masks_batch(
         start_frame: Starting frame index (0-based)
         count: Number of frames to load
         num_frames: Total number of frames in the video
-        height: Video height in pixels
-        width: Video width in pixels
 
     Returns:
         Array of shape (actual_count, height, width)
+
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+        KeyError: If the masks dataset doesn't exist
     """
     end_frame = min(start_frame + count, num_frames)
-    actual_count = end_frame - start_frame
 
-    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
-    if not h5_path.exists():
-        return np.zeros((actual_count, height, width), dtype=np.uint8)
-
-    try:
-        with final_h5(project_path, video_id, mode="r") as f:
-            if "masks" not in f:
-                return np.zeros((actual_count, height, width), dtype=np.uint8)
-            return np.array(f["masks"][start_frame:end_frame])
-    except (OSError, KeyError, FileNotFoundError):
-        return np.zeros((actual_count, height, width), dtype=np.uint8)
+    with final_h5(project_path, video_id, mode="r") as f:
+        return np.array(f["masks"][start_frame:end_frame])
 
 
 # ----- Delete functions for clearing individual frame data -----
@@ -506,73 +398,53 @@ def load_final_masks_batch(
 def delete_tracker_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
     """Zero out tracker mask for a frame.
 
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        frame_idx: Frame index (0-based)
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    if not h5_path.exists():
-        return
+    The H5 file must exist (created by create_video_segmentation_files).
 
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+    """
     with tracker_h5(project_path, video_id, mode="a") as f:
-        if "masks" in f:
-            f["masks"][frame_idx] = 0
-            f.flush()
+        f["masks"][frame_idx] = 0
+        f.flush()
 
 
 def delete_tracker_logits(project_path: Path, video_id: int, frame_idx: int) -> None:
     """Zero out tracker logits for a frame.
 
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        frame_idx: Frame index (0-based)
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
-    if not h5_path.exists():
-        return
+    The H5 file must exist (created by create_video_segmentation_files).
 
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+    """
     with tracker_h5(project_path, video_id, mode="a") as f:
-        if "logits" in f:
-            f["logits"][frame_idx] = 0.0
-            f.flush()
+        f["logits"][frame_idx] = 0.0
+        f.flush()
 
 
 def delete_detector_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
     """Zero out detector mask for a frame.
 
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        frame_idx: Frame index (0-based)
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "detector_masks.h5"
-    if not h5_path.exists():
-        return
+    The H5 file must exist (created by create_video_segmentation_files).
 
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+    """
     with detector_h5(project_path, video_id, mode="a") as f:
-        if "masks" in f:
-            f["masks"][frame_idx] = 0
-            f.flush()
+        f["masks"][frame_idx] = 0
+        f.flush()
 
 
 def delete_final_mask(project_path: Path, video_id: int, frame_idx: int) -> None:
     """Zero out final (corrected) mask for a frame.
 
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        frame_idx: Frame index (0-based)
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
-    if not h5_path.exists():
-        return
+    The H5 file must exist (created by create_video_segmentation_files).
 
+    Raises:
+        FileNotFoundError: If the H5 file doesn't exist
+    """
     with final_h5(project_path, video_id, mode="a") as f:
-        if "masks" in f:
-            f["masks"][frame_idx] = 0
-            f.flush()
+        f["masks"][frame_idx] = 0
+        f.flush()
 
 
 # ----- Video-level H5 file management -----
