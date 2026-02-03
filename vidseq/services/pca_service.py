@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from vidseq.services.h5_storage import aligned_h5, pca_scores_h5, create_pca_scores_h5
+from vidseq.services.array_storage import aligned_masks, pca_scores, create_pca_scores_array
 
 logger = logging.getLogger(__name__)
 
@@ -431,23 +431,20 @@ def _compute_and_store_scores(
         video_ids: List of video IDs to process
     """
     for video_id in tqdm(video_ids, desc="Computing scores"):
-        with aligned_h5(project_path, video_id, "r") as f_in:
-            masks = f_in["masks"]
-            n_frames = masks.shape[0]
+        with aligned_masks(project_path, video_id, "r") as masks_data:
+            n_frames = masks_data.shape[0]
 
             # Create the PCA scores H5 file with pre-allocated dataset
-            create_pca_scores_h5(project_path, video_id, n_frames, pca.n_components)
+            create_pca_scores_array(project_path, video_id, n_frames, pca.n_components)
 
-            with pca_scores_h5(project_path, video_id, "a") as f_out:
-                scores_ds = f_out["scores"]
-
+            with pca_scores(project_path, video_id, "a") as scores_data:
                 # Process in chunks to avoid memory issues
                 for start in range(0, n_frames, CHUNK_SIZE):
                     end = min(start + CHUNK_SIZE, n_frames)
-                    chunk = masks[start:end]
+                    chunk = masks_data[start:end]
                     flat = chunk.reshape(chunk.shape[0], -1).astype(np.float32)
                     chunk_scores = pca.transform(flat)
-                    scores_ds[start:end] = chunk_scores
+                    scores_data[start:end] = chunk_scores
 
         logger.info(f"[PCA] Saved scores for video {video_id} ({n_frames} frames)")
 
@@ -485,8 +482,8 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
 
     # Get mask dimensions from first file
     first_video_id = video_ids[0]
-    with aligned_h5(project_path, first_video_id, "r") as f:
-        mask_shape = f["masks"].shape
+    with aligned_masks(project_path, first_video_id, "r") as masks_data:
+        mask_shape = masks_data.shape
         height, width = mask_shape[1], mask_shape[2]
         logger.info(f"[PCA] Mask dimensions: {height}x{width} ({height * width} features)")
 
@@ -498,15 +495,14 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     for video_id in video_ids:
         logger.info(f"[PCA] Processing video {video_id}")
 
-        with aligned_h5(project_path, video_id, "r") as f:
-            masks = f["masks"]
-            n_frames = masks.shape[0]
+        with aligned_masks(project_path, video_id, "r") as masks_data:
+            n_frames = masks_data.shape[0]
             total_frames += n_frames
 
             # Process in chunks
             for start in tqdm(range(0, n_frames, CHUNK_SIZE), desc=f"Video {video_id}"):
                 end = min(start + CHUNK_SIZE, n_frames)
-                chunk = masks[start:end]  # (chunk_size, H, W)
+                chunk = masks_data[start:end]  # (chunk_size, H, W)
 
                 # Flatten to (chunk_size, H*W) and convert to float
                 flat = chunk.reshape(chunk.shape[0], -1).astype(np.float32)
@@ -620,9 +616,8 @@ def get_pca_scores_downsampled(
     """
     from vidseq.services.lttb import downsample_scores
 
-    with pca_scores_h5(project_path, video_id, "r") as f:
-        scores_ds = f["scores"]
-        n_frames, n_components = scores_ds.shape
+    with pca_scores(project_path, video_id, "r") as scores_data:
+        n_frames, n_components = scores_data.shape
 
         # Determine frame range
         if end_frame is None:
@@ -634,7 +629,7 @@ def get_pca_scores_downsampled(
         valid_pc_indices = [i for i in pc_indices if 0 <= i < n_components]
 
         # Load the slice of data we need
-        frame_slice = scores_ds[start_frame:end_frame + 1, :]
+        frame_slice = scores_data[start_frame:end_frame + 1, :]
 
         result_scores = {}
         for pc_idx in valid_pc_indices:
