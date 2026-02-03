@@ -1,8 +1,8 @@
 import { ref, watch, onUnmounted, type Ref } from 'vue'
 import {
-    getDetectorStatus,
-    trainDetector,
-    stopDetectorTraining,
+    getDetectionStatus,
+    createDetectionTraining,
+    deleteDetectionTraining,
     type DetectorStatus,
 } from '@/services/api'
 
@@ -21,7 +21,7 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
     const checkStatus = async () => {
         if (!projectId.value) return
         try {
-            const status = await getDetectorStatus(projectId.value)
+            const status = await getDetectionStatus(projectId.value)
             modelExists.value = status.model_exists
             isTraining.value = status.is_training
         } catch (e) {
@@ -33,7 +33,7 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
         if (!projectId.value || isTraining.value) return
         isTraining.value = true
         try {
-            await trainDetector(projectId.value, maxEpochs)
+            await createDetectionTraining(projectId.value, maxEpochs)
         } catch (e) {
             console.error('Failed to start detector training:', e)
             isTraining.value = false
@@ -44,7 +44,7 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
     const stopTraining = async () => {
         if (!projectId.value) return
         try {
-            await stopDetectorTraining(projectId.value)
+            await deleteDetectionTraining(projectId.value)
         } catch (e) {
             console.error('Failed to stop training:', e)
             throw e

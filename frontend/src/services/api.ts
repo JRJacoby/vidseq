@@ -269,10 +269,10 @@ export async function getSegmentationStatus(): Promise<SegmentationStatus> {
     return response.json()
 }
 
-export async function preloadSegmentation(): Promise<void> {
-    const response = await fetch(`${API_BASE}/segmentation/preload`, { method: 'POST' })
+export async function createSegmentationLoadedModel(): Promise<void> {
+    const response = await fetch(`${API_BASE}/segmentation/loaded-model`, { method: 'POST' })
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to start segmentation preload'))
+        throw new Error(await getErrorMessage(response, 'Failed to load segmentation model'))
     }
 }
 
@@ -611,7 +611,7 @@ export async function clearAlignmentModel(projectId: number): Promise<{ deleted:
     return response.json()
 }
 
-export async function trainAlignmentModel(
+export async function createAlignmentTraining(
     projectId: number,
     epochs: number = 100,
     augment: boolean = true,
@@ -625,11 +625,11 @@ export async function trainAlignmentModel(
         lr_patience: lrPatience.toString(),
     })
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/train?${params}`,
+        `${API_BASE}/projects/${projectId}/alignment/training?${params}`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to train alignment model'))
+        throw new Error(await getErrorMessage(response, 'Failed to start alignment training'))
     }
 }
 
@@ -641,13 +641,13 @@ export function getAlignmentPredictionUrl(
     return `${API_BASE}/projects/${projectId}/alignment/predict/${videoId}/${frameIdx}`
 }
 
-export async function applyAlignment(projectId: number): Promise<void> {
+export async function createVideosAlignment(projectId: number): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/apply`,
+        `${API_BASE}/projects/${projectId}/videos/alignment`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to apply alignment'))
+        throw new Error(await getErrorMessage(response, 'Failed to start alignment'))
     }
 }
 
@@ -693,12 +693,12 @@ export interface TrainingProgress {
     loss_history: number[]     // = train_loss_history
 }
 
-export async function getTrainingStatus(projectId: number): Promise<TrainingProgress> {
+export async function getAlignmentTraining(projectId: number): Promise<TrainingProgress> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/training/status`
+        `${API_BASE}/projects/${projectId}/alignment/training`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get training status'))
+        throw new Error(await getErrorMessage(response, 'Failed to get alignment training status'))
     }
     return response.json()
 }
@@ -730,18 +730,18 @@ export interface AlignmentApplyProgress {
     started_at: number | null
 }
 
-export async function getAlignmentApplyStatus(projectId: number): Promise<AlignmentApplyProgress> {
+export async function getVideosAlignmentStatus(projectId: number): Promise<AlignmentApplyProgress> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/apply/status`
+        `${API_BASE}/projects/${projectId}/videos/alignment/status`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get alignment apply status'))
+        throw new Error(await getErrorMessage(response, 'Failed to get alignment status'))
     }
     return response.json()
 }
 
-export function getAlignmentApplyStreamUrl(projectId: number): string {
-    return `${API_BASE}/projects/${projectId}/alignment/apply/stream`
+export function getVideosAlignmentStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/videos/alignment/stream`
 }
 
 // --- Stored Alignment Predictions (for debugging) ---
@@ -835,12 +835,12 @@ export interface PCARunResult {
     total_frames: number
 }
 
-export async function runPCA(
+export async function createPCA(
     projectId: number,
     nComponents: number = 20
 ): Promise<PCARunResult> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/pca/run?n_components=${nComponents}`,
+        `${API_BASE}/projects/${projectId}/pca?n_components=${nComponents}`,
         { method: 'POST' }
     )
     if (!response.ok) {
@@ -959,24 +959,24 @@ export interface ARHMMResults {
     n_components: number
 }
 
-export async function startARHMM(projectId: number): Promise<{ status: string }> {
+export async function createARHMMTraining(projectId: number): Promise<{ status: string }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/arhmm/run`,
+        `${API_BASE}/projects/${projectId}/arhmm/training`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to start ARHMM'))
+        throw new Error(await getErrorMessage(response, 'Failed to start ARHMM training'))
     }
     return response.json()
 }
 
-export async function stopARHMM(projectId: number): Promise<{ status: string }> {
+export async function deleteARHMMTraining(projectId: number): Promise<{ status: string }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/arhmm/stop`,
-        { method: 'POST' }
+        `${API_BASE}/projects/${projectId}/arhmm/training`,
+        { method: 'DELETE' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to stop ARHMM'))
+        throw new Error(await getErrorMessage(response, 'Failed to stop ARHMM training'))
     }
     return response.json()
 }
@@ -1047,9 +1047,9 @@ export interface CrowdMovieEntry {
     sampled: number
 }
 
-export async function generateCrowdMovies(projectId: number): Promise<{ status: string }> {
+export async function createCrowdMoviesGeneration(projectId: number): Promise<{ status: string }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/generate`,
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/generation`,
         { method: 'POST' }
     )
     if (!response.ok) {
@@ -1058,10 +1058,10 @@ export async function generateCrowdMovies(projectId: number): Promise<{ status: 
     return response.json()
 }
 
-export async function stopCrowdMovies(projectId: number): Promise<{ status: string }> {
+export async function deleteCrowdMoviesGeneration(projectId: number): Promise<{ status: string }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/stop`,
-        { method: 'POST' }
+        `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/generation`,
+        { method: 'DELETE' }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to stop crowd movie generation'))
@@ -1129,21 +1129,21 @@ export interface DetectorTrainingProgress {
     error_message: string | null
 }
 
-export async function getDetectorStatus(projectId: number): Promise<DetectorStatus> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/status`)
+export async function getDetectionStatus(projectId: number): Promise<DetectorStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/status`)
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get detector status'))
+        throw new Error(await getErrorMessage(response, 'Failed to get detection status'))
     }
     return response.json()
 }
 
-export async function trainDetector(
+export async function createDetectionTraining(
     projectId: number,
     maxEpochs: number = 1000,
     lrPatience: number = 10,
     earlyStopPatience: number = 20,
 ): Promise<void> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/train`, {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/training`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1153,29 +1153,29 @@ export async function trainDetector(
         }),
     })
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to start detector training'))
+        throw new Error(await getErrorMessage(response, 'Failed to start detection training'))
     }
 }
 
-export async function stopDetectorTraining(projectId: number): Promise<void> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/stop`, {
-        method: 'POST',
+export async function deleteDetectionTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/training`, {
+        method: 'DELETE',
     })
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to stop detector training'))
+        throw new Error(await getErrorMessage(response, 'Failed to stop detection training'))
     }
 }
 
-export async function getDetectorTrainingStatus(projectId: number): Promise<DetectorTrainingProgress> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/detector/training/status`)
+export async function getDetectionTraining(projectId: number): Promise<DetectorTrainingProgress> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/training`)
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get detector training status'))
+        throw new Error(await getErrorMessage(response, 'Failed to get detection training status'))
     }
     return response.json()
 }
 
-export function getDetectorTrainingStreamUrl(projectId: number): string {
-    return `${API_BASE}/projects/${projectId}/detector/training/stream`
+export function getDetectionTrainingStreamUrl(projectId: number): string {
+    return `${API_BASE}/projects/${projectId}/detection/training/stream`
 }
 
 export async function getDetectorMask(

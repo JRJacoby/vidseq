@@ -3,12 +3,12 @@ import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
     getARHMMStatus,
-    startARHMM,
-    stopARHMM,
+    createARHMMTraining,
+    deleteARHMMTraining,
     getARHMMStreamUrl,
     getARHMMAnalysis,
-    generateCrowdMovies,
-    stopCrowdMovies,
+    createCrowdMoviesGeneration,
+    deleteCrowdMoviesGeneration,
     getCrowdMovieStatus,
     getCrowdMovieList,
     getCrowdMovieStreamUrl,
@@ -102,7 +102,7 @@ async function handleStart() {
     if (!projectId.value) return
     actionError.value = null
     try {
-        await startARHMM(projectId.value)
+        await createARHMMTraining(projectId.value)
         // Give the backend a moment to initialize progress
         await new Promise(r => setTimeout(r, 300))
         await loadStatus()
@@ -116,7 +116,7 @@ async function handleStop() {
     if (!projectId.value) return
     actionError.value = null
     try {
-        await stopARHMM(projectId.value)
+        await deleteARHMMTraining(projectId.value)
     } catch (e: any) {
         actionError.value = e.message || 'Failed to stop ARHMM'
     }
@@ -300,7 +300,7 @@ async function handleGenerateCrowdMovies() {
     if (!projectId.value) return
     crowdMovieError.value = null
     try {
-        await generateCrowdMovies(projectId.value)
+        await createCrowdMoviesGeneration(projectId.value)
         await new Promise(r => setTimeout(r, 300))
         crowdMovieProgress.value = await getCrowdMovieStatus(projectId.value)
         connectToCrowdMovieStream()
@@ -313,7 +313,7 @@ async function handleStopCrowdMovies() {
     if (!projectId.value) return
     crowdMovieError.value = null
     try {
-        await stopCrowdMovies(projectId.value)
+        await deleteCrowdMoviesGeneration(projectId.value)
     } catch (e: any) {
         crowdMovieError.value = e.message || 'Failed to stop crowd movie generation'
     }

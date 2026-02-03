@@ -31,8 +31,8 @@ def _run_arhmm_in_background(
     service.run_arhmm_sync(project_path, fps)
 
 
-@router.post("/projects/{project_id}/arhmm/run")
-async def run_arhmm(
+@router.post("/projects/{project_id}/arhmm/training")
+async def create_arhmm_training(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
@@ -84,8 +84,8 @@ async def run_arhmm(
     return {"status": "started"}
 
 
-@router.post("/projects/{project_id}/arhmm/stop")
-async def stop_arhmm(project_id: int):
+@router.delete("/projects/{project_id}/arhmm/training")
+async def delete_arhmm_training(project_id: int):
     """Request graceful stop of ARHMM fitting."""
     service = ARHMMService.get_instance()
     if not service.is_running():
@@ -288,8 +288,8 @@ def _run_crowd_movies_in_background(
     service.generate_crowd_movies_sync(project_path, fps)
 
 
-@router.post("/projects/{project_id}/arhmm/crowd-movies/generate")
-async def generate_crowd_movies(
+@router.post("/projects/{project_id}/arhmm/crowd-movies/generation")
+async def create_crowd_movies_generation(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
@@ -333,8 +333,8 @@ async def generate_crowd_movies(
     return {"status": "started"}
 
 
-@router.post("/projects/{project_id}/arhmm/crowd-movies/stop")
-async def stop_crowd_movies(project_id: int):
+@router.delete("/projects/{project_id}/arhmm/crowd-movies/generation")
+async def delete_crowd_movies_generation(project_id: int):
     """Request graceful stop of crowd movie generation."""
     service = CrowdMovieService.get_instance()
     if not service.is_running():

@@ -43,10 +43,10 @@ class DetectorMasksExistsResponse(BaseModel):
 
 
 @router.get(
-    "/projects/{project_id}/detector/status",
+    "/projects/{project_id}/detection/status",
     response_model=DetectorStatusResponse,
 )
-async def get_detector_status(
+async def get_detection_status(
     project_path: Path = Depends(get_project_folder),
 ):
     """
@@ -61,8 +61,8 @@ async def get_detector_status(
     )
 
 
-@router.post("/projects/{project_id}/detector/train")
-async def start_detector_training(
+@router.post("/projects/{project_id}/detection/training")
+async def create_detection_training(
     request: TrainRequest,
     project_path: Path = Depends(get_project_folder),
 ):
@@ -93,8 +93,8 @@ async def start_detector_training(
     return {"message": "Training started"}
 
 
-@router.post("/projects/{project_id}/detector/stop")
-async def stop_detector_training():
+@router.delete("/projects/{project_id}/detection/training")
+async def delete_detection_training():
     """
     Stop detector training or apply.
 
@@ -109,8 +109,8 @@ async def stop_detector_training():
     return {"stopped": stopped}
 
 
-@router.get("/projects/{project_id}/detector/training/status")
-async def get_training_status():
+@router.get("/projects/{project_id}/detection/training")
+async def get_detection_training():
     """
     Get current training progress.
 
@@ -121,8 +121,8 @@ async def get_training_status():
     return progress.to_dict()
 
 
-@router.get("/projects/{project_id}/detector/training/stream")
-async def stream_training_status():
+@router.get("/projects/{project_id}/detection/training/stream")
+async def stream_detection_training():
     """
     SSE stream for real-time training updates.
 

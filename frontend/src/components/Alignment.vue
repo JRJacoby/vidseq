@@ -3,9 +3,9 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
     getAlignmentTrainingStreamUrl,
-    getTrainingStatus,
-    getAlignmentApplyStatus,
-    getAlignmentApplyStreamUrl,
+    getAlignmentTraining,
+    getVideosAlignmentStatus,
+    getVideosAlignmentStreamUrl,
     type TrainingProgress,
     type AlignmentApplyProgress
 } from '@/services/api'
@@ -121,7 +121,7 @@ async function loadTrainingStatus() {
     if (!projectId.value) return
 
     try {
-        progress.value = await getTrainingStatus(projectId.value)
+        progress.value = await getAlignmentTraining(projectId.value)
         if (progress.value.train_loss_history.length > 0 || progress.value.val_loss_history.length > 0) {
             updateChart(progress.value.train_loss_history, progress.value.val_loss_history)
         }
@@ -145,7 +145,7 @@ function connectToAlignStream() {
         alignEventSource = null
     }
 
-    const url = getAlignmentApplyStreamUrl(projectId.value)
+    const url = getVideosAlignmentStreamUrl(projectId.value)
     alignEventSource = new EventSource(url)
 
     alignEventSource.onmessage = (event) => {
@@ -170,7 +170,7 @@ async function loadAlignmentStatus() {
     if (!projectId.value) return
 
     try {
-        alignProgress.value = await getAlignmentApplyStatus(projectId.value)
+        alignProgress.value = await getVideosAlignmentStatus(projectId.value)
 
         // If alignment in progress, connect to stream
         if (alignProgress.value.is_aligning) {

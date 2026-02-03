@@ -2,9 +2,9 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
-    getDetectorTrainingStreamUrl,
-    getDetectorTrainingStatus,
-    stopDetectorTraining,
+    getDetectionTrainingStreamUrl,
+    getDetectionTraining,
+    deleteDetectionTraining,
     type DetectorTrainingProgress,
 } from '@/services/api'
 import { Chart, registerables } from 'chart.js'
@@ -89,7 +89,7 @@ function connectToStream() {
         eventSource = null
     }
 
-    const url = getDetectorTrainingStreamUrl(projectId.value)
+    const url = getDetectionTrainingStreamUrl(projectId.value)
     eventSource = new EventSource(url)
 
     eventSource.onmessage = (event) => {
@@ -115,7 +115,7 @@ async function loadTrainingStatus() {
     if (!projectId.value) return
 
     try {
-        progress.value = await getDetectorTrainingStatus(projectId.value)
+        progress.value = await getDetectionTraining(projectId.value)
         if (progress.value.train_loss_history.length > 0 || progress.value.val_loss_history.length > 0) {
             updateChart(progress.value.train_loss_history, progress.value.val_loss_history)
         }
@@ -133,7 +133,7 @@ async function loadTrainingStatus() {
 async function handleStopTraining() {
     if (!projectId.value) return
     try {
-        await stopDetectorTraining(projectId.value)
+        await deleteDetectionTraining(projectId.value)
     } catch (e) {
         console.error('Failed to stop training:', e)
     }

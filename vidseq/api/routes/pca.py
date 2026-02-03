@@ -11,8 +11,8 @@ from vidseq.services import pca_service
 router = APIRouter()
 
 
-@router.post("/projects/{project_id}/pca/run")
-async def run_pca(
+@router.post("/projects/{project_id}/pca")
+async def create_pca(
     project_id: int,
     n_components: int = 20,
     project_path: Path = Depends(get_project_folder),

@@ -280,8 +280,8 @@ def _run_training_in_background(
     )
 
 
-@router.post("/projects/{project_id}/alignment/train")
-async def train_alignment_model(
+@router.post("/projects/{project_id}/alignment/training")
+async def create_alignment_training(
     project_id: int,
     epochs: int = 100,
     augment: bool = True,
@@ -345,8 +345,8 @@ async def train_alignment_model(
     return {"message": "Training started", "max_epochs": epochs, "augment": augment}
 
 
-@router.get("/projects/{project_id}/alignment/training/status")
-async def get_training_status(
+@router.get("/projects/{project_id}/alignment/training")
+async def get_alignment_training(
     project_id: int,
 ):
     """Get current training progress (non-streaming).
@@ -483,8 +483,8 @@ def _run_alignment_in_background(
     service.apply_alignment_sync(project_path, project_engine)
 
 
-@router.post("/projects/{project_id}/alignment/apply")
-async def apply_alignment(
+@router.post("/projects/{project_id}/videos/alignment")
+async def create_videos_alignment(
     project_id: int,
     project_path: Path = Depends(get_project_folder),
 ):
@@ -525,8 +525,8 @@ async def apply_alignment(
     return {"message": "Alignment started"}
 
 
-@router.get("/projects/{project_id}/alignment/apply/status")
-async def get_alignment_apply_status(
+@router.get("/projects/{project_id}/videos/alignment/status")
+async def get_videos_alignment_status(
     project_id: int,
 ):
     """Get current alignment (apply) progress status."""
@@ -535,8 +535,8 @@ async def get_alignment_apply_status(
     return progress.to_dict()
 
 
-@router.get("/projects/{project_id}/alignment/apply/stream")
-async def stream_alignment_progress(
+@router.get("/projects/{project_id}/videos/alignment/stream")
+async def stream_videos_alignment(
     project_id: int,
 ):
     """Stream alignment (apply) progress via Server-Sent Events.

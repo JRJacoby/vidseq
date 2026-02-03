@@ -1,6 +1,6 @@
 import { ref, computed, watch, onMounted, onUnmounted, type Ref, type ComputedRef } from 'vue'
 import {
-  preloadSegmentation,
+  createSegmentationLoadedModel,
   initVideoSession,
   closeVideoSession,
   type SegmentationStatus,
@@ -82,13 +82,13 @@ export function useSegmentationSession(
     }
     
     if (status === 'not_loaded') {
-      preloadSegmentation()
+      createSegmentationLoadedModel()
     }
   })
 
   onMounted(() => {
     connectSSE()
-    preloadSegmentation()
+    createSegmentationLoadedModel()
   })
 
   onUnmounted(async () => {

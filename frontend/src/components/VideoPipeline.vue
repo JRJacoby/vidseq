@@ -10,12 +10,12 @@ import {
   getCroppedVideoExists,
   getAlignedVideoExists,
   getAlignmentStatus,
-  trainAlignmentModel,
-  applyAlignment,
+  createAlignmentTraining,
+  createVideosAlignment,
   clearAlignmentModel,
   clearAllAlignmentLabels,
   getPCAStatus,
-  runPCA,
+  createPCA,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -238,7 +238,7 @@ const handleTrainAlignment = async () => {
   try {
     // Fire-and-forget: endpoint returns immediately after starting training
     // TEST: no augment, early_stop_patience=20, lr_patience=10
-    await trainAlignmentModel(projectId.value, alignmentEpochs.value, false, 20, 10)
+    await createAlignmentTraining(projectId.value, alignmentEpochs.value, false, 20, 10)
     // Refresh status - will now show is_training=true
     await loadAlignmentStatus()
     // Start polling to detect when training completes
@@ -260,7 +260,7 @@ const handleApplyAlignment = async () => {
 
   try {
     // Start alignment in background (returns immediately)
-    await applyAlignment(projectId.value)
+    await createVideosAlignment(projectId.value)
     // Navigate to Alignment screen to monitor progress
     router.push(`/project/${projectId.value}/alignment`)
   } catch (e: any) {
@@ -307,7 +307,7 @@ const handleRunPCA = async () => {
   if (!projectId.value || isRunningPCA.value) return
   isRunningPCA.value = true
   try {
-    await runPCA(projectId.value, pcaComponents.value)
+    await createPCA(projectId.value, pcaComponents.value)
     await loadPCAStatus()
   } catch (e: any) {
     console.error('Failed to run PCA:', e)
