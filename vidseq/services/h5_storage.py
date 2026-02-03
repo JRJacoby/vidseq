@@ -238,7 +238,8 @@ def create_video_segmentation_files(
 
     Creates tracker, detector, and final mask files with pre-allocated datasets.
     Files are stored in array_data/{video_id}/ directory:
-      - tracker_masks.h5: masks and logits
+      - tracker_masks.h5: masks
+      - tracker_logits.h5: logits
       - detector_masks.h5: compressed masks
       - final_masks.h5: masks
 
@@ -254,7 +255,7 @@ def create_video_segmentation_files(
     video_dir = project_path / "array_data" / str(video_id)
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Tracker: tracker_masks.h5 with 'masks' and 'logits'
+    # 1. Tracker masks: tracker_masks.h5
     with tracker_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
@@ -263,6 +264,9 @@ def create_video_segmentation_files(
             chunks=(1, height, width),
             fillvalue=0,
         )
+
+    # 2. Tracker logits: tracker_logits.h5
+    with logits_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "logits",
             shape=(num_frames, logits_size, logits_size),
@@ -271,7 +275,7 @@ def create_video_segmentation_files(
             fillvalue=0.0,
         )
 
-    # 2. Detector: detector_masks.h5 (compressed)
+    # 3. Detector: detector_masks.h5 (compressed)
     with detector_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
@@ -282,7 +286,7 @@ def create_video_segmentation_files(
             fillvalue=0,
         )
 
-    # 3. Final: final_masks.h5
+    # 4. Final: final_masks.h5
     with final_h5(project_path, video_id, mode="w") as f:
         f.create_dataset(
             "masks",
