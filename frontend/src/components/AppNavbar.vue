@@ -12,12 +12,6 @@ const navigateToVideoPipeline = () => {
   }
 }
 
-const navigateToJobs = () => {
-  if (projectStore.currentProjectId) {
-    router.push(`/project/${projectStore.currentProjectId}/jobs`)
-  }
-}
-
 const navigateToFirstFrames = () => {
   if (projectStore.currentProjectId) {
     router.push(`/project/${projectStore.currentProjectId}/first-frames`)
@@ -91,16 +85,6 @@ const isActiveRoute = (routeName: string) => {
         ARHMM
       </button>
     </div>
-    <div class="navbar-bottom">
-      <button 
-        class="navbar-button"
-        :class="{ 'navbar-button-active': isActiveRoute('jobs') }"
-        @click="navigateToJobs"
-        :disabled="!projectStore.currentProjectId"
-      >
-        Jobs
-      </button>
-    </div>
   </nav>
 </template>
 
@@ -118,14 +102,6 @@ const isActiveRoute = (routeName: string) => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid #e0e0e0;
-}
-
-.navbar-bottom {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0.5rem 0;
 }
 
 .navbar-button {

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VidSeq is a full-stack application for animal behavior modeling from raw video using AI. It combines interactive video annotation with SAM2 (Segment Anything Model 2) for segmentation and YOLO for object detection.
+VidSeq is a full-stack application for animal behavior modeling from raw video using AI. It combines interactive video annotation with SAM2 (Segment Anything Model 2) for segmentation and SegFormer for detection.
 
 ## Development Commands
 
@@ -212,9 +212,8 @@ result = (tensor * 255).to(torch.uint8).cpu().numpy()
 - `projects.py` - Project CRUD operations
 - `videos.py` - Video management, streaming, frame extraction, frame-data deletion
 - `segmentation/` - SAM2 workflows (sessions, inference, masks, frames, state, training)
-- `yolo.py` - YOLO training and detection
+- `detector.py` - SegFormer detector training and inference
 - `filesystem.py` - Directory browsing for file picker
-- `jobs.py` - Async job tracking
 
 **Services** (`services/`):
 - `database_manager.py` - Singleton managing registry DB + per-project DBs
@@ -226,11 +225,10 @@ result = (tensor * 255).to(torch.uint8).cpu().numpy()
 - `segmentation_commands.py` - Worker command handlers
 - `sam2/streaming_segmentor.py` - SAM2 model wrapper
 - `frame_data_service.py` - Frame bbox/score CRUD
-- `yolo_service.py` - YOLO model wrapper
-- `detector_service.py` - DINOv2 detector wrapper
+- `detector_service.py` - SegFormer detector wrapper
 
 **Data Models** (`models/`):
-- `registry.py` - Global registry tables (projects, jobs)
+- `registry.py` - Global registry tables (projects)
 - `video.py`, `frame_data.py`, `conditioning_frame.py` - Per-project tables
 
 ### Frontend Structure (`frontend/src/`)
@@ -245,7 +243,7 @@ result = (tensor * 255).to(torch.uint8).cpu().numpy()
 ### Database Architecture
 
 **Registry DB** (`~/.local/share/vidseq/registry.db`):
-- Global project list and async job tracking
+- Global project list
 
 **Per-Project DB** (`<project_folder>/vidseq.db`):
 - Video metadata, frame annotations, conditioning frames
@@ -274,13 +272,13 @@ segmentation_tcp_client.py    ──TCP──>  segmentation_tcp_server.py
 
 1. **Project Setup**: Create project → Add videos (extracts metadata, creates H5 files)
 2. **Segmentation**: Initialize SAM2 session → Provide prompts (points/boxes) → Generate/store masks
-3. **Detection**: Train YOLO on annotated frames → Run initial detection
+3. **Detection**: Mark training frames → Train SegFormer detector → Apply to videos
 4. **Refinement**: Iteratively improve via interactive segmentation
 
 ---
 
 ## Tech Stack
 
-- **Backend**: Python 3.12+, FastAPI, SQLAlchemy (async), SQLite, PyTorch, OpenCV, SAM2, Ultralytics YOLO, H5PY
+- **Backend**: Python 3.12+, FastAPI, SQLAlchemy (async), SQLite, PyTorch, OpenCV, SAM2, H5PY
 - **Frontend**: Vue 3 (Composition API), TypeScript 5.9, Vite, Pinia, VueUse
 - **Package Managers**: uv (Python), npm (Node)

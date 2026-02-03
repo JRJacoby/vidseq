@@ -109,7 +109,7 @@ def _reencode_to_h264(input_path: Path, output_path: Path) -> bool:
     ]
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -248,7 +248,6 @@ def _process_frames_with_masks(
     crop_size: int,
     mask_dataset,  # h5py.Dataset or None
     cropped_h5_file,
-    progress_callback,
 ) -> bool:
     """Process all frames, reading masks from dataset (or zeros if None).
 
@@ -312,10 +311,6 @@ def _process_frames_with_masks(
             # Write frame
             writer.write(cropped_frame)
 
-            # Progress callback
-            if progress_callback is not None and frame_idx % 100 == 0:
-                progress_callback(frame_idx)
-
             frame_idx += 1
 
         print(f"[Cropped Video] Processed {frame_idx} frames for video {video.id}")
@@ -332,8 +327,6 @@ def process_single_video(
     project_path: Path,
     video,
     crop_size: int,
-    job_id: int,
-    progress_callback=None,
 ) -> bool:
     """Process a single video to create cropped output.
 
@@ -341,8 +334,6 @@ def process_single_video(
         project_path: Path to the project folder
         video: Video model instance
         crop_size: Square crop dimension
-        job_id: Job ID for progress updates
-        progress_callback: Optional callback(frame_idx) for progress updates
 
     Returns:
         True if successful, False otherwise
@@ -391,7 +382,7 @@ def process_single_video(
                     # Process all frames within this context
                     _process_frames_with_masks(
                         cap, writer, video, crop_size, mask_dataset,
-                        cropped_h5_file, progress_callback
+                        cropped_h5_file
                     )
                     processed = True
         except FileNotFoundError:
@@ -403,7 +394,7 @@ def process_single_video(
         if not processed:
             _process_frames_with_masks(
                 cap, writer, video, crop_size, None,
-                cropped_h5_file, progress_callback
+                cropped_h5_file
             )
 
         cap.release()
@@ -470,19 +461,14 @@ class CroppedVideoService:
 
     def extract_all_cropped_videos(
         self,
-        project_id: int,
         project_path: Path,
         videos: list,
-    ) -> list[int]:
+    ) -> None:
         """Start cropped video extraction for all videos.
 
         Args:
-            project_id: ID of the project
             project_path: Path to the project folder
             videos: List of Video model instances
-
-        Returns:
-            List of job IDs created
 
         Raises:
             RuntimeError: If extraction is already in progress
@@ -491,49 +477,6 @@ class CroppedVideoService:
             raise RuntimeError("Extraction already in progress")
 
         self._is_extracting = True
-
-        # Import here to avoid circular imports
-        from sqlalchemy import update
-        from sqlalchemy.orm import Session
-
-        from vidseq.models.registry import Job
-        from vidseq.models.utils import utc_now
-        from vidseq.services.database_manager import DatabaseManager
-
-        db_manager = DatabaseManager.get_instance()
-        registry_engine = db_manager.get_registry_engine()
-
-        # Create jobs for all videos
-        job_ids = []
-        video_configs = []
-
-        with Session(registry_engine) as session:
-            for video in videos:
-                log_path = project_path / "logs" / f"cropped_video_{video.id}.log"
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-
-                job = Job(
-                    type="cropped_video_extraction",
-                    status="pending",
-                    project_id=project_id,
-                    details={
-                        "video_id": video.id,
-                        "video_name": video.name,
-                        "current_frame": 0,
-                        "total_frames": video.num_frames,
-                    },
-                    log_path=str(log_path),
-                )
-                session.add(job)
-                session.flush()
-
-                job_ids.append(job.id)
-                video_configs.append({
-                    "job_id": job.id,
-                    "video": video,
-                })
-
-            session.commit()
 
         def _extract():
             try:
@@ -548,87 +491,21 @@ class CroppedVideoService:
                     save_crop_size(project_path, crop_size)
 
                 # Pass 2: Process each video
-                for config in video_configs:
-                    job_id = config["job_id"]
-                    video = config["video"]
-
+                for video in videos:
                     print(f"[Cropped Video] Processing video {video.id}: {video.name}")
-
-                    # Update job status to running
-                    with Session(registry_engine) as session:
-                        session.execute(
-                            update(Job)
-                            .where(Job.id == job_id)
-                            .values(status="running", updated_at=utc_now())
-                        )
-                        session.commit()
-
-                    # Progress callback
-                    def progress_update(frame_idx):
-                        with Session(registry_engine) as session:
-                            session.execute(
-                                update(Job)
-                                .where(Job.id == job_id)
-                                .values(
-                                    details={
-                                        "video_id": video.id,
-                                        "video_name": video.name,
-                                        "current_frame": frame_idx,
-                                        "total_frames": video.num_frames,
-                                    },
-                                    updated_at=utc_now(),
-                                )
-                            )
-                            session.commit()
 
                     try:
                         success = process_single_video(
                             project_path=project_path,
                             video=video,
                             crop_size=crop_size,
-                            job_id=job_id,
-                            progress_callback=progress_update,
                         )
 
-                        if success:
-                            # Update job status to completed
-                            with Session(registry_engine) as session:
-                                session.execute(
-                                    update(Job)
-                                    .where(Job.id == job_id)
-                                    .values(
-                                        status="completed",
-                                        details={
-                                            "video_id": video.id,
-                                            "video_name": video.name,
-                                            "current_frame": video.num_frames,
-                                            "total_frames": video.num_frames,
-                                        },
-                                        updated_at=utc_now(),
-                                    )
-                                )
-                                session.commit()
-
-                        else:
-                            raise RuntimeError("Processing failed")
+                        if not success:
+                            print(f"[Cropped Video] Failed to process video {video.id}")
 
                     except Exception as e:
                         print(f"[Cropped Video] Error processing video {video.id}: {e}")
-                        with Session(registry_engine) as session:
-                            session.execute(
-                                update(Job)
-                                .where(Job.id == job_id)
-                                .values(
-                                    status="failed",
-                                    details={
-                                        "video_id": video.id,
-                                        "video_name": video.name,
-                                        "error": str(e),
-                                    },
-                                    updated_at=utc_now(),
-                                )
-                            )
-                            session.commit()
 
                 print(f"[Cropped Video] Extraction complete for {len(videos)} videos")
 
@@ -641,5 +518,3 @@ class CroppedVideoService:
 
         self._extraction_thread = threading.Thread(target=_extract, daemon=True)
         self._extraction_thread.start()
-
-        return job_ids

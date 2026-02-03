@@ -128,25 +128,6 @@ export async function getDirectoryListing(path: string): Promise<DirectoryEntry[
     return response.json()
 }
 
-export interface Job {
-    id: number
-    type: string
-    status: string
-    project_id: number
-    details: object
-    log_path: string
-    created_at: string
-    updated_at: string
-}
-
-export async function getJobs(): Promise<Job[]> {
-    const response = await fetch(`${API_BASE}/jobs`)
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch jobs'))
-    }
-    return response.json()
-}
-
 export async function runSegmentation(
     projectId: number,
     videoId: number,
@@ -401,35 +382,6 @@ export async function generateTrainingMasks(
     return response.json()
 }
 
-export interface YOLOModelStatus {
-    exists: boolean
-    model_path: string | null
-    is_training: boolean
-    is_applying: boolean
-}
-
-export async function trainInitialDetectionModel(projectId: number): Promise<void> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/train-model`,
-        { method: 'POST' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to train initial detection model'))
-    }
-}
-
-export async function runInitialDetection(
-    projectId: number
-): Promise<void> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/run-initial-detection`,
-        { method: 'POST' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to run initial detection'))
-    }
-}
-
 export async function segmentAllVideos(projectId: number): Promise<{ job_ids: number[] }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/segment-all-videos`,
@@ -437,18 +389,6 @@ export async function segmentAllVideos(projectId: number): Promise<{ job_ids: nu
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to segment all videos'))
-    }
-    return response.json()
-}
-
-export async function getYOLOModelStatus(
-    projectId: number
-): Promise<YOLOModelStatus> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/model-status`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to get YOLO model status'))
     }
     return response.json()
 }
