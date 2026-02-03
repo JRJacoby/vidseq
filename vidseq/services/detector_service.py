@@ -23,7 +23,7 @@ from vidseq.models.video import Video
 from vidseq.models.frame_data import FrameData
 from vidseq.schemas.detector import DetectorTrainingProgress
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.h5_storage import tracker_h5, detector_h5
+from vidseq.services.array_storage import tracker_masks, detector_masks
 
 logger = logging.getLogger("vidseq.detector")
 logger.setLevel(logging.DEBUG)
@@ -82,9 +82,9 @@ class DetectorDataset(Dataset):
         # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Load mask from HDF5 (values are 0 or 255, cached by h5_storage)
-        with tracker_h5(self.project_path, video_id) as h5_file:
-            mask = np.array(h5_file["masks"][frame_idx], dtype=np.uint8)
+        # Load mask from HDF5 (values are 0 or 255, cached by array_storage)
+        with tracker_masks(self.project_path, video_id) as masks:
+            mask = np.array(masks[frame_idx], dtype=np.uint8)
 
         # Convert 0/255 to 0/1 class labels
         mask_labels = (mask > 127).astype(np.uint8)
@@ -93,7 +93,7 @@ class DetectorDataset(Dataset):
         return frame_rgb, mask_labels
 
     def close(self):
-        """Close video files. H5 files are managed by h5_storage module."""
+        """Close video files. H5 files are managed by array_storage module."""
         for cap in self._video_cache.values():
             cap.release()
         self._video_cache.clear()
@@ -556,13 +556,12 @@ class DetectorService:
         # Use bfloat16 for faster inference
         with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for video_id, frame_list in frames_by_video.items():
-                # Read original mask shape from tracker h5 file
-                with tracker_h5(project_path, video_id) as tracker_file:
-                    mask_shape = tracker_file["masks"].shape  # (N, H, W)
+                # Read original mask shape from tracker masks
+                with tracker_masks(project_path, video_id) as masks_array:
+                    mask_shape = masks_array.shape  # (N, H, W)
                     _, orig_h, orig_w = mask_shape
 
-                with detector_h5(project_path, video_id, mode="a") as h5_file:
-                    detector_masks = h5_file["masks"]
+                with detector_masks(project_path, video_id, mode="a") as det_masks:
 
                     for video_path, frame_idx in frame_list:
                         # Load frame
@@ -595,7 +594,7 @@ class DetectorService:
                         mask_np = (mask_pred[0].cpu().numpy() * 255).astype(np.uint8)
 
                         # Save to HDF5
-                        detector_masks[frame_idx] = mask_np
+                        det_masks[frame_idx] = mask_np
 
                         self._training_progress.apply_current += 1
 
