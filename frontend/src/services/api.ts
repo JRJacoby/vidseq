@@ -908,7 +908,7 @@ export async function checkPCAScoresExist(
     videoId: number,
 ): Promise<boolean> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/pca-scores-exists`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pca-scores/exists`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to check PCA scores'))

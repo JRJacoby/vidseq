@@ -126,7 +126,7 @@ async def get_pca_scores(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/projects/{project_id}/videos/{video_id}/pca-scores-exists")
+@router.get("/projects/{project_id}/videos/{video_id}/pca-scores/exists")
 async def check_pca_scores_exist(
     project_id: int,
     video_id: int,
