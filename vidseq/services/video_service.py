@@ -126,6 +126,7 @@ async def delete_frame_data(
     # 1. Clear H5 files
     with h5_storage.tracker_h5(project_path, video_id, "a") as f:
         f["masks"][frame_idx] = 0
+    with h5_storage.logits_h5(project_path, video_id, "a") as f:
         f["logits"][frame_idx] = 0
     with h5_storage.detector_h5(project_path, video_id, "a") as f:
         f["masks"][frame_idx] = 0
