@@ -308,12 +308,10 @@ async function saveAndAdvance() {
 // Reset current frame's label
 async function handleResetFrame() {
   try {
-    const result = await deleteAlignmentLabel(projectId.value, videoId.value, currentFrameIdx.value)
-    if (result.deleted) {
-      alignmentLabelFrames.value = alignmentLabelFrames.value.filter(
-        (f) => f !== currentFrameIdx.value
-      )
-    }
+    await deleteAlignmentLabel(projectId.value, videoId.value, currentFrameIdx.value)
+    alignmentLabelFrames.value = alignmentLabelFrames.value.filter(
+      (f) => f !== currentFrameIdx.value
+    )
   } catch (e) {
     console.error('Failed to reset frame:', e)
   }
