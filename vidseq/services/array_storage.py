@@ -122,83 +122,80 @@ def open_h5_with_lock(h5_path: Path, mode: str):
 
 
 @contextmanager
-def tracker_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for tracker masks H5 file: array_data/{video_id}/tracker_masks.h5
+def tracker_masks(project_path: Path, video_id: int, mode: str = "r"):
+    """Tracker masks array: array_data/{video_id}/tracker_masks.h5
 
     Usage:
-        with tracker_h5(project_path, video_id) as f:
-            mask = f["masks"][frame_idx]
+        with tracker_masks(project_path, video_id) as masks:
+            mask = masks[frame_idx]
 
-        with tracker_h5(project_path, video_id, mode="a") as f:
-            f["masks"][frame_idx] = mask
+        with tracker_masks(project_path, video_id, mode="a") as masks:
+            masks[frame_idx] = mask
     """
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_masks.h5"
+    h5_path = _construct_h5_path(project_path, video_id, "tracker_masks.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def logits_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for tracker logits H5 file: array_data/{video_id}/tracker_logits.h5
+def tracker_logits(project_path: Path, video_id: int, mode: str = "r"):
+    """Tracker logits array: array_data/{video_id}/tracker_logits.h5
 
     Usage:
-        with logits_h5(project_path, video_id) as f:
-            logits = f["logits"][frame_idx]
-
-        with logits_h5(project_path, video_id, mode="a") as f:
-            f["logits"][frame_idx] = logits
+        with tracker_logits(project_path, video_id) as logits:
+            prev_logits = logits[frame_idx]
     """
-    h5_path = project_path / "array_data" / str(video_id) / "tracker_logits.h5"
+    h5_path = _construct_h5_path(project_path, video_id, "tracker_logits.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def detector_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for detector masks H5 file: array_data/{video_id}/detector_masks.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "detector_masks.h5"
+def detector_masks(project_path: Path, video_id: int, mode: str = "r"):
+    """Detector masks array: array_data/{video_id}/detector_masks.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "detector_masks.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def final_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for final masks H5 file: array_data/{video_id}/final_masks.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "final_masks.h5"
+def final_masks(project_path: Path, video_id: int, mode: str = "r"):
+    """Final masks array: array_data/{video_id}/final_masks.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "final_masks.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def cropped_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for cropped masks H5 file: array_data/{video_id}/cropped_masks.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "cropped_masks.h5"
+def cropped_masks(project_path: Path, video_id: int, mode: str = "r"):
+    """Cropped masks array: array_data/{video_id}/cropped_masks.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "cropped_masks.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def aligned_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for aligned masks H5 file: array_data/{video_id}/aligned_masks.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "aligned_masks.h5"
+def aligned_masks(project_path: Path, video_id: int, mode: str = "r"):
+    """Aligned masks array: array_data/{video_id}/aligned_masks.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "aligned_masks.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def predictions_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for alignment keypoints H5 file: array_data/{video_id}/alignment_keypoints.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
+def alignment_keypoints(project_path: Path, video_id: int, mode: str = "r"):
+    """Alignment keypoints array: array_data/{video_id}/alignment_keypoints.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "alignment_keypoints.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 @contextmanager
-def pca_scores_h5(project_path: Path, video_id: int, mode: str = "r"):
-    """Context manager for PCA scores H5 file: array_data/{video_id}/pca_scores.h5"""
-    h5_path = project_path / "array_data" / str(video_id) / "pca_scores.h5"
+def pca_scores(project_path: Path, video_id: int, mode: str = "r"):
+    """PCA scores array: array_data/{video_id}/pca_scores.h5"""
+    h5_path = _construct_h5_path(project_path, video_id, "pca_scores.h5")
     with open_h5_with_lock(h5_path, mode) as f:
-        yield f
+        yield f["data"]
 
 
 def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
@@ -261,9 +258,10 @@ def create_video_segmentation_files(
     video_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Tracker masks: tracker_masks.h5
-    with tracker_h5(project_path, video_id, mode="w") as f:
+    tracker_masks_path = _construct_h5_path(project_path, video_id, "tracker_masks.h5")
+    with open_h5_with_lock(tracker_masks_path, mode="w") as f:
         f.create_dataset(
-            "masks",
+            "data",
             shape=(num_frames, height, width),
             dtype=np.uint8,
             chunks=(1, height, width),
@@ -271,9 +269,10 @@ def create_video_segmentation_files(
         )
 
     # 2. Tracker logits: tracker_logits.h5
-    with logits_h5(project_path, video_id, mode="w") as f:
+    tracker_logits_path = _construct_h5_path(project_path, video_id, "tracker_logits.h5")
+    with open_h5_with_lock(tracker_logits_path, mode="w") as f:
         f.create_dataset(
-            "logits",
+            "data",
             shape=(num_frames, logits_size, logits_size),
             dtype=np.float32,
             chunks=(1, logits_size, logits_size),
@@ -281,9 +280,10 @@ def create_video_segmentation_files(
         )
 
     # 3. Detector: detector_masks.h5 (compressed)
-    with detector_h5(project_path, video_id, mode="w") as f:
+    detector_masks_path = _construct_h5_path(project_path, video_id, "detector_masks.h5")
+    with open_h5_with_lock(detector_masks_path, mode="w") as f:
         f.create_dataset(
-            "masks",
+            "data",
             shape=(num_frames, height, width),
             dtype=np.uint8,
             chunks=(1, height, width),
@@ -292,9 +292,10 @@ def create_video_segmentation_files(
         )
 
     # 4. Final: final_masks.h5
-    with final_h5(project_path, video_id, mode="w") as f:
+    final_masks_path = _construct_h5_path(project_path, video_id, "final_masks.h5")
+    with open_h5_with_lock(final_masks_path, mode="w") as f:
         f.create_dataset(
-            "masks",
+            "data",
             shape=(num_frames, height, width),
             dtype=np.uint8,
             chunks=(1, height, width),
@@ -369,7 +370,7 @@ def reset_video_segmentation_files(
 # These files are created lazily when their respective pipeline runs
 
 
-def create_cropped_h5(
+def create_cropped_masks(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -383,9 +384,10 @@ def create_cropped_h5(
         num_frames: Total number of frames in the video
         crop_size: Square crop dimension
     """
-    with cropped_h5(project_path, video_id, mode="w") as f:
+    h5_path = _construct_h5_path(project_path, video_id, "cropped_masks.h5")
+    with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
-            "masks",
+            "data",
             shape=(num_frames, crop_size, crop_size),
             dtype=np.uint8,
             fillvalue=0,
@@ -394,7 +396,7 @@ def create_cropped_h5(
         )
 
 
-def create_aligned_h5(
+def create_aligned_masks(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -408,9 +410,10 @@ def create_aligned_h5(
         num_frames: Total number of frames in the video
         crop_size: Square crop dimension (same as cropped masks)
     """
-    with aligned_h5(project_path, video_id, mode="w") as f:
+    h5_path = _construct_h5_path(project_path, video_id, "aligned_masks.h5")
+    with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
-            "masks",
+            "data",
             shape=(num_frames, crop_size, crop_size),
             dtype=np.uint8,
             fillvalue=0,
@@ -419,13 +422,13 @@ def create_aligned_h5(
         )
 
 
-def create_alignment_predictions_h5(
+def create_alignment_keypoints(
     project_path: Path,
     video_id: int,
     num_frames: int,
     crop_size: int,
 ) -> None:
-    """Create alignment predictions (heatmaps) H5 file for a video.
+    """Create alignment keypoints (heatmaps) H5 file for a video.
 
     Args:
         project_path: Path to the project folder
@@ -433,9 +436,10 @@ def create_alignment_predictions_h5(
         num_frames: Total number of frames in the video
         crop_size: Heatmap dimensions (same as cropped masks)
     """
-    with predictions_h5(project_path, video_id, mode="w") as f:
+    h5_path = _construct_h5_path(project_path, video_id, "alignment_keypoints.h5")
+    with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
-            "heatmaps",
+            "data",
             shape=(num_frames, crop_size, crop_size, 2),
             dtype=np.float32,
             fillvalue=0.0,
@@ -444,7 +448,7 @@ def create_alignment_predictions_h5(
         )
 
 
-def create_pca_scores_h5(
+def create_pca_scores(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -458,9 +462,10 @@ def create_pca_scores_h5(
         num_frames: Total number of frames in the video
         n_components: Number of PCA components
     """
-    with pca_scores_h5(project_path, video_id, mode="w") as f:
+    h5_path = _construct_h5_path(project_path, video_id, "pca_scores.h5")
+    with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
-            "scores",
+            "data",
             shape=(num_frames, n_components),
             dtype=np.float32,
             fillvalue=0.0,
