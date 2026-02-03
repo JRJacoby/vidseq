@@ -13,7 +13,12 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
-from vidseq.services.h5_storage import tracker_h5, detector_h5, final_h5, logits_h5
+from vidseq.services.array_storage import (
+    tracker_masks,
+    tracker_logits,
+    detector_masks,
+    final_masks,
+)
 from vidseq.services.segmentation_model.streaming_segmentor import SAM2StreamingSegmentor as StreamingSegmentor
 
 
@@ -176,16 +181,14 @@ def handle_init_session(
     try:
         frame_source = VideoFrameSource(video_path)
 
-        # Open H5 just to get mask dataset for session init, then close
-        with tracker_h5(project_path, video_id, "r") as f:
-            mask_dataset = f["masks"]
-
+        # Open tracker masks just for session init, then close
+        with tracker_masks(project_path, video_id, "r") as mask_data:
             segmentor.open_video(
                 video_id=str(video_id),
                 frame_dims=(height, width),
                 cond_frame_indices=cond_frame_indices,
                 frames=frame_source,
-                masks=mask_dataset,
+                masks=mask_data,
             )
 
         resources = VideoResources(
@@ -244,13 +247,10 @@ def handle_add_prompt(
     px = x * resources.width
     py = y * resources.height
 
-    with tracker_h5(resources.project_path, video_id, "a") as tracker_f, \
-         logits_h5(resources.project_path, video_id, "a") as logits_f:
-        mask_dataset = tracker_f["masks"]
-        logits_dataset = logits_f["logits"]
-
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Get mask before for comparison
-        mask_before = np.array(mask_dataset[frame_idx])
+        mask_before = np.array(mask_data[frame_idx])
         before_sum = int(mask_before.sum())
 
         # Run segmentation - returns mask and logits
@@ -260,14 +260,12 @@ def handle_add_prompt(
             location=(px, py),
             label=label,
             frames=resources.frame_source,
-            masks=mask_dataset,
+            masks=mask_data,
         )
 
         # Write results to HDF5
-        mask_dataset[frame_idx] = mask
-        logits_dataset[frame_idx] = logits
-        tracker_f.flush()
-        logits_f.flush()
+        mask_data[frame_idx] = mask
+        logits_data[frame_idx] = logits
 
     after_sum = int(mask.sum())
     print(f"[SAM3 Worker] add_prompt frame={frame_idx} label={label} "
@@ -323,17 +321,14 @@ def handle_refine_mask(
         locations = [(x * width, y * height)]
         labels = [label]
 
-    with tracker_h5(resources.project_path, video_id, "a") as tracker_f, \
-         logits_h5(resources.project_path, video_id, "a") as logits_f:
-        mask_dataset = tracker_f["masks"]
-        logits_dataset = logits_f["logits"]
-
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Get mask before for comparison
-        mask_before = np.array(mask_dataset[frame_idx])
+        mask_before = np.array(mask_data[frame_idx])
         before_sum = int(mask_before.sum())
 
         # Read previous logits
-        prev_logits = np.array(logits_dataset[frame_idx])
+        prev_logits = np.array(logits_data[frame_idx])
 
         # Run refinement with all points - returns mask and logits
         mask, logits = segmentor.refine_mask(
@@ -342,15 +337,13 @@ def handle_refine_mask(
             location=locations,
             label=labels,
             frames=resources.frame_source,
-            masks=mask_dataset,
+            masks=mask_data,
             prev_logits=prev_logits,
         )
 
         # Write results to HDF5
-        mask_dataset[frame_idx] = mask
-        logits_dataset[frame_idx] = logits
-        tracker_f.flush()
-        logits_f.flush()
+        mask_data[frame_idx] = mask
+        logits_data[frame_idx] = logits
 
     after_sum = int(mask.sum())
     print(f"[SAM3 Worker] refine_mask frame={frame_idx} "
@@ -389,24 +382,19 @@ def handle_propagate(
 
     resources = _video_resources[video_id]
 
-    with tracker_h5(resources.project_path, video_id, "a") as tracker_f, \
-         logits_h5(resources.project_path, video_id, "a") as logits_f:
-        mask_dataset = tracker_f["masks"]
-        logits_dataset = logits_f["logits"]
-
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Propagate - returns mask and logits
         mask, logits = segmentor.propagate(
             video_id=str(video_id),
             frame_idx=frame_idx,
             frames=resources.frame_source,
-            masks=mask_dataset,
+            masks=mask_data,
         )
 
         # Write results to HDF5
-        mask_dataset[frame_idx] = mask
-        logits_dataset[frame_idx] = logits
-        tracker_f.flush()
-        logits_f.flush()
+        mask_data[frame_idx] = mask
+        logits_data[frame_idx] = logits
 
     return {
         "type": "propagate_result",
@@ -442,28 +430,22 @@ def handle_generate_training_masks(
 
     resources = _video_resources[video_id]
 
-    with tracker_h5(resources.project_path, video_id, "a") as tracker_f, \
-         logits_h5(resources.project_path, video_id, "a") as logits_f:
-        mask_dataset = tracker_f["masks"]
-        logits_dataset = logits_f["logits"]
-
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Callback to write each result to HDF5
         def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray) -> None:
-            mask_dataset[frame_idx] = mask
-            logits_dataset[frame_idx] = logits
+            mask_data[frame_idx] = mask
+            logits_data[frame_idx] = logits
 
         frame_indices = segmentor.propagate_sequential(
             video_id=str(video_id),
             start_frame=start_frame_idx,
             num_frames=max_frames,
             frames=resources.frame_source,
-            masks=mask_dataset,
+            masks=mask_data,
             on_result=on_result,
             progress_interval=50,
         )
-
-        tracker_f.flush()
-        logits_f.flush()
 
     return {
         "type": "generate_training_masks_result",
@@ -547,19 +529,19 @@ def handle_propagate_with_detector(
                     "total": num_frames,
                 })
 
-        # Open H5 files with locking using h5_storage context managers
-        with tracker_h5(project_path, video_id, "a") as tracker_f, \
-             detector_h5(project_path, video_id, "a") as detector_f, \
-             final_h5(project_path, video_id, "a") as final_f:
+        # Open arrays with locking using array_storage context managers
+        with tracker_masks(project_path, video_id, "a") as trk_mask_data, \
+             detector_masks(project_path, video_id, "a") as det_mask_data, \
+             final_masks(project_path, video_id, "a") as fin_mask_data:
 
             segmentor.propagate_with_detector(
                 video_id=str(video_id),
                 num_frames=num_frames,
                 frames=resources.frame_source,
                 get_detector_mask=get_detector_mask,
-                tracker_masks=tracker_f["masks"],
-                detector_masks=detector_f["masks"],
-                final_masks=final_f["masks"],
+                tracker_masks=trk_mask_data,
+                detector_masks=det_mask_data,
+                final_masks=fin_mask_data,
                 on_progress=on_progress,
                 check_interval=check_interval,
                 iou_threshold=iou_threshold,
