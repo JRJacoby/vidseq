@@ -300,8 +300,8 @@ def create_video_segmentation_files(
 def delete_video_segmentation_files(project_path: Path, video_id: int) -> None:
     """Delete all segmentation H5 files for a video.
 
-    Deletes tracker, detector, and final mask files from array_data/{video_id}/.
-    Does NOT touch cropped/aligned masks.
+    Deletes tracker_masks.h5, tracker_logits.h5, detector_masks.h5, and final_masks.h5
+    from array_data/{video_id}/. Does NOT touch cropped/aligned masks.
 
     Also evicts any cached read handles for these files.
 
@@ -310,7 +310,7 @@ def delete_video_segmentation_files(project_path: Path, video_id: int) -> None:
         video_id: ID of the video
     """
     video_dir = project_path / "array_data" / str(video_id)
-    file_names = ["tracker_masks.h5", "detector_masks.h5", "final_masks.h5"]
+    file_names = ["tracker_masks.h5", "tracker_logits.h5", "detector_masks.h5", "final_masks.h5"]
 
     for file_name in file_names:
         h5_path = video_dir / file_name
