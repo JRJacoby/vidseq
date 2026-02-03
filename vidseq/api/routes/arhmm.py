@@ -47,9 +47,14 @@ async def run_arhmm(
     if service.is_running():
         raise HTTPException(status_code=400, detail="ARHMM fitting already in progress")
 
-    # Validate PCA scores exist
-    scores_dir = project_path / "pca_scores"
-    if not scores_dir.exists() or not list(scores_dir.glob("*.h5")):
+    # Validate PCA scores exist in array_data/{video_id}/pca_scores.h5
+    array_data_dir = project_path / "array_data"
+    has_pca_scores = array_data_dir.exists() and any(
+        (video_dir / "pca_scores.h5").exists()
+        for video_dir in array_data_dir.iterdir()
+        if video_dir.is_dir()
+    )
+    if not has_pca_scores:
         raise HTTPException(
             status_code=400,
             detail="PCA scores not found. Run PCA first before fitting ARHMM.",
@@ -63,7 +68,7 @@ async def run_arhmm(
 
     logger.info(
         f"POST /arhmm/run: project_id={project_id}, fps={fps}, "
-        f"scores_dir={scores_dir}"
+        f"array_data_dir={array_data_dir}"
     )
 
     # Start fitting in background
