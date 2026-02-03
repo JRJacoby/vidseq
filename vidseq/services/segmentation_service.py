@@ -39,9 +39,6 @@ def get_mask_png(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
-        num_frames=video.num_frames,
-        height=video.height,
-        width=video.width,
     )
 
     # DEBUG: Log mask loading
@@ -76,8 +73,6 @@ def get_masks_batch_json(
         start_frame=start_frame,
         count=count,
         num_frames=video.num_frames,
-        height=video.height,
-        width=video.width,
     )
 
     result = []
@@ -112,8 +107,6 @@ def get_final_mask_png(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
-        height=video.height,
-        width=video.width,
     )
     return mask_to_png(mask)
 
@@ -142,8 +135,6 @@ def get_final_masks_batch_json(
         start_frame=start_frame,
         count=count,
         num_frames=video.num_frames,
-        height=video.height,
-        width=video.width,
     )
 
     result = []
@@ -156,19 +147,6 @@ def get_final_masks_batch_json(
         })
 
     return result
-
-
-def final_masks_exist(project_path: Path, video_id: int) -> bool:
-    """Check if final (corrected) masks exist for a video.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: Video ID
-
-    Returns:
-        True if final masks file exists
-    """
-    return h5_storage.video_has_final_masks(project_path, video_id)
 
 
 def reset_frame_memory(project_id: int, video_id: int, frame_idx: int) -> None:
