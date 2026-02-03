@@ -219,7 +219,7 @@ def compute_global_crop_size(
         try:
             with tracker_masks(project_path, video_id, "r") as masks:
                 for frame_idx, height, width in frame_list:
-                    mask = np.array(masks[frame_idx])
+                    mask = masks[frame_idx]
                     bbox = compute_bbox_from_mask(mask)
                     if bbox is not None:
                         x1, y1, x2, y2 = bbox
@@ -267,7 +267,7 @@ def _process_frames_with_masks(
 
             # Load mask for this frame
             if mask_dataset is not None:
-                mask = np.array(mask_dataset[frame_idx])
+                mask = mask_dataset[frame_idx]
             else:
                 mask = np.zeros((video.height, video.width), dtype=np.uint8)
 

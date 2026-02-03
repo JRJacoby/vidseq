@@ -37,7 +37,7 @@ def get_mask_png(
         PNG bytes of the mask (zeros if no mask exists)
     """
     with tracker_masks(project_path, video.id, "r") as masks:
-        mask = np.array(masks[frame_idx])
+        mask = masks[frame_idx]
 
     # DEBUG: Log mask loading
     print(f"[DEBUG get_mask_png] project={project_path}, video={video.id}, frame={frame_idx}")
@@ -98,7 +98,7 @@ def get_final_mask_png(
         PNG bytes of the mask (zeros if no mask exists)
     """
     with final_masks(project_path, video.id, "r") as masks:
-        mask = np.array(masks[frame_idx])
+        mask = masks[frame_idx]
     return mask_to_png(mask)
 
 

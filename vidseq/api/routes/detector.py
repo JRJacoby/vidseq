@@ -174,7 +174,7 @@ async def get_detector_mask(
     Returns PNG binary.
     """
     with detector_masks(project_path, video.id, "r") as masks:
-        mask = np.array(masks[frame_idx])
+        mask = masks[frame_idx]
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")

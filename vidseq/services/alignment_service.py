@@ -909,7 +909,7 @@ def load_prediction(
 
     try:
         with alignment_keypoints(project_path, video_id) as keypoints:
-            return np.array(keypoints[frame_idx])
+            return keypoints[frame_idx]
     except Exception as e:
         logger.warning(f"load_prediction: failed to load frame {frame_idx} for video {video_id}: {e}")
         return None
@@ -2184,7 +2184,7 @@ class AlignmentService:
                         writer.write(rotated)
 
                         # Load cropped mask, rotate, threshold, and save
-                        cropped_mask = np.array(cropped_mask_data[frame_idx])
+                        cropped_mask = cropped_mask_data[frame_idx]
                         aligned_mask = rotate_mask(cropped_mask, angle)
                         aligned_mask_data[frame_idx] = aligned_mask
 

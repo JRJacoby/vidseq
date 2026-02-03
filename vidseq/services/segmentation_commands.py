@@ -250,7 +250,7 @@ def handle_add_prompt(
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Get mask before for comparison
-        mask_before = np.array(mask_data[frame_idx])
+        mask_before = mask_data[frame_idx]
         before_sum = int(mask_before.sum())
 
         # Run segmentation - returns mask and logits
@@ -324,11 +324,11 @@ def handle_refine_mask(
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Get mask before for comparison
-        mask_before = np.array(mask_data[frame_idx])
+        mask_before = mask_data[frame_idx]
         before_sum = int(mask_before.sum())
 
         # Read previous logits
-        prev_logits = np.array(logits_data[frame_idx])
+        prev_logits = logits_data[frame_idx]
 
         # Run refinement with all points - returns mask and logits
         mask, logits = segmentor.refine_mask(

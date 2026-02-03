@@ -69,7 +69,7 @@ async def mark_training(
     # Load masks and compute bboxes, then save to SQLite
     with tracker_masks(project_path, video.id, "r") as masks:
         for frame_idx in range(start_frame, end_frame + 1):
-            mask = np.array(masks[frame_idx])
+            mask = masks[frame_idx]
             bbox = compute_bbox_from_mask(mask)
             if bbox is not None:
                 await frame_data_service.save_bbox(session, video.id, frame_idx, bbox)
