@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from vidseq.services.h5_storage import aligned_h5, pca_scores_h5
+from vidseq.services.h5_storage import aligned_h5, pca_scores_h5, create_pca_scores_h5
 
 logger = logging.getLogger(__name__)
 
@@ -417,36 +417,29 @@ CHUNK_SIZE = 1000  # Frames per chunk when loading from HDF5
 def _compute_and_store_scores(
     project_path: Path,
     pca: GPUPCA,
-    h5_files: list[Path],
+    video_ids: list[int],
 ) -> None:
     """
     Compute PCA scores for all videos and store in HDF5 files.
 
     After PCA fitting, this function transforms each video's aligned masks
-    into PCA scores and stores them in pca_scores/{video_id}.h5.
+    into PCA scores and stores them in array_data/{video_id}/pca_scores.h5.
 
     Args:
         project_path: Path to the project folder
         pca: Fitted GPUPCA object
-        h5_files: List of aligned mask HDF5 file paths
+        video_ids: List of video IDs to process
     """
-    scores_dir = project_path / "pca_scores"
-    scores_dir.mkdir(exist_ok=True)
-
-    for h5_path in tqdm(h5_files, desc="Computing scores"):
-        video_id = int(h5_path.stem)
-
+    for video_id in tqdm(video_ids, desc="Computing scores"):
         with aligned_h5(project_path, video_id, "r") as f_in:
             masks = f_in["masks"]
             n_frames = masks.shape[0]
 
-            with pca_scores_h5(project_path, video_id, "w") as f_out:
-                # Pre-allocate scores dataset
-                scores_ds = f_out.create_dataset(
-                    "scores",
-                    shape=(n_frames, pca.n_components),
-                    dtype=np.float32,
-                )
+            # Create the PCA scores H5 file with pre-allocated dataset
+            create_pca_scores_h5(project_path, video_id, n_frames, pca.n_components)
+
+            with pca_scores_h5(project_path, video_id, "a") as f_out:
+                scores_ds = f_out["scores"]
 
                 # Process in chunks to avoid memory issues
                 for start in range(0, n_frames, CHUNK_SIZE):
@@ -473,18 +466,25 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     logger.info(f"[PCA] Starting PCA with {n_components} components")
     logger.info(f"[PCA] JAX devices: {jax.devices()}")
 
-    aligned_masks_dir = project_path / "aligned_masks"
-    if not aligned_masks_dir.exists():
-        raise FileNotFoundError(f"No aligned_masks directory found at {aligned_masks_dir}")
+    array_data_dir = project_path / "array_data"
+    if not array_data_dir.exists():
+        raise FileNotFoundError(f"No array_data directory found at {array_data_dir}")
 
-    h5_files = sorted(aligned_masks_dir.glob("*.h5"))
-    if not h5_files:
+    video_ids = []
+    for video_dir in sorted(array_data_dir.iterdir()):
+        if video_dir.is_dir() and (video_dir / "aligned_masks.h5").exists():
+            try:
+                video_ids.append(int(video_dir.name))
+            except ValueError:
+                continue
+
+    if not video_ids:
         raise FileNotFoundError("No aligned mask files found")
 
-    logger.info(f"[PCA] Found {len(h5_files)} aligned mask files")
+    logger.info(f"[PCA] Found {len(video_ids)} aligned mask files")
 
     # Get mask dimensions from first file
-    first_video_id = int(h5_files[0].stem)
+    first_video_id = video_ids[0]
     with aligned_h5(project_path, first_video_id, "r") as f:
         mask_shape = f["masks"].shape
         height, width = mask_shape[1], mask_shape[2]
@@ -495,9 +495,8 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
 
     # Process each video file
     total_frames = 0
-    for h5_path in h5_files:
-        logger.info(f"[PCA] Processing {h5_path.name}")
-        video_id = int(h5_path.stem)
+    for video_id in video_ids:
+        logger.info(f"[PCA] Processing video {video_id}")
 
         with aligned_h5(project_path, video_id, "r") as f:
             masks = f["masks"]
@@ -505,7 +504,7 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
             total_frames += n_frames
 
             # Process in chunks
-            for start in tqdm(range(0, n_frames, CHUNK_SIZE), desc=f"Video {h5_path.stem}"):
+            for start in tqdm(range(0, n_frames, CHUNK_SIZE), desc=f"Video {video_id}"):
                 end = min(start + CHUNK_SIZE, n_frames)
                 chunk = masks[start:end]  # (chunk_size, H, W)
 
@@ -544,7 +543,7 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
 
     # Compute and store scores for all videos
     logger.info("[PCA] Computing and storing scores for all videos...")
-    _compute_and_store_scores(project_path, pca, h5_files)
+    _compute_and_store_scores(project_path, pca, video_ids)
 
     logger.info("[PCA] Done!")
 
@@ -621,11 +620,6 @@ def get_pca_scores_downsampled(
     """
     from vidseq.services.lttb import downsample_scores
 
-    scores_path = project_path / "pca_scores" / f"{video_id}.h5"
-
-    if not scores_path.exists():
-        raise FileNotFoundError(f"PCA scores not found for video {video_id}")
-
     with pca_scores_h5(project_path, video_id, "r") as f:
         scores_ds = f["scores"]
         n_frames, n_components = scores_ds.shape
@@ -663,5 +657,5 @@ def get_pca_scores_downsampled(
 
 def check_pca_scores_exist(project_path: Path, video_id: int) -> bool:
     """Check if PCA scores exist for a video."""
-    scores_path = project_path / "pca_scores" / f"{video_id}.h5"
+    scores_path = project_path / "array_data" / str(video_id) / "pca_scores.h5"
     return scores_path.exists()
