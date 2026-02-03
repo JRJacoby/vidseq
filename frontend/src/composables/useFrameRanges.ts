@@ -1,9 +1,9 @@
 import { ref, watch, type Ref } from 'vue'
 import {
     getFrameRanges,
-    validateTrainingRange,
-    markTrainingRange,
-    unmarkTrainingRange,
+    getTrainingRangeValidation,
+    createTrainingRange,
+    deleteTrainingRange,
 } from '@/services/api'
 
 export interface UseFrameRangesReturn {
@@ -47,7 +47,7 @@ export function useFrameRanges(
         }
         
         try {
-            const response = await validateTrainingRange(
+            const response = await getTrainingRangeValidation(
                 projectId.value,
                 videoId.value,
                 startFrame,
@@ -69,7 +69,7 @@ export function useFrameRanges(
         }
         
         try {
-            await markTrainingRange(
+            await createTrainingRange(
                 projectId.value,
                 videoId.value,
                 startFrame,
@@ -87,7 +87,7 @@ export function useFrameRanges(
         if (!projectId.value || !videoId.value) return
         
         try {
-            await unmarkTrainingRange(
+            await deleteTrainingRange(
                 projectId.value,
                 videoId.value,
                 startFrame,
