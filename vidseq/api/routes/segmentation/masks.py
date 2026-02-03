@@ -4,10 +4,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from vidseq.api.dependencies import get_project_folder, get_video
+from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import segmentation_service
+from vidseq.services import frame_data_service, segmentation_service
 
 router = APIRouter()
 
@@ -110,15 +111,15 @@ async def get_final_masks_batch(
 )
 async def final_masks_exist(
     video: Video = Depends(get_video),
-    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """
     Check if final (corrected) masks exist for a video.
 
     Returns {"exists": true/false}.
     """
-    exists = segmentation_service.final_masks_exist(
-        project_path=project_path,
+    exists = await frame_data_service.video_has_any_final_masks(
+        session=session,
         video_id=video.id,
     )
     return {"exists": exists}
