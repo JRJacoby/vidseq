@@ -228,7 +228,7 @@ def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
 # ----- Video-level H5 file management -----
 
 
-def create_video_segmentation_files(
+def create_video_segmentation_arrays(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -236,14 +236,14 @@ def create_video_segmentation_files(
     width: int,
     logits_size: int = 256,
 ) -> None:
-    """Create all segmentation H5 files for a video upfront.
+    """Create all segmentation arrays for a video upfront.
 
-    Creates tracker, detector, and final mask files with pre-allocated datasets.
-    Files are stored in array_data/{video_id}/ directory:
-      - tracker_masks.h5: masks
-      - tracker_logits.h5: logits
-      - detector_masks.h5: compressed masks
-      - final_masks.h5: masks
+    Creates tracker, detector, and final mask arrays with pre-allocated datasets.
+    Arrays are stored in array_data/{video_id}/ directory:
+      - tracker_masks.h5
+      - tracker_logits.h5
+      - detector_masks.h5
+      - final_masks.h5
 
     Args:
         project_path: Path to the project folder
@@ -303,8 +303,8 @@ def create_video_segmentation_files(
         )
 
 
-def delete_video_segmentation_files(project_path: Path, video_id: int) -> None:
-    """Delete all segmentation H5 files for a video.
+def delete_video_segmentation_arrays(project_path: Path, video_id: int) -> None:
+    """Delete all segmentation arrays for a video.
 
     Deletes tracker_masks.h5, tracker_logits.h5, detector_masks.h5, and final_masks.h5
     from array_data/{video_id}/. Does NOT touch cropped/aligned masks.
@@ -341,7 +341,7 @@ def delete_video_segmentation_files(project_path: Path, video_id: int) -> None:
             h5_path.unlink()
 
 
-def reset_video_segmentation_files(
+def reset_video_segmentation_arrays(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -349,7 +349,7 @@ def reset_video_segmentation_files(
     width: int,
     logits_size: int = 256,
 ) -> None:
-    """Reset all segmentation H5 files by deleting and recreating with zeros.
+    """Reset all segmentation arrays by deleting and recreating with zeros.
 
     Resets tracker, detector, and final masks in array_data/{video_id}/.
     Does NOT touch cropped/aligned masks.
@@ -362,21 +362,21 @@ def reset_video_segmentation_files(
         width: Video width in pixels
         logits_size: Size of low-res logits (SAM2=256)
     """
-    delete_video_segmentation_files(project_path, video_id)
-    create_video_segmentation_files(project_path, video_id, num_frames, height, width, logits_size)
+    delete_video_segmentation_arrays(project_path, video_id)
+    create_video_segmentation_arrays(project_path, video_id, num_frames, height, width, logits_size)
 
 
 # ----- Pipeline H5 file creation -----
 # These files are created lazily when their respective pipeline runs
 
 
-def create_cropped_masks(
+def create_cropped_masks_array(
     project_path: Path,
     video_id: int,
     num_frames: int,
     crop_size: int,
 ) -> None:
-    """Create cropped masks H5 file for a video.
+    """Create cropped masks array for a video.
 
     Args:
         project_path: Path to the project folder
@@ -396,13 +396,13 @@ def create_cropped_masks(
         )
 
 
-def create_aligned_masks(
+def create_aligned_masks_array(
     project_path: Path,
     video_id: int,
     num_frames: int,
     crop_size: int,
 ) -> None:
-    """Create aligned masks H5 file for a video.
+    """Create aligned masks array for a video.
 
     Args:
         project_path: Path to the project folder
@@ -422,13 +422,13 @@ def create_aligned_masks(
         )
 
 
-def create_alignment_keypoints(
+def create_alignment_keypoints_array(
     project_path: Path,
     video_id: int,
     num_frames: int,
     crop_size: int,
 ) -> None:
-    """Create alignment keypoints (heatmaps) H5 file for a video.
+    """Create alignment keypoints (heatmaps) array for a video.
 
     Args:
         project_path: Path to the project folder
@@ -448,13 +448,13 @@ def create_alignment_keypoints(
         )
 
 
-def create_pca_scores(
+def create_pca_scores_array(
     project_path: Path,
     video_id: int,
     num_frames: int,
     n_components: int,
 ) -> None:
-    """Create PCA scores H5 file for a video.
+    """Create PCA scores array for a video.
 
     Args:
         project_path: Path to the project folder
