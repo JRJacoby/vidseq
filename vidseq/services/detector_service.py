@@ -524,11 +524,6 @@ class DetectorService:
                     continue
 
                 video_path = Path(video.path)
-                h5_path = project_path / "masks" / f"{video.id}.h5"
-
-                if not h5_path.exists():
-                    continue
-
                 frames.append((video_path, video.id, frame_data.frame_idx))
 
         logger.info(f"Gathered {len(frames)} training frames from {project_path}")
