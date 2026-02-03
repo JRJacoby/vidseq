@@ -253,13 +253,19 @@ class ARHMMService:
 
     def _load_pca_scores(self, project_path: Path) -> dict[str, np.ndarray]:
         """Load PCA scores from h5 files into a sessions dict."""
-        scores_dir = project_path / "pca_scores"
-        h5_files = sorted(scores_dir.glob("*.h5"))
+        array_data_dir = project_path / "array_data"
+        video_ids = []
+        for video_dir in sorted(array_data_dir.iterdir()):
+            if video_dir.is_dir() and (video_dir / "pca_scores.h5").exists():
+                try:
+                    video_ids.append(int(video_dir.name))
+                except ValueError:
+                    continue
+
         sessions_dict = {}
-        for h5_path in h5_files:
-            video_id = int(h5_path.stem)
+        for video_id in video_ids:
             with pca_scores_h5(project_path, video_id, "r") as f:
-                sessions_dict[h5_path.stem] = f["scores"][:]
+                sessions_dict[str(video_id)] = f["scores"][:]
         return sessions_dict
 
     # ── Binary search with checkpointing ───────────────────────────────
