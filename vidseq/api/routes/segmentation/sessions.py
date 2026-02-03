@@ -83,7 +83,7 @@ async def stream_segmentation_status():
 async def create_segmentation_loaded_model():
     """Start loading SAM model in background."""
     segmentation_tcp_client.start_loading_in_background()
-    return {"message": "Loading started"}
+    return {"status": "started"}
 
 
 @router.post("/projects/{project_id}/videos/{video_id}/session")

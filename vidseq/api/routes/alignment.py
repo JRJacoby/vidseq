@@ -342,7 +342,7 @@ async def create_alignment_training(
     )
 
     logger.info(f"POST /alignment/train: training started, returning immediately")
-    return {"message": "Training started", "max_epochs": epochs, "augment": augment}
+    return {"status": "started", "max_epochs": epochs, "augment": augment}
 
 
 @router.get("/projects/{project_id}/alignment/training")
@@ -411,69 +411,6 @@ async def stream_training_progress(
     )
 
 
-@router.get("/projects/{project_id}/alignment/predict/{video_id}/{frame_idx}")
-async def get_alignment_prediction(
-    project_id: int,
-    video_id: int,
-    frame_idx: int,
-    session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
-):
-    """Get model prediction heatmap for a frame.
-
-    Returns PNG image with R channel = front probability, G channel = rear probability.
-    """
-    logger.info(f"GET /alignment/predict: project_id={project_id}, video_id={video_id}, frame_idx={frame_idx}")
-
-    service = AlignmentService.get_instance()
-
-    if not service.is_model_trained(project_path):
-        logger.warning(f"GET /alignment/predict: model not trained yet")
-        raise HTTPException(status_code=404, detail="Model not trained yet")
-
-    # Get video info
-    result = await session.execute(select(Video).where(Video.id == video_id))
-    video = result.scalar_one_or_none()
-    if video is None:
-        logger.warning(f"GET /alignment/predict: video {video_id} not found")
-        raise HTTPException(status_code=404, detail=f"Video {video_id} not found")
-
-    logger.debug(f"GET /alignment/predict: found video name={video.name}")
-
-    # Load frame from cropped video
-    from vidseq.services.cropped_video_service import get_cropped_video_path
-    import cv2
-
-    cropped_path = get_cropped_video_path(project_path, video.name)
-    if not cropped_path.exists():
-        logger.warning(f"GET /alignment/predict: cropped video not found: {cropped_path}")
-        raise HTTPException(
-            status_code=404, detail=f"Cropped video not found for video {video_id}"
-        )
-
-    # Read the specific frame
-    cap = cv2.VideoCapture(str(cropped_path))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        logger.warning(f"GET /alignment/predict: failed to read frame {frame_idx}")
-        raise HTTPException(
-            status_code=404, detail=f"Failed to read frame {frame_idx} from video {video_id}"
-        )
-
-    height, width = frame.shape[:2]
-    logger.info(f"GET /alignment/predict: loaded frame size={width}x{height}")
-
-    # Generate prediction heatmap
-    png_bytes = service.predict_to_png(project_path, frame)
-
-    logger.info(f"GET /alignment/predict: returning PNG, size={len(png_bytes)} bytes")
-
-    return Response(content=png_bytes, media_type="image/png")
-
-
 def _run_alignment_in_background(
     service: AlignmentService,
     project_path: Path,
@@ -522,7 +459,7 @@ async def create_videos_alignment(
     )
 
     logger.info(f"POST /alignment/apply: alignment started, returning immediately")
-    return {"message": "Alignment started"}
+    return {"status": "started"}
 
 
 @router.get("/projects/{project_id}/videos/alignment/status")

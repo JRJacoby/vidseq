@@ -90,7 +90,7 @@ async def create_detection_training(
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return {"message": "Training started"}
+    return {"status": "started"}
 
 
 @router.delete("/projects/{project_id}/detection/training")
@@ -162,7 +162,7 @@ async def stream_detection_training():
     )
 
 
-@router.get("/projects/{project_id}/videos/{video_id}/detector-mask/{frame_idx}")
+@router.get("/projects/{project_id}/videos/{video_id}/detector-masks/{frame_idx}")
 async def get_detector_mask(
     frame_idx: int,
     video: Video = Depends(get_video),
@@ -180,8 +180,8 @@ async def get_detector_mask(
     return Response(content=mask_png, media_type="image/png")
 
 
-@router.get("/projects/{project_id}/videos/{video_id}/detector-masks-batch")
-async def get_detector_masks_batch(
+@router.get("/projects/{project_id}/videos/{video_id}/detector-masks")
+async def get_detector_masks(
     start_frame: int,
     count: int = 100,
     video: Video = Depends(get_video),
