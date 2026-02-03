@@ -15,7 +15,7 @@ import imageio_ffmpeg
 import numpy as np
 
 from vidseq.services import h5_storage
-from vidseq.services.h5_storage import open_cropped_h5, tracker_h5
+from vidseq.services.h5_storage import cropped_h5, tracker_h5
 
 
 # =============================================================================
@@ -212,12 +212,8 @@ def compute_global_crop_size(
         # Get video dimensions from first frame
         _, height, width = frame_list[0]
 
-        h5_path = project_path / "masks" / f"{video_id}.h5"
-        if not h5_path.exists():
-            continue
-
         try:
-            with h5_storage.open_video_h5(project_path, video_id, "r") as h5_file:
+            with tracker_h5(project_path, video_id, "r") as h5_file:
                 if "masks" not in h5_file:
                     continue
 
@@ -230,6 +226,8 @@ def compute_global_crop_size(
                         bbox_h = int(y2 - y1)
                         max_width = max(max_width, bbox_w)
                         max_height = max(max_height, bbox_h)
+        except FileNotFoundError:
+            continue
         except Exception as e:
             print(f"[Cropped Video] Error reading masks for video {video_id}: {e}")
             continue
@@ -381,37 +379,28 @@ def process_single_video(
         cap.release()
         return False
 
-    # Use context manager for cropped H5 (write operation needs locking)
-    with open_cropped_h5(project_path, video.id, "w") as cropped_h5_file:
-        # Create dataset for cropped masks
-        cropped_h5_file.create_dataset(
-            "masks",
-            shape=(video.num_frames, crop_size, crop_size),
-            dtype=np.uint8,
-            fillvalue=0,
-            chunks=(1, crop_size, crop_size),
-            compression=None,
-        )
+    # Create cropped H5 file with pre-allocated dataset
+    h5_storage.create_cropped_h5(project_path, video.id, video.num_frames, crop_size)
 
+    # Use context manager for cropped H5 (write operation needs locking)
+    with cropped_h5(project_path, video.id, "a") as cropped_h5_file:
         # Get mask dataset from tracker H5 (optional - may not exist yet)
-        tracker_h5_path = project_path / "masks" / f"{video.id}.h5"
         processed = False
-        if tracker_h5_path.exists():
-            try:
-                # Use tracker_h5 context manager - handle is cached for reads
-                with tracker_h5(project_path, video.id, "r") as h5_file:
-                    if "masks" in h5_file:
-                        mask_dataset = h5_file["masks"]
-                        # Process all frames within this context
-                        _process_frames_with_masks(
-                            cap, writer, video, crop_size, mask_dataset,
-                            cropped_h5_file, progress_callback
-                        )
-                        processed = True
-            except FileNotFoundError:
-                print(f"[Cropped Video] Warning: Tracker H5 not found for video {video.id}")
-            except Exception as e:
-                print(f"[Cropped Video] Warning: Could not open mask file: {e}")
+        try:
+            # Use tracker_h5 context manager - handle is cached for reads
+            with tracker_h5(project_path, video.id, "r") as h5_file:
+                if "masks" in h5_file:
+                    mask_dataset = h5_file["masks"]
+                    # Process all frames within this context
+                    _process_frames_with_masks(
+                        cap, writer, video, crop_size, mask_dataset,
+                        cropped_h5_file, progress_callback
+                    )
+                    processed = True
+        except FileNotFoundError:
+            print(f"[Cropped Video] Warning: Tracker H5 not found for video {video.id}")
+        except Exception as e:
+            print(f"[Cropped Video] Warning: Could not open mask file: {e}")
 
         # If we haven't processed yet (no mask file or error), process with zeros
         if not processed:
