@@ -128,63 +128,42 @@ export async function getDirectoryListing(path: string): Promise<DirectoryEntry[
     return response.json()
 }
 
-export async function runSegmentation(
-    projectId: number,
-    videoId: number,
-    frameIdx: number,
-    type: 'positive_point' | 'negative_point',
-    details: { x: number; y: number }
-): Promise<Blob> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/segment`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ frame_idx: frameIdx, type, details }),
-        }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to run segmentation'))
-    }
-    return response.blob()
-}
-
 export interface PointPrompt {
     x: number
     y: number
     type: 'positive_point' | 'negative_point'
 }
 
-export async function refineMaskMultiPoint(
+export async function submitPrompt(
     projectId: number,
     videoId: number,
     frameIdx: number,
     points: PointPrompt[]
 ): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/refine-mask`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/prompt/${frameIdx}`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ frame_idx: frameIdx, points }),
+            body: JSON.stringify({ points }),
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to refine mask'))
+        throw new Error(await getErrorMessage(response, 'Failed to submit prompt'))
     }
     return response.blob()
 }
 
-export async function getMask(
+export async function getTrackerMask(
     projectId: number,
     videoId: number,
     frameIdx: number
 ): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/mask/${frameIdx}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-mask/${frameIdx}`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch mask'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch tracker mask'))
     }
     return response.blob()
 }
@@ -203,32 +182,32 @@ export interface MaskScore {
     score: number // IoU score, -1.0 if not available
 }
 
-export async function getMasksBatch(
+export async function getTrackerMasks(
     projectId: number,
     videoId: number,
     startFrame: number,
     count: number = 100
 ): Promise<MaskBatchResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/masks-batch?start_frame=${startFrame}&count=${count}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-masks?start_frame=${startFrame}&count=${count}`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch mask batch'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch tracker masks'))
     }
     return response.json()
 }
 
-export async function getScoresBatch(
+export async function getScores(
     projectId: number,
     videoId: number,
     startFrame: number,
     count: number = 1000
 ): Promise<MaskScore[]> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/scores-batch?start_frame=${startFrame}&count=${count}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/scores?start_frame=${startFrame}&count=${count}`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch scores batch'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch scores'))
     }
     const data = await response.json()
     return data.scores
@@ -255,7 +234,7 @@ export async function getScoresDownsampled(
     }
 
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/scores-downsampled?${params}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/scores-downsampled?${params}`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch downsampled scores'))
@@ -331,64 +310,40 @@ export async function closeVideoSession(
     }
 }
 
-export async function resetFrame(
+export async function deleteSegmentation(
     projectId: number,
     videoId: number,
     frameIdx: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame-data/${frameIdx}`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/${frameIdx}`,
         { method: 'DELETE' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to reset frame'))
+        throw new Error(await getErrorMessage(response, 'Failed to delete segmentation'))
     }
 }
 
-export async function resetVideo(
+export async function deleteVideoSegmentation(
     projectId: number,
     videoId: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/frame-data`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation`,
         { method: 'DELETE' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to reset video'))
+        throw new Error(await getErrorMessage(response, 'Failed to delete video segmentation'))
     }
 }
 
-export interface GenerateTrainingMasksResponse {
-    frames_processed: number
-}
-
-export async function generateTrainingMasks(
-    projectId: number,
-    videoId: number,
-    startFrameIdx: number,
-    maxFrames: number = 1000
-): Promise<GenerateTrainingMasksResponse> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/generate-training-masks`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
-        }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to generate training masks'))
-    }
-    return response.json()
-}
-
-export async function segmentAllVideos(projectId: number): Promise<{ job_ids: number[] }> {
+export async function createVideosSegmentation(projectId: number): Promise<{ job_ids: number[] }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/segmentation`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to segment all videos'))
+        throw new Error(await getErrorMessage(response, 'Failed to create videos segmentation'))
     }
     return response.json()
 }
@@ -397,14 +352,14 @@ export interface PropagateResponse {
     frames_processed: number
 }
 
-export async function propagateMask(
+export async function createPropagation(
     projectId: number,
     videoId: number,
     startFrameIdx: number,
     maxFrames: number = 1000
 ): Promise<PropagateResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagate-mask`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagation`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -412,7 +367,7 @@ export async function propagateMask(
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to propagate mask'))
+        throw new Error(await getErrorMessage(response, 'Failed to create propagation'))
     }
     return response.json()
 }
@@ -440,15 +395,14 @@ export interface ValidateTrainingRangeResponse {
     missing_frames?: number[]
 }
 
-export async function validateTrainingRange(
+export async function getTrainingRangeValidation(
     projectId: number,
     videoId: number,
     startFrame: number,
     endFrame: number
 ): Promise<ValidateTrainingRangeResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/validate-training-range?start_frame=${startFrame}&end_frame=${endFrame}`,
-        { method: 'POST' }
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/training-range/validation?start_frame=${startFrame}&end_frame=${endFrame}`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to validate training range'))
@@ -456,33 +410,33 @@ export async function validateTrainingRange(
     return response.json()
 }
 
-export async function markTrainingRange(
+export async function createTrainingRange(
     projectId: number,
     videoId: number,
     startFrame: number,
     endFrame: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/mark-training?start_frame=${startFrame}&end_frame=${endFrame}`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/training-range?start_frame=${startFrame}&end_frame=${endFrame}`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to mark training range'))
+        throw new Error(await getErrorMessage(response, 'Failed to create training range'))
     }
 }
 
-export async function unmarkTrainingRange(
+export async function deleteTrainingRange(
     projectId: number,
     videoId: number,
     startFrame: number,
     endFrame: number
 ): Promise<void> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/mark-training?start_frame=${startFrame}&end_frame=${endFrame}`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/training-range?start_frame=${startFrame}&end_frame=${endFrame}`,
         { method: 'DELETE' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to unmark training range'))
+        throw new Error(await getErrorMessage(response, 'Failed to delete training range'))
     }
 }
 
@@ -1274,7 +1228,7 @@ export async function getFinalMask(
     frameIdx: number,
 ): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-mask/${frameIdx}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/final-mask/${frameIdx}`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch final mask'))
@@ -1282,17 +1236,17 @@ export async function getFinalMask(
     return response.blob()
 }
 
-export async function getFinalMasksBatch(
+export async function getFinalMasks(
     projectId: number,
     videoId: number,
     startFrame: number,
     count: number = 100
 ): Promise<MaskBatchResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-masks-batch?start_frame=${startFrame}&count=${count}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/final-masks?start_frame=${startFrame}&count=${count}`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch final mask batch'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch final masks'))
     }
     return response.json()
 }
@@ -1302,7 +1256,7 @@ export async function finalMasksExist(
     videoId: number,
 ): Promise<{ exists: boolean }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/final-masks/exists`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/final-masks/exists`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to check final masks'))
