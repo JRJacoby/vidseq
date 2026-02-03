@@ -25,6 +25,7 @@ import imageio_ffmpeg
 
 from vidseq.services.h5_storage import (
     cropped_h5,
+    cropped_h5_exists,
     aligned_h5,
     predictions_h5,
     create_aligned_h5,
@@ -2048,7 +2049,7 @@ class AlignmentService:
 
         Reads cropped videos, rotates frames so animal faces right,
         saves to aligned_videos folder. Also rotates cropped masks
-        and saves to aligned_masks folder.
+        and saves to array_data/{video_id}/aligned_masks.h5.
 
         Args:
             project_path: Path to project folder
@@ -2082,11 +2083,9 @@ class AlignmentService:
                 logger.warning("apply_alignment_sync: no cropped videos to align")
                 return False
 
-            # Create output directories
+            # Create output directory for aligned videos
             output_dir = project_path / "aligned_videos"
             output_dir.mkdir(parents=True, exist_ok=True)
-            aligned_masks_dir = project_path / "aligned_masks"
-            aligned_masks_dir.mkdir(parents=True, exist_ok=True)
 
             # Filter out videos that already have aligned files on disk
             videos = [
@@ -2102,11 +2101,9 @@ class AlignmentService:
                 return True
 
             # Check that all videos have cropped masks
-            cropped_masks_dir = project_path / "cropped_masks"
             missing_masks = []
             for video in videos:
-                cropped_mask_path = cropped_masks_dir / f"{video.id}.h5"
-                if not cropped_mask_path.exists():
+                if not cropped_h5_exists(project_path, video.id):
                     missing_masks.append(video.id)
 
             if missing_masks:
@@ -2118,7 +2115,7 @@ class AlignmentService:
 
             logger.info("apply_alignment_sync: all cropped masks verified")
             self._alignment_progress.total_videos = len(videos)
-            logger.info(f"apply_alignment_sync: output_dir={output_dir}, aligned_masks_dir={aligned_masks_dir}")
+            logger.info(f"apply_alignment_sync: output_dir={output_dir}")
 
             for video_idx, video in enumerate(videos):
                 logger.info(f"apply_alignment_sync: processing video {video_idx + 1}/{len(videos)}: {video.name}")

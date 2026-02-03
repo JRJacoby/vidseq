@@ -680,3 +680,22 @@ def create_pca_scores_h5(
             dtype=np.float32,
             fillvalue=0.0,
         )
+
+
+# =============================================================================
+# Existence Checks
+# =============================================================================
+
+
+def cropped_h5_exists(project_path: Path, video_id: int) -> bool:
+    """Check if cropped masks H5 file exists for a video.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+
+    Returns:
+        True if the cropped masks H5 file exists
+    """
+    h5_path = project_path / "array_data" / str(video_id) / "cropped_masks.h5"
+    return h5_path.exists()
