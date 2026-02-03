@@ -9,7 +9,7 @@ from PIL import Image
 
 from vidseq.models.video import Video
 from vidseq.services import segmentation_tcp_client
-from vidseq.services.h5_storage import final_h5, tracker_h5
+from vidseq.services.array_storage import final_masks, tracker_masks
 
 
 def mask_to_png(mask: np.ndarray) -> bytes:
@@ -36,8 +36,8 @@ def get_mask_png(
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    with tracker_h5(project_path, video.id, "r") as f:
-        mask = np.array(f["masks"][frame_idx])
+    with tracker_masks(project_path, video.id, "r") as masks:
+        mask = np.array(masks[frame_idx])
 
     # DEBUG: Log mask loading
     print(f"[DEBUG get_mask_png] project={project_path}, video={video.id}, frame={frame_idx}")
@@ -65,9 +65,9 @@ def get_masks_batch_json(
     Returns:
         List of {"frame_idx": int, "png_base64": str}
     """
-    with tracker_h5(project_path, video.id, "r") as f:
+    with tracker_masks(project_path, video.id, "r") as masks_arr:
         end_frame = min(start_frame + count, video.num_frames)
-        masks = np.array(f["masks"][start_frame:end_frame])
+        masks = np.array(masks_arr[start_frame:end_frame])
 
     result = []
     for i, mask in enumerate(masks):
@@ -97,8 +97,8 @@ def get_final_mask_png(
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    with final_h5(project_path, video.id, "r") as f:
-        mask = np.array(f["masks"][frame_idx])
+    with final_masks(project_path, video.id, "r") as masks:
+        mask = np.array(masks[frame_idx])
     return mask_to_png(mask)
 
 
@@ -120,9 +120,9 @@ def get_final_masks_batch_json(
     Returns:
         List of {"frame_idx": int, "png_base64": str}
     """
-    with final_h5(project_path, video.id, "r") as f:
+    with final_masks(project_path, video.id, "r") as masks_arr:
         end_frame = min(start_frame + count, video.num_frames)
-        masks = np.array(f["masks"][start_frame:end_frame])
+        masks = np.array(masks_arr[start_frame:end_frame])
 
     result = []
     for i, mask in enumerate(masks):
