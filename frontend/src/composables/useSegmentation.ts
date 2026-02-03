@@ -7,6 +7,8 @@ import {
     deleteSegmentation,
     deleteVideoSegmentation,
     getDetectorMask,
+    getFinalMask,
+    getFinalMasks,
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
@@ -38,7 +40,7 @@ export function useSegmentation(
     isPlaying: Ref<boolean> = ref(false),
     videoRef: Ref<HTMLVideoElement | null> = ref(null),
     fps: Ref<number> = ref(30),
-    maskViewMode: Ref<'tracker' | 'detector'> = ref('tracker'),
+    maskViewMode: Ref<'tracker' | 'detector' | 'final'> = ref('tracker'),
 ): UseSegmentationReturn {
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
@@ -81,7 +83,9 @@ export function useSegmentation(
             // Select batch function based on mask view mode
             const batchFn = maskViewMode.value === 'detector'
                 ? getDetectorMasksBatch
-                : getTrackerMasks
+                : maskViewMode.value === 'final'
+                    ? getFinalMasks
+                    : getTrackerMasks
 
             const maskResponse = await batchFn(
                 projectId.value,
@@ -112,9 +116,13 @@ export function useSegmentation(
         if (!projectId.value || !videoId.value) return null
 
         try {
-            return maskViewMode.value === 'detector'
-                ? await getDetectorMask(projectId.value, videoId.value, frameIdx)
-                : await getTrackerMask(projectId.value, videoId.value, frameIdx)
+            if (maskViewMode.value === 'detector') {
+                return await getDetectorMask(projectId.value, videoId.value, frameIdx)
+            } else if (maskViewMode.value === 'final') {
+                return await getFinalMask(projectId.value, videoId.value, frameIdx)
+            } else {
+                return await getTrackerMask(projectId.value, videoId.value, frameIdx)
+            }
         } catch {
             return null
         }
