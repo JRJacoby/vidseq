@@ -39,6 +39,7 @@ async def validate_training_range(
 
 @router.post(
     "/projects/{project_id}/videos/{video_id}/training-range",
+    status_code=204,
 )
 async def create_training_range(
     start_frame: int,
@@ -76,11 +77,12 @@ async def create_training_range(
     # Mark frames as training
     await frame_data_service.mark_training_range(session, video.id, start_frame, end_frame)
 
-    return {"message": f"Marked frames {start_frame}-{end_frame} as training"}
+    return None
 
 
 @router.delete(
     "/projects/{project_id}/videos/{video_id}/training-range",
+    status_code=204,
 )
 async def delete_training_range(
     start_frame: int,
@@ -95,4 +97,4 @@ async def delete_training_range(
         session, video.id, start_frame, end_frame
     )
 
-    return {"message": f"Unmarked frames {start_frame}-{end_frame}"}
+    return None

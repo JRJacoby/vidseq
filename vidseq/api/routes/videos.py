@@ -185,7 +185,7 @@ async def get_frame(
     return Response(content=img_bytes.read(), media_type="image/jpeg")
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}")
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}", status_code=204)
 async def delete_segmentation(
     project_id: int,
     frame_idx: int,
@@ -214,10 +214,10 @@ async def delete_segmentation(
         frame_idx=frame_idx,
         session=session,
     )
-    return {"status": "ok"}
+    return None
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/segmentation")
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation", status_code=204)
 async def delete_video_segmentation(
     project_id: int,
     video: Video = Depends(get_video),
@@ -245,4 +245,4 @@ async def delete_video_segmentation(
         video=video,
         session=session,
     )
-    return {"status": "ok"}
+    return None
