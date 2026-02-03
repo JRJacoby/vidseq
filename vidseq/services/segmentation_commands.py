@@ -630,7 +630,7 @@ def _close_video_resources(video_id: int, segmentor: StreamingSegmentor) -> None
 
         resources = _video_resources.pop(video_id)
         resources.frame_source.close()
-        # H5 files are not cached in VideoResources anymore - h5_storage manages them
+        # H5 files are not cached in VideoResources anymore - array_storage manages them
 
 
 def handle_close_session(
