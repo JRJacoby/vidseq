@@ -13,16 +13,18 @@ from vidseq.services import frame_data_service, segmentation_service
 router = APIRouter()
 
 
+# ----- Tracker masks -----
+
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/mask/{frame_idx}",
+    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-mask/{frame_idx}",
 )
-async def get_mask(
+async def get_tracker_mask(
     frame_idx: int,
     video: Video = Depends(get_video),
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Get the segmentation mask for a specific frame.
+    Get the tracker segmentation mask for a specific frame.
 
     Returns PNG binary. If no mask exists, returns a transparent (all zeros) mask.
     """
@@ -35,16 +37,16 @@ async def get_mask(
 
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/masks-batch",
+    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-masks",
 )
-async def get_masks_batch(
+async def get_tracker_masks(
     start_frame: int,
     count: int = 100,
     video: Video = Depends(get_video),
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Get multiple segmentation masks in a single request.
+    Get multiple tracker segmentation masks in a single request.
 
     Returns JSON with base64-encoded PNG masks for efficient batch transfer.
     """
@@ -57,12 +59,11 @@ async def get_masks_batch(
     return {"masks": masks}
 
 
-# ----- Final masks endpoints -----
+# ----- Final masks -----
 # Final masks are the tracker-detector fusion result
 
-
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/final-mask/{frame_idx}",
+    "/projects/{project_id}/videos/{video_id}/segmentation/final-mask/{frame_idx}",
 )
 async def get_final_mask(
     frame_idx: int,
@@ -84,9 +85,9 @@ async def get_final_mask(
 
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/final-masks-batch",
+    "/projects/{project_id}/videos/{video_id}/segmentation/final-masks",
 )
-async def get_final_masks_batch(
+async def get_final_masks(
     start_frame: int,
     count: int = 100,
     video: Video = Depends(get_video),
@@ -107,7 +108,7 @@ async def get_final_masks_batch(
 
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/final-masks/exists",
+    "/projects/{project_id}/videos/{video_id}/segmentation/final-masks/exists",
 )
 async def final_masks_exist(
     video: Video = Depends(get_video),
