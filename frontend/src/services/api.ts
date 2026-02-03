@@ -160,7 +160,7 @@ export async function getTrackerMask(
     frameIdx: number
 ): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-mask/${frameIdx}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-masks/${frameIdx}`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch tracker mask'))
@@ -600,7 +600,7 @@ export async function clearAllAlignmentLabels(projectId: number): Promise<{ dele
     return response.json()
 }
 
-export async function clearAlignmentModel(projectId: number): Promise<{ deleted: boolean }> {
+export async function clearAlignmentModel(projectId: number): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/alignment/model`,
         { method: 'DELETE' }
@@ -608,7 +608,6 @@ export async function clearAlignmentModel(projectId: number): Promise<{ deleted:
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to clear alignment model'))
     }
-    return response.json()
 }
 
 export async function createAlignmentTraining(
@@ -631,14 +630,6 @@ export async function createAlignmentTraining(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to start alignment training'))
     }
-}
-
-export function getAlignmentPredictionUrl(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): string {
-    return `${API_BASE}/projects/${projectId}/alignment/predict/${videoId}/${frameIdx}`
 }
 
 export async function createVideosAlignment(projectId: number): Promise<void> {
@@ -795,7 +786,7 @@ export async function deleteAlignmentLabel(
     projectId: number,
     videoId: number,
     frameIdx: number
-): Promise<{ deleted: boolean }> {
+): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels/${frameIdx}`,
         { method: 'DELETE' }
@@ -803,13 +794,12 @@ export async function deleteAlignmentLabel(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to delete alignment label'))
     }
-    return response.json()
 }
 
 export async function deleteVideoAlignmentLabels(
     projectId: number,
     videoId: number
-): Promise<{ deleted_count: number }> {
+): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels`,
         { method: 'DELETE' }
@@ -817,7 +807,6 @@ export async function deleteVideoAlignmentLabels(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to delete video alignment labels'))
     }
-    return response.json()
 }
 
 // --- PCA API ---
@@ -970,7 +959,7 @@ export async function createARHMMTraining(projectId: number): Promise<{ status: 
     return response.json()
 }
 
-export async function deleteARHMMTraining(projectId: number): Promise<{ status: string }> {
+export async function deleteARHMMTraining(projectId: number): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/arhmm/training`,
         { method: 'DELETE' }
@@ -978,7 +967,6 @@ export async function deleteARHMMTraining(projectId: number): Promise<{ status: 
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to stop ARHMM training'))
     }
-    return response.json()
 }
 
 export async function getARHMMStatus(projectId: number): Promise<ARHMMProgress> {
@@ -1058,7 +1046,7 @@ export async function createCrowdMoviesGeneration(projectId: number): Promise<{ 
     return response.json()
 }
 
-export async function deleteCrowdMoviesGeneration(projectId: number): Promise<{ status: string }> {
+export async function deleteCrowdMoviesGeneration(projectId: number): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/generation`,
         { method: 'DELETE' }
@@ -1066,7 +1054,6 @@ export async function deleteCrowdMoviesGeneration(projectId: number): Promise<{ 
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to stop crowd movie generation'))
     }
-    return response.json()
 }
 
 export async function getCrowdMovieStatus(projectId: number): Promise<CrowdMovieProgress> {
@@ -1184,7 +1171,7 @@ export async function getDetectorMask(
     frameIdx: number,
 ): Promise<Blob> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-mask/${frameIdx}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-masks/${frameIdx}`
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch detector mask'))
@@ -1192,17 +1179,17 @@ export async function getDetectorMask(
     return response.blob()
 }
 
-export async function getDetectorMasksBatch(
+export async function getDetectorMasks(
     projectId: number,
     videoId: number,
     startFrame: number,
     count: number = 100
 ): Promise<MaskBatchResponse> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-masks-batch?start_frame=${startFrame}&count=${count}`
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-masks?start_frame=${startFrame}&count=${count}`
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch detector mask batch'))
+        throw new Error(await getErrorMessage(response, 'Failed to fetch detector masks'))
     }
     return response.json()
 }
