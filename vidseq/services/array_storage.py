@@ -1,9 +1,9 @@
-"""Mask storage - per-video HDF5 files for segmentation masks.
+"""Array storage - per-video array data with HDF5 backend.
 
-This module handles storage of binary segmentation masks in per-video HDF5 files.
-Each video's masks are stored in a directory at `array_data/{video_id}/` with separate
-files for tracker, detector, and final masks, allowing concurrent writes to different
-videos without locking conflicts.
+This module provides array-like access to per-video data. Callers receive
+dataset handles directly and can index them without knowing the storage format.
+Each video's data is stored in `array_data/{video_id}/` with separate files,
+allowing concurrent writes to different videos without locking conflicts.
 """
 
 import os
@@ -39,6 +39,11 @@ def close_all_h5() -> None:
 def _get_lock_path(h5_path: Path) -> Path:
     """Get the lock file path for an HDF5 file."""
     return h5_path.with_suffix(".h5.lock")
+
+
+def _construct_h5_path(project_path: Path, video_id: int, filename: str) -> Path:
+    """Construct path to an H5 file in the video's array_data directory."""
+    return project_path / "array_data" / str(video_id) / filename
 
 
 @contextmanager
