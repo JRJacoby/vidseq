@@ -48,7 +48,7 @@ async def run_segmentation(
     frame_idx = segment_request.frame_idx
 
     # Check if this frame already has a mask (to decide add_point_prompt vs refine_mask)
-    has_existing_mask = await frame_data_service.get_has_mask(
+    has_existing_mask = await frame_data_service.get_has_tracker_mask(
         session, video.id, frame_idx
     )
 
@@ -82,7 +82,7 @@ async def run_segmentation(
 
     # Update mask presence index
     has_content = bool(np.any(mask > 0))
-    await frame_data_service.set_has_mask(
+    await frame_data_service.set_has_tracker_mask(
         session, video.id, frame_idx, has_content
     )
 
@@ -138,9 +138,9 @@ async def propagate_mask(
         logger.error(f"Unexpected error in propagate mask: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Update has_mask for all propagated frames
+    # Update has_tracker_mask for all propagated frames
     for frame_idx in frame_indices:
-        await frame_data_service.set_has_mask(session, video.id, frame_idx, True)
+        await frame_data_service.set_has_tracker_mask(session, video.id, frame_idx, True)
 
     return PropagateResponse(frames_processed=len(frame_indices))
 
@@ -180,7 +180,7 @@ async def refine_mask_multipoint(
 
     # Update mask presence index
     has_content = bool(np.any(mask > 0))
-    await frame_data_service.set_has_mask(
+    await frame_data_service.set_has_tracker_mask(
         session, video.id, frame_idx, has_content
     )
 
