@@ -245,7 +245,7 @@ async def delete_all_labels(
     return {"deleted_count": deleted_count}
 
 
-@router.delete("/projects/{project_id}/alignment/model")
+@router.delete("/projects/{project_id}/alignment/model", status_code=204)
 async def delete_model(
     project_id: int,
     project_path: Path = Depends(get_project_folder),
@@ -255,10 +255,10 @@ async def delete_model(
 
     service = AlignmentService.get_instance()
 
-    deleted = service.delete_model(project_path)
+    service.delete_model(project_path)
 
-    logger.info(f"DELETE /alignment/model: deleted={deleted}")
-    return {"deleted": deleted}
+    logger.info(f"DELETE /alignment/model: completed")
+    return None
 
 
 def _run_training_in_background(
@@ -649,7 +649,7 @@ async def get_video_alignment_labels(
     return {"frame_indices": frame_indices}
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels/{frame_idx}")
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels/{frame_idx}", status_code=204)
 async def delete_video_alignment_label(
     frame_idx: int,
     video: Video = Depends(get_video),
@@ -665,12 +665,11 @@ async def delete_video_alignment_label(
     )
     await session.commit()
 
-    deleted = result.rowcount > 0
-    logger.info(f"DELETE /videos/{video.id}/alignment-labels/{frame_idx}: deleted={deleted}")
-    return {"deleted": deleted}
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels/{frame_idx}: deleted {result.rowcount} rows")
+    return None
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels")
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels", status_code=204)
 async def delete_video_alignment_labels(
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
@@ -683,6 +682,5 @@ async def delete_video_alignment_labels(
     )
     await session.commit()
 
-    deleted_count = result.rowcount
-    logger.info(f"DELETE /videos/{video.id}/alignment-labels: deleted_count={deleted_count}")
-    return {"deleted_count": deleted_count}
+    logger.info(f"DELETE /videos/{video.id}/alignment-labels: deleted {result.rowcount} rows")
+    return None

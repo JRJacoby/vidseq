@@ -84,14 +84,14 @@ async def create_arhmm_training(
     return {"status": "started"}
 
 
-@router.delete("/projects/{project_id}/arhmm/training")
+@router.delete("/projects/{project_id}/arhmm/training", status_code=204)
 async def delete_arhmm_training(project_id: int):
     """Request graceful stop of ARHMM fitting."""
     service = ARHMMService.get_instance()
     if not service.is_running():
         raise HTTPException(status_code=400, detail="ARHMM fitting is not running")
     service.stop()
-    return {"status": "stopping"}
+    return None
 
 
 @router.get("/projects/{project_id}/arhmm/status")
@@ -333,7 +333,7 @@ async def create_crowd_movies_generation(
     return {"status": "started"}
 
 
-@router.delete("/projects/{project_id}/arhmm/crowd-movies/generation")
+@router.delete("/projects/{project_id}/arhmm/crowd-movies/generation", status_code=204)
 async def delete_crowd_movies_generation(project_id: int):
     """Request graceful stop of crowd movie generation."""
     service = CrowdMovieService.get_instance()
@@ -342,7 +342,7 @@ async def delete_crowd_movies_generation(project_id: int):
             status_code=400, detail="Crowd movie generation is not running"
         )
     service.stop()
-    return {"status": "stopping"}
+    return None
 
 
 @router.get("/projects/{project_id}/arhmm/crowd-movies/status")

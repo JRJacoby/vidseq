@@ -93,7 +93,7 @@ async def create_detection_training(
     return {"status": "started"}
 
 
-@router.delete("/projects/{project_id}/detection/training")
+@router.delete("/projects/{project_id}/detection/training", status_code=204)
 async def delete_detection_training():
     """
     Stop detector training or apply.
@@ -105,8 +105,8 @@ async def delete_detection_training():
     if not service.is_training():
         raise HTTPException(status_code=400, detail="No training or apply in progress")
 
-    stopped = service.stop_training()
-    return {"stopped": stopped}
+    service.stop_training()
+    return None
 
 
 @router.get("/projects/{project_id}/detection/training")

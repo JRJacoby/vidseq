@@ -114,7 +114,7 @@ async def init_video_session(
     }
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/session")
+@router.delete("/projects/{project_id}/videos/{video_id}/session", status_code=204)
 async def close_video_session(
     project_id: int,
     video_id: int,
@@ -124,5 +124,5 @@ async def close_video_session(
 
     Frees GPU memory. Call this when leaving the video detail view.
     """
-    closed = segmentation_tcp_client.close_session(project_id, video_id)
-    return {"closed": closed}
+    segmentation_tcp_client.close_session(project_id, video_id)
+    return None
