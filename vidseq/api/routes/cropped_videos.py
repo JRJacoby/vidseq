@@ -18,8 +18,8 @@ from vidseq.services import cropped_video_service, video_service
 router = APIRouter()
 
 
-@router.post("/projects/{project_id}/extract-cropped-videos")
-async def extract_cropped_videos(
+@router.post("/projects/{project_id}/videos/extraction")
+async def create_videos_extraction(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),

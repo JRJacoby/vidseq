@@ -6,7 +6,7 @@ import {
   getVideos,
   addVideos,
   createVideosSegmentation,
-  extractCroppedVideos,
+  createVideosExtraction,
   getCroppedVideoExists,
   getAlignedVideoExists,
   getAlignmentStatus,
@@ -187,7 +187,7 @@ const handleExtractCroppedVideos = async () => {
   if (!projectId.value || isExtracting.value) return
   isExtracting.value = true
   try {
-    await extractCroppedVideos(projectId.value)
+    await createVideosExtraction(projectId.value)
     // Refresh status after starting extraction
     setTimeout(() => loadCroppedVideoStatus(), 1000)
   } catch (e: any) {

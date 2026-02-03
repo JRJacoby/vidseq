@@ -442,13 +442,13 @@ export async function deleteTrainingRange(
 
 // Cropped Video API
 
-export async function extractCroppedVideos(projectId: number): Promise<{ job_ids: number[] }> {
+export async function createVideosExtraction(projectId: number): Promise<{ status: string; video_count: number; message?: string }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/extract-cropped-videos`,
+        `${API_BASE}/projects/${projectId}/videos/extraction`,
         { method: 'POST' }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to extract cropped videos'))
+        throw new Error(await getErrorMessage(response, 'Failed to start video extraction'))
     }
     return response.json()
 }
