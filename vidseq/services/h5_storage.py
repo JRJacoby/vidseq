@@ -578,7 +578,7 @@ def delete_final_mask(project_path: Path, video_id: int, frame_idx: int) -> None
 # ----- Video-level H5 file management -----
 
 
-def create_video_h5_files(
+def create_video_segmentation_files(
     project_path: Path,
     video_id: int,
     num_frames: int,
@@ -705,4 +705,106 @@ def reset_video_segmentation_files(
         logits_size: Size of low-res logits (SAM2=256)
     """
     delete_video_segmentation_files(project_path, video_id)
-    create_video_h5_files(project_path, video_id, num_frames, height, width, logits_size)
+    create_video_segmentation_files(project_path, video_id, num_frames, height, width, logits_size)
+
+
+# ----- Pipeline H5 file creation -----
+# These files are created lazily when their respective pipeline runs
+
+
+def create_cropped_h5(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    crop_size: int,
+) -> None:
+    """Create cropped masks H5 file for a video.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        crop_size: Square crop dimension
+    """
+    with cropped_h5(project_path, video_id, mode="w") as f:
+        f.create_dataset(
+            "masks",
+            shape=(num_frames, crop_size, crop_size),
+            dtype=np.uint8,
+            fillvalue=0,
+            chunks=(1, crop_size, crop_size),
+            compression=None,
+        )
+
+
+def create_aligned_h5(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    crop_size: int,
+) -> None:
+    """Create aligned masks H5 file for a video.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        crop_size: Square crop dimension (same as cropped masks)
+    """
+    with aligned_h5(project_path, video_id, mode="w") as f:
+        f.create_dataset(
+            "masks",
+            shape=(num_frames, crop_size, crop_size),
+            dtype=np.uint8,
+            fillvalue=0,
+            chunks=(1, crop_size, crop_size),
+            compression=None,
+        )
+
+
+def create_alignment_predictions_h5(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    crop_size: int,
+) -> None:
+    """Create alignment predictions (heatmaps) H5 file for a video.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        crop_size: Heatmap dimensions (same as cropped masks)
+    """
+    with predictions_h5(project_path, video_id, mode="w") as f:
+        f.create_dataset(
+            "heatmaps",
+            shape=(num_frames, crop_size, crop_size, 2),
+            dtype=np.float32,
+            fillvalue=0.0,
+            chunks=(1, crop_size, crop_size, 2),
+            compression=None,
+        )
+
+
+def create_pca_scores_h5(
+    project_path: Path,
+    video_id: int,
+    num_frames: int,
+    n_components: int,
+) -> None:
+    """Create PCA scores H5 file for a video.
+
+    Args:
+        project_path: Path to the project folder
+        video_id: ID of the video
+        num_frames: Total number of frames in the video
+        n_components: Number of PCA components
+    """
+    with pca_scores_h5(project_path, video_id, mode="w") as f:
+        f.create_dataset(
+            "scores",
+            shape=(num_frames, n_components),
+            dtype=np.float32,
+            fillvalue=0.0,
+        )
