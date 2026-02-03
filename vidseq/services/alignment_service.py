@@ -23,12 +23,12 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 import imageio_ffmpeg
 
-from vidseq.services.h5_storage import (
-    cropped_h5,
-    aligned_h5,
-    predictions_h5,
-    create_aligned_h5,
-    create_alignment_predictions_h5,
+from vidseq.services.array_storage import (
+    cropped_masks,
+    aligned_masks,
+    alignment_keypoints,
+    create_aligned_masks_array,
+    create_alignment_keypoints_array,
 )
 
 import cv2
@@ -884,25 +884,8 @@ def save_prediction(
         frame_idx: Frame index
         heatmap: (H, W, 2) float32 array with front/rear probabilities
     """
-    with predictions_h5(project_path, video_id, "a") as f:
-        # Create predictions group if it doesn't exist
-        if "predictions" not in f:
-            f.create_group("predictions")
-
-        predictions_group = f["predictions"]
-        dataset_name = str(frame_idx)
-
-        # Delete existing dataset if present (overwrite behavior)
-        if dataset_name in predictions_group:
-            del predictions_group[dataset_name]
-
-        # Save with gzip compression
-        predictions_group.create_dataset(
-            dataset_name,
-            data=heatmap.astype(np.float32),
-            compression="gzip",
-            compression_opts=4,
-        )
+    with alignment_keypoints(project_path, video_id, "a") as keypoints:
+        keypoints[frame_idx] = heatmap.astype(np.float32)
 
 
 def load_prediction(
@@ -920,22 +903,13 @@ def load_prediction(
     Returns:
         (H, W, 2) float32 array or None if not found
     """
-    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
+    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
     if not h5_path.exists():
         return None
 
     try:
-        with predictions_h5(project_path, video_id, "r") as f:
-            if "predictions" not in f:
-                return None
-
-            predictions_group = f["predictions"]
-            dataset_name = str(frame_idx)
-
-            if dataset_name not in predictions_group:
-                return None
-
-            return predictions_group[dataset_name][:]
+        with alignment_keypoints(project_path, video_id) as keypoints:
+            return np.array(keypoints[frame_idx])
     except Exception as e:
         logger.warning(f"load_prediction: failed to load frame {frame_idx} for video {video_id}: {e}")
         return None
@@ -951,15 +925,14 @@ def predictions_exist(project_path: Path, video_id: int) -> bool:
     Returns:
         True if predictions HDF5 file exists and has data
     """
-    h5_path = project_path / "alignment_predictions" / f"{video_id}.h5"
+    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
     if not h5_path.exists():
         return False
 
     try:
-        with predictions_h5(project_path, video_id, "r") as f:
-            if "predictions" not in f:
-                return False
-            return len(f["predictions"]) > 0
+        with alignment_keypoints(project_path, video_id) as keypoints:
+            # Check if any data is non-zero (array is pre-allocated with zeros)
+            return keypoints.shape[0] > 0
     except Exception:
         return False
 
@@ -2148,18 +2121,18 @@ class AlignmentService:
                     continue
 
                 # Get mask dimensions from cropped masks (may differ from video dimensions)
-                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5:
-                    mask_shape = cropped_mask_h5["masks"].shape
+                with cropped_masks(project_path, video.id) as masks:
+                    mask_shape = masks.shape
                     mask_height, mask_width = mask_shape[1], mask_shape[2]
 
-                # Create H5 files upfront using h5_storage create functions
-                create_aligned_h5(project_path, video.id, frame_count, mask_height)
-                create_alignment_predictions_h5(project_path, video.id, frame_count, height)
+                # Create H5 files upfront using array_storage create functions
+                create_aligned_masks_array(project_path, video.id, frame_count, mask_height)
+                create_alignment_keypoints_array(project_path, video.id, frame_count, height)
 
                 # Use context managers for H5 files with proper locking (append mode)
-                with cropped_h5(project_path, video.id, "r") as cropped_mask_h5, \
-                     aligned_h5(project_path, video.id, "a") as aligned_mask_h5, \
-                     predictions_h5(project_path, video.id, "a") as preds_h5:
+                with cropped_masks(project_path, video.id) as cropped_mask_data, \
+                     aligned_masks(project_path, video.id, "a") as aligned_mask_data, \
+                     alignment_keypoints(project_path, video.id, "a") as keypoints_data:
 
                     # Process each frame
                     for frame_idx in range(frame_count):
@@ -2172,7 +2145,7 @@ class AlignmentService:
                         heatmap = self.predict_sync(project_path, frame)
 
                         # Save prediction for debugging
-                        preds_h5["heatmaps"][frame_idx] = heatmap
+                        keypoints_data[frame_idx] = heatmap
 
                         # Find keypoints using DARK post-processing for sub-pixel accuracy
                         front_heatmap = heatmap[:, :, 0]
@@ -2211,9 +2184,9 @@ class AlignmentService:
                         writer.write(rotated)
 
                         # Load cropped mask, rotate, threshold, and save
-                        cropped_mask = np.array(cropped_mask_h5["masks"][frame_idx])
+                        cropped_mask = np.array(cropped_mask_data[frame_idx])
                         aligned_mask = rotate_mask(cropped_mask, angle)
-                        aligned_mask_h5["masks"][frame_idx] = aligned_mask
+                        aligned_mask_data[frame_idx] = aligned_mask
 
                         # Track frame timestamp for FPS calculation
                         self._fps_timestamps.append(time.time())
