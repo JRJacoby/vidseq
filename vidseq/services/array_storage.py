@@ -76,6 +76,9 @@ def open_h5_with_lock(h5_path: Path, mode: str):
 
     # mode='w' truncates - evict cache, lock, create fresh, close on exit
     if mode == "w":
+        # Check lock first before making any changes
+        if lock_path.exists():
+            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         h5_path.parent.mkdir(parents=True, exist_ok=True)
         if h5_path in _cache:
             try:
@@ -83,8 +86,6 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             except Exception:
                 pass
             del _cache[h5_path]
-        if lock_path.exists():
-            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         lock_path.touch()
         try:
             with h5py.File(h5_path, "w") as f:
@@ -95,6 +96,9 @@ def open_h5_with_lock(h5_path: Path, mode: str):
 
     # mode='a' - evict cache if exists, lock, open fresh, close on exit (not cached)
     if mode == "a":
+        # Check lock first before making any changes
+        if lock_path.exists():
+            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         h5_path.parent.mkdir(parents=True, exist_ok=True)
         if h5_path in _cache:
             try:
@@ -102,8 +106,6 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             except Exception:
                 pass
             del _cache[h5_path]
-        if lock_path.exists():
-            raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         lock_path.touch()
         h5_file = h5py.File(h5_path, "a")
         try:
