@@ -384,7 +384,7 @@ export async function generateTrainingMasks(
 
 export async function segmentAllVideos(projectId: number): Promise<{ job_ids: number[] }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/segment-all-videos`,
+        `${API_BASE}/projects/${projectId}/videos/segmentation`,
         { method: 'POST' }
     )
     if (!response.ok) {

@@ -15,8 +15,8 @@ from vidseq.services import segmentation_tcp_client, video_service
 router = APIRouter()
 
 
-@router.post("/projects/{project_id}/segment-all-videos")
-async def segment_all_videos_route(
+@router.post("/projects/{project_id}/videos/segmentation")
+async def create_videos_segmentation(
     project_id: int,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
@@ -50,13 +50,13 @@ async def segment_all_videos_route(
 
 @router.get("/segmentation/status")
 async def get_segmentation_status():
-    """Get the current SAM3 model loading status."""
+    """Get the current SAM model loading status."""
     return segmentation_tcp_client.get_status()
 
 
 @router.get("/segmentation/status/stream")
 async def stream_segmentation_status():
-    """SSE endpoint for real-time SAM3 status updates."""
+    """SSE endpoint for real-time SAM status updates."""
     async def event_generator():
         last_status_str = None
         while True:
@@ -81,7 +81,7 @@ async def stream_segmentation_status():
 
 @router.post("/segmentation/preload")
 async def preload_segmentation():
-    """Start loading SAM3 model in background."""
+    """Start loading SAM model in background."""
     segmentation_tcp_client.start_loading_in_background()
     return {"message": "Loading started"}
 
@@ -93,11 +93,11 @@ async def init_video_session(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Initialize a SAM3 session for a video.
+    Initialize a SAM session for a video.
 
     Creates the tracker state and frame loader.
     Call this when entering the video detail view.
-    Returns 503 if SAM3 model isn't loaded yet.
+    Returns 503 if SAM model isn't loaded yet.
     """
     video_path = Path(video.path)
 
@@ -120,7 +120,7 @@ async def close_video_session(
     video_id: int,
 ):
     """
-    Close a SAM3 session for a video.
+    Close a SAM session for a video.
 
     Frees GPU memory. Call this when leaving the video detail view.
     """
