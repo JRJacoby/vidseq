@@ -70,7 +70,7 @@ async def add_videos(
     # Create H5 files upfront for each video
     for video in added_videos:
         await session.refresh(video)
-        h5_storage.create_video_h5_files(
+        h5_storage.create_video_segmentation_files(
             project_path=project_path,
             video_id=video.id,
             num_frames=video.num_frames,
