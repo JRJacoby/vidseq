@@ -14,8 +14,12 @@ import cv2
 import imageio_ffmpeg
 import numpy as np
 
-from vidseq.services import h5_storage
-from vidseq.services.h5_storage import cropped_h5, tracker_h5
+from vidseq.services.array_storage import (
+    compute_bbox_from_mask,
+    create_cropped_masks_array,
+    cropped_masks,
+    tracker_masks,
+)
 
 
 # =============================================================================
@@ -213,10 +217,10 @@ def compute_global_crop_size(
         _, height, width = frame_list[0]
 
         try:
-            with tracker_h5(project_path, video_id, "r") as h5_file:
+            with tracker_masks(project_path, video_id, "r") as masks:
                 for frame_idx, height, width in frame_list:
-                    mask = np.array(h5_file["masks"][frame_idx])
-                    bbox = h5_storage.compute_bbox_from_mask(mask)
+                    mask = np.array(masks[frame_idx])
+                    bbox = compute_bbox_from_mask(mask)
                     if bbox is not None:
                         x1, y1, x2, y2 = bbox
                         bbox_w = int(x2 - x1)
@@ -247,7 +251,7 @@ def _process_frames_with_masks(
     video,
     crop_size: int,
     mask_dataset,  # h5py.Dataset or None
-    cropped_h5_file,
+    cropped_masks_data,  # h5py.Dataset for output
 ) -> bool:
     """Process all frames, reading masks from dataset (or zeros if None).
 
@@ -302,7 +306,7 @@ def _process_frames_with_masks(
                 cropped_mask[dst_y1:dst_y2, dst_x1:dst_x2] = mask[src_y1:src_y2, src_x1:src_x2]
 
             # Save cropped mask to HDF5
-            cropped_h5_file["masks"][frame_idx] = cropped_mask
+            cropped_masks_data[frame_idx] = cropped_mask
 
             # Zero out pixels where mask is 0
             mask_3ch = np.stack([cropped_mask, cropped_mask, cropped_mask], axis=2)
@@ -367,26 +371,24 @@ def process_single_video(
         cap.release()
         return False
 
-    # Create cropped H5 file with pre-allocated dataset
-    h5_storage.create_cropped_h5(project_path, video.id, video.num_frames, crop_size)
+    # Create cropped masks array with pre-allocated dataset
+    create_cropped_masks_array(project_path, video.id, video.num_frames, crop_size)
 
-    # Use context manager for cropped H5 (write operation needs locking)
-    with cropped_h5(project_path, video.id, "a") as cropped_h5_file:
-        # Get mask dataset from tracker H5 (optional - may not exist yet)
+    # Use context manager for cropped masks (write operation needs locking)
+    with cropped_masks(project_path, video.id, "a") as cropped_masks_data:
+        # Get mask dataset from tracker masks (optional - may not exist yet)
         processed = False
         try:
-            # Use tracker_h5 context manager - handle is cached for reads
-            with tracker_h5(project_path, video.id, "r") as h5_file:
-                if "masks" in h5_file:
-                    mask_dataset = h5_file["masks"]
-                    # Process all frames within this context
-                    _process_frames_with_masks(
-                        cap, writer, video, crop_size, mask_dataset,
-                        cropped_h5_file
-                    )
-                    processed = True
+            # Use tracker_masks context manager - handle is cached for reads
+            with tracker_masks(project_path, video.id, "r") as mask_dataset:
+                # Process all frames within this context
+                _process_frames_with_masks(
+                    cap, writer, video, crop_size, mask_dataset,
+                    cropped_masks_data
+                )
+                processed = True
         except FileNotFoundError:
-            print(f"[Cropped Video] Warning: Tracker H5 not found for video {video.id}")
+            print(f"[Cropped Video] Warning: Tracker masks not found for video {video.id}")
         except Exception as e:
             print(f"[Cropped Video] Warning: Could not open mask file: {e}")
 
@@ -394,7 +396,7 @@ def process_single_video(
         if not processed:
             _process_frames_with_masks(
                 cap, writer, video, crop_size, None,
-                cropped_h5_file
+                cropped_masks_data
             )
 
         cap.release()
