@@ -214,9 +214,6 @@ def compute_global_crop_size(
 
         try:
             with tracker_h5(project_path, video_id, "r") as h5_file:
-                if "masks" not in h5_file:
-                    continue
-
                 for frame_idx, height, width in frame_list:
                     mask = np.array(h5_file["masks"][frame_idx])
                     bbox = h5_storage.compute_bbox_from_mask(mask)

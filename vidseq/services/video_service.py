@@ -124,10 +124,13 @@ async def delete_frame_data(
         session: Async database session
     """
     # 1. Clear H5 files
-    h5_storage.delete_tracker_mask(project_path, video_id, frame_idx)
-    h5_storage.delete_tracker_logits(project_path, video_id, frame_idx)
-    h5_storage.delete_detector_mask(project_path, video_id, frame_idx)
-    h5_storage.delete_final_mask(project_path, video_id, frame_idx)
+    with h5_storage.tracker_h5(project_path, video_id, "a") as f:
+        f["masks"][frame_idx] = 0
+        f["logits"][frame_idx] = 0
+    with h5_storage.detector_h5(project_path, video_id, "a") as f:
+        f["masks"][frame_idx] = 0
+    with h5_storage.final_h5(project_path, video_id, "a") as f:
+        f["masks"][frame_idx] = 0
 
     # 2. Clear database tables
     await session.execute(

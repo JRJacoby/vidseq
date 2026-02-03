@@ -25,7 +25,6 @@ import imageio_ffmpeg
 
 from vidseq.services.h5_storage import (
     cropped_h5,
-    cropped_h5_exists,
     aligned_h5,
     predictions_h5,
     create_aligned_h5,
@@ -2100,20 +2099,6 @@ class AlignmentService:
                 self._alignment_progress.is_aligning = False
                 return True
 
-            # Check that all videos have cropped masks
-            missing_masks = []
-            for video in videos:
-                if not cropped_h5_exists(project_path, video.id):
-                    missing_masks.append(video.id)
-
-            if missing_masks:
-                logger.error(
-                    f"apply_alignment_sync: cropped masks missing for videos: {missing_masks}. "
-                    f"Please re-run cropped video extraction."
-                )
-                return False
-
-            logger.info("apply_alignment_sync: all cropped masks verified")
             self._alignment_progress.total_videos = len(videos)
             logger.info(f"apply_alignment_sync: output_dir={output_dir}")
 

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,17 +66,9 @@ async def mark_training(
         )
 
     # Load masks and compute bboxes, then save to SQLite
-    with h5_storage.open_video_h5(project_path, video.id, "r") as h5_file:
+    with h5_storage.tracker_h5(project_path, video.id, "r") as f:
         for frame_idx in range(start_frame, end_frame + 1):
-            mask = h5_storage.load_mask(
-                project_path=project_path,
-                video_id=video.id,
-                frame_idx=frame_idx,
-                num_frames=video.num_frames,
-                height=video.height,
-                width=video.width,
-                h5_file=h5_file,
-            )
+            mask = np.array(f["masks"][frame_idx])
             bbox = h5_storage.compute_bbox_from_mask(mask)
             if bbox is not None:
                 await frame_data_service.save_bbox(session, video.id, frame_idx, bbox)

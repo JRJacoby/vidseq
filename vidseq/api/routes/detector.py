@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 from pathlib import Path
 
 import numpy as np
@@ -15,8 +14,6 @@ from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService
 from vidseq.services import segmentation_service
 from vidseq.services.h5_storage import detector_h5
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -174,26 +171,10 @@ async def get_detector_mask(
     """
     Get detector mask for a specific frame.
 
-    Returns PNG binary. If no detector mask exists, returns a transparent (all zeros) mask.
+    Returns PNG binary.
     """
-    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
-
-    if not h5_path.exists():
-        # Return empty mask
-        mask = np.zeros((video.height, video.width), dtype=np.uint8)
-        mask_png = segmentation_service.mask_to_png(mask)
-        return Response(content=mask_png, media_type="image/png")
-
-    try:
-        with detector_h5(project_path, video.id, "r") as f:
-            if "masks" not in f:
-                # No masks dataset
-                mask = np.zeros((video.height, video.width), dtype=np.uint8)
-            else:
-                mask = np.array(f["masks"][frame_idx])
-    except (OSError, KeyError, FileNotFoundError) as e:
-        logger.warning(f"Error reading detector mask: {e}")
-        mask = np.zeros((video.height, video.width), dtype=np.uint8)
+    with detector_h5(project_path, video.id, "r") as f:
+        mask = np.array(f["masks"][frame_idx])
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
@@ -213,42 +194,15 @@ async def get_detector_masks_batch(
     """
     import base64
 
-    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
     end_frame = min(start_frame + count, video.num_frames)
-    actual_count = end_frame - start_frame
-
     masks_list = []
 
-    if not h5_path.exists():
-        # Return empty masks
-        for i in range(actual_count):
-            mask = np.zeros((video.height, video.width), dtype=np.uint8)
+    with detector_h5(project_path, video.id, "r") as f:
+        masks = np.array(f["masks"][start_frame:end_frame])
+        for i, mask in enumerate(masks):
             png_bytes = segmentation_service.mask_to_png(mask)
             png_base64 = base64.b64encode(png_bytes).decode('ascii')
             masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
-    else:
-        try:
-            with detector_h5(project_path, video.id, "r") as f:
-                if "masks" not in f:
-                    # No masks dataset - return empty
-                    for i in range(actual_count):
-                        mask = np.zeros((video.height, video.width), dtype=np.uint8)
-                        png_bytes = segmentation_service.mask_to_png(mask)
-                        png_base64 = base64.b64encode(png_bytes).decode('ascii')
-                        masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
-                else:
-                    masks = np.array(f["masks"][start_frame:end_frame])
-                    for i, mask in enumerate(masks):
-                        png_bytes = segmentation_service.mask_to_png(mask)
-                        png_base64 = base64.b64encode(png_bytes).decode('ascii')
-                        masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
-        except (OSError, KeyError, FileNotFoundError) as e:
-            logger.warning(f"Error reading detector masks batch: {e}")
-            for i in range(actual_count):
-                mask = np.zeros((video.height, video.width), dtype=np.uint8)
-                png_bytes = segmentation_service.mask_to_png(mask)
-                png_base64 = base64.b64encode(png_bytes).decode('ascii')
-                masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
 
     return {"masks": masks_list}
 

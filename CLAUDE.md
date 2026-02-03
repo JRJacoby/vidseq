@@ -12,6 +12,7 @@ VidSeq is a full-stack application for animal behavior modeling from raw video u
 ```bash
 vidseq                    # Start backend server on port 8000 (with auto-reload)
 uv sync                   # Install/sync Python dependencies
+uv run python ...         # Run Python commands (always use uv run, not bare python)
 ```
 
 ### Frontend (Vue 3/TypeScript)
@@ -66,11 +67,39 @@ Start both servers concurrently - backend on :8000, frontend on :5173. Vite prox
 
 ### H5 File Management
 
-- Always use `open_video_h5()` context manager for proper file locking
-- Create all segmentation H5 files upfront when adding videos (not lazily)
+- Always use context managers (`tracker_h5()`, `detector_h5()`, etc.) for proper file locking
 - Per-frame operations zero out data in existing datasets
 - Video-level reset deletes and recreates entire files
-- Segmentation H5s: `{video_id}.h5` (tracker), `{video_id}_detector.h5`, `{video_id}_final.h5`
+- **Never check for dataset existence** - if a dataset is missing, let it crash to reveal lifecycle bugs
+
+#### H5 File Lifecycle: Two Patterns
+
+H5 files are created **as early as logically possible**. There are two lifecycle patterns based on when dimensions are known:
+
+**1. Upfront Creation (segmentation files)**
+
+Created when a video is added via `h5_storage.create_video_segmentation_files()`:
+
+| File | Location | Datasets |
+|------|----------|----------|
+| `tracker_masks.h5` | `array_data/{video_id}/` | masks (uint8), logits (float32) |
+| `detector_masks.h5` | `array_data/{video_id}/` | masks (uint8, gzip) |
+| `final_masks.h5` | `array_data/{video_id}/` | masks (uint8) |
+
+**Why upfront?** Video dimensions (height, width, num_frames) are known immediately when the video is added.
+
+**2. Lazy Creation (pipeline files)**
+
+Created during their respective processing stages:
+
+| File | Location | Created When |
+|------|----------|--------------|
+| `cropped_masks.h5` | `array_data/{video_id}/` | Cropped video extraction |
+| `aligned_masks.h5` | `array_data/{video_id}/` | Alignment processing |
+| `alignment_keypoints.h5` | `array_data/{video_id}/` | Alignment processing |
+| `pca_scores.h5` | `array_data/{video_id}/` | PCA computation |
+
+**Why lazy?** Crop dimensions depend on detected bounding boxes. PCA dimensions depend on the number of principal components chosen. These values aren't known until that pipeline stage runs.
 
 ### TCP Command Pattern
 
@@ -221,10 +250,13 @@ result = (tensor * 255).to(torch.uint8).cpu().numpy()
 **Per-Project DB** (`<project_folder>/vidseq.db`):
 - Video metadata, frame annotations, conditioning frames
 
-**Mask Storage** (`<project_folder>/masks/`):
-- `{video_id}.h5` - Tracker masks (uint8) and logits (float32)
-- `{video_id}_detector.h5` - Detector masks (uint8, gzip compressed)
-- `{video_id}_final.h5` - Final corrected masks (uint8)
+**Array Data Storage** (`<project_folder>/array_data/{video_id}/`):
+- `tracker_masks.h5` - Tracker masks (uint8) and logits (float32)
+- `detector_masks.h5` - Detector masks (uint8, gzip compressed)
+- `final_masks.h5` - Final corrected masks (uint8)
+- `cropped_masks.h5` - Cropped region masks (created during cropping)
+- `aligned_masks.h5` - Aligned masks (created during alignment)
+- `pca_scores.h5` - PCA scores (created during PCA)
 
 ### TCP Architecture (FastAPI ↔ GPU Worker)
 

@@ -562,15 +562,6 @@ class DetectorService:
                     _, orig_h, orig_w = mask_shape
 
                 with detector_h5(project_path, video_id, mode="a") as h5_file:
-                    # Create or get masks dataset
-                    if "masks" not in h5_file:
-                        h5_file.create_dataset(
-                            "masks",
-                            shape=mask_shape,
-                            dtype=np.uint8,
-                            chunks=(1, orig_h, orig_w),
-                            compression="gzip",
-                        )
                     detector_masks = h5_file["masks"]
 
                     for video_path, frame_idx in frame_list:

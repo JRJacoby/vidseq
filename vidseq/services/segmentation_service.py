@@ -8,7 +8,8 @@ import numpy as np
 from PIL import Image
 
 from vidseq.models.video import Video
-from vidseq.services import h5_storage, segmentation_tcp_client
+from vidseq.services import segmentation_tcp_client
+from vidseq.services.h5_storage import final_h5, tracker_h5
 
 
 def mask_to_png(mask: np.ndarray) -> bytes:
@@ -35,11 +36,8 @@ def get_mask_png(
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    mask = h5_storage.load_mask(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-    )
+    with tracker_h5(project_path, video.id, "r") as f:
+        mask = np.array(f["masks"][frame_idx])
 
     # DEBUG: Log mask loading
     print(f"[DEBUG get_mask_png] project={project_path}, video={video.id}, frame={frame_idx}")
@@ -67,13 +65,9 @@ def get_masks_batch_json(
     Returns:
         List of {"frame_idx": int, "png_base64": str}
     """
-    masks = h5_storage.load_masks_batch(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        count=count,
-        num_frames=video.num_frames,
-    )
+    with tracker_h5(project_path, video.id, "r") as f:
+        end_frame = min(start_frame + count, video.num_frames)
+        masks = np.array(f["masks"][start_frame:end_frame])
 
     result = []
     for i, mask in enumerate(masks):
@@ -103,11 +97,8 @@ def get_final_mask_png(
     Returns:
         PNG bytes of the mask (zeros if no mask exists)
     """
-    mask = h5_storage.load_final_mask(
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-    )
+    with final_h5(project_path, video.id, "r") as f:
+        mask = np.array(f["masks"][frame_idx])
     return mask_to_png(mask)
 
 
@@ -129,13 +120,9 @@ def get_final_masks_batch_json(
     Returns:
         List of {"frame_idx": int, "png_base64": str}
     """
-    masks = h5_storage.load_final_masks_batch(
-        project_path=project_path,
-        video_id=video.id,
-        start_frame=start_frame,
-        count=count,
-        num_frames=video.num_frames,
-    )
+    with final_h5(project_path, video.id, "r") as f:
+        end_frame = min(start_frame + count, video.num_frames)
+        masks = np.array(f["masks"][start_frame:end_frame])
 
     result = []
     for i, mask in enumerate(masks):
