@@ -1,8 +1,7 @@
-"""Training marking and validation endpoints."""
+"""Training range endpoints - validation, marking, and unmarking."""
 
 from pathlib import Path
 
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,8 +13,8 @@ from vidseq.services.array_storage import tracker_masks, compute_bbox_from_mask
 router = APIRouter()
 
 
-@router.post(
-    "/projects/{project_id}/videos/{video_id}/validate-training-range",
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/training-range/validation",
 )
 async def validate_training_range(
     start_frame: int,
@@ -39,9 +38,9 @@ async def validate_training_range(
 
 
 @router.post(
-    "/projects/{project_id}/videos/{video_id}/mark-training",
+    "/projects/{project_id}/videos/{video_id}/training-range",
 )
-async def mark_training(
+async def create_training_range(
     start_frame: int,
     end_frame: int,
     video: Video = Depends(get_video),
@@ -51,7 +50,7 @@ async def mark_training(
     """
     Mark frame range as training (computes bboxes from masks).
 
-    All frames in range must have masks. Use validate-training-range first.
+    All frames in range must have masks. Use GET /training-range/validation first.
     """
     missing_frames = await frame_data_service.get_missing_masks_in_range(
         session, video.id, start_frame, end_frame
@@ -81,9 +80,9 @@ async def mark_training(
 
 
 @router.delete(
-    "/projects/{project_id}/videos/{video_id}/mark-training",
+    "/projects/{project_id}/videos/{video_id}/training-range",
 )
-async def unmark_training(
+async def delete_training_range(
     start_frame: int,
     end_frame: int,
     video: Video = Depends(get_video),
