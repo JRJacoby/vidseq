@@ -42,6 +42,8 @@ async def get_frame_ranges(
     }
 
 
+# ----- Bbox endpoints (deprecated, to be removed) -----
+
 @router.get(
     "/projects/{project_id}/videos/{video_id}/bbox/{frame_idx}",
 )
@@ -54,6 +56,8 @@ async def get_bbox(
     Get the bounding box for a specific frame.
 
     Returns JSON with bbox coordinates or null if no bbox exists.
+
+    DEPRECATED: Bboxes are no longer used for training. Will be removed.
     """
     bbox = await frame_data_service.load_bbox(session, video.id, frame_idx)
 
@@ -81,6 +85,8 @@ async def get_bboxes_batch(
     Get bounding boxes for a batch of frames.
 
     Returns JSON array of {frame_idx, bbox} objects where bbox is [x1, y1, x2, y2] or null.
+
+    DEPRECATED: Bboxes are no longer used for training. Will be removed.
     """
     # Clamp count to not exceed video length
     actual_count = min(count, video.num_frames - start_frame)
@@ -104,10 +110,12 @@ async def get_bboxes_batch(
     return {"bboxes": result}
 
 
+# ----- Score endpoints (under /segmentation/) -----
+
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/scores-batch",
+    "/projects/{project_id}/videos/{video_id}/segmentation/scores",
 )
-async def get_scores_batch(
+async def get_scores(
     start_frame: int,
     count: int = 100,
     video: Video = Depends(get_video),
@@ -131,7 +139,7 @@ async def get_scores_batch(
 
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/scores-downsampled",
+    "/projects/{project_id}/videos/{video_id}/segmentation/scores-downsampled",
 )
 async def get_scores_downsampled(
     max_samples: int = 800,
