@@ -512,42 +512,42 @@ async def load_scores_in_range(
 
 
 # =============================================================================
-# MASK PRESENCE OPERATIONS
+# TRACKER MASK PRESENCE OPERATIONS
 # =============================================================================
 
 
-async def set_has_mask(
+async def set_has_tracker_mask(
     session: AsyncSession,
     video_id: int,
     frame_idx: int,
     has_mask: bool,
 ) -> None:
-    """Set the has_mask flag for a specific frame (upsert).
+    """Set the has_tracker_mask flag for a specific frame (upsert).
 
     Args:
         session: Async database session
         video_id: ID of the video
         frame_idx: Frame index (0-based)
-        has_mask: True if frame has a mask, False otherwise
+        has_mask: True if frame has a tracker mask, False otherwise
     """
     stmt = sqlite_insert(FrameData).values(
         video_id=video_id,
         frame_idx=frame_idx,
-        has_mask=1 if has_mask else 0,
+        has_tracker_mask=1 if has_mask else 0,
     ).on_conflict_do_update(
         index_elements=["video_id", "frame_idx"],
-        set_={"has_mask": 1 if has_mask else 0}
+        set_={"has_tracker_mask": 1 if has_mask else 0}
     )
     await session.execute(stmt)
     await session.commit()
 
 
-async def get_has_mask(
+async def get_has_tracker_mask(
     session: AsyncSession,
     video_id: int,
     frame_idx: int,
 ) -> bool:
-    """Get the has_mask flag for a specific frame.
+    """Get the has_tracker_mask flag for a specific frame.
 
     Args:
         session: Async database session
@@ -555,10 +555,10 @@ async def get_has_mask(
         frame_idx: Frame index (0-based)
 
     Returns:
-        True if frame has a mask, False otherwise (or if no record exists)
+        True if frame has a tracker mask, False otherwise (or if no record exists)
     """
     result = await session.execute(
-        select(FrameData.has_mask)
+        select(FrameData.has_tracker_mask)
         .where(FrameData.video_id == video_id)
         .where(FrameData.frame_idx == frame_idx)
     )
@@ -566,39 +566,39 @@ async def get_has_mask(
     return bool(row) if row is not None else False
 
 
-def set_has_mask_sync(
+def set_has_tracker_mask_sync(
     session: Session,
     video_id: int,
     frame_idx: int,
     has_mask: bool,
 ) -> None:
-    """Synchronous version of set_has_mask for worker processes.
+    """Synchronous version of set_has_tracker_mask for worker processes.
 
     Args:
         session: Sync database session
         video_id: ID of the video
         frame_idx: Frame index (0-based)
-        has_mask: True if frame has a mask, False otherwise
+        has_mask: True if frame has a tracker mask, False otherwise
     """
     stmt = sqlite_insert(FrameData).values(
         video_id=video_id,
         frame_idx=frame_idx,
-        has_mask=1 if has_mask else 0,
+        has_tracker_mask=1 if has_mask else 0,
     ).on_conflict_do_update(
         index_elements=["video_id", "frame_idx"],
-        set_={"has_mask": 1 if has_mask else 0}
+        set_={"has_tracker_mask": 1 if has_mask else 0}
     )
     session.execute(stmt)
     session.commit()
 
 
-def set_has_mask_batch_sync(
+def set_has_tracker_mask_batch_sync(
     session: Session,
     video_id: int,
     frame_indices: list[int],
     has_mask: bool = True,
 ) -> None:
-    """Batch update has_mask flag for multiple frames (sync version).
+    """Batch update has_tracker_mask flag for multiple frames (sync version).
 
     Optimized for propagation hot path where many frames are processed.
 
@@ -612,23 +612,23 @@ def set_has_mask_batch_sync(
         return
 
     values = [
-        {"video_id": video_id, "frame_idx": frame_idx, "has_mask": 1 if has_mask else 0}
+        {"video_id": video_id, "frame_idx": frame_idx, "has_tracker_mask": 1 if has_mask else 0}
         for frame_idx in frame_indices
     ]
     stmt = sqlite_insert(FrameData).values(values)
     stmt = stmt.on_conflict_do_update(
         index_elements=["video_id", "frame_idx"],
-        set_={"has_mask": stmt.excluded.has_mask}
+        set_={"has_tracker_mask": stmt.excluded.has_tracker_mask}
     )
     session.execute(stmt)
     session.commit()
 
 
-async def get_masked_frames(
+async def get_tracker_masked_frames(
     session: AsyncSession,
     video_id: int,
 ) -> list[int]:
-    """Get all frame indices that have masks.
+    """Get all frame indices that have tracker masks.
 
     Uses indexed query - O(log n + k) where k = number of masked frames.
 
@@ -637,21 +637,21 @@ async def get_masked_frames(
         video_id: ID of the video
 
     Returns:
-        List of frame indices that have masks, sorted ascending
+        List of frame indices that have tracker masks, sorted ascending
     """
     result = await session.execute(
         select(FrameData.frame_idx)
-        .where(FrameData.video_id == video_id, FrameData.has_mask == 1)
+        .where(FrameData.video_id == video_id, FrameData.has_tracker_mask == 1)
         .order_by(FrameData.frame_idx)
     )
     return [row[0] for row in result.all()]
 
 
-async def get_masked_frame_ranges(
+async def get_tracker_masked_frame_ranges(
     session: AsyncSession,
     video_id: int,
 ) -> list[tuple[int, int]]:
-    """Get contiguous ranges of frames that have masks.
+    """Get contiguous ranges of frames that have tracker masks.
 
     Args:
         session: Async database session
@@ -660,19 +660,19 @@ async def get_masked_frame_ranges(
     Returns:
         List of (start_frame, end_frame) tuples for contiguous masked ranges
     """
-    masked_frames = await get_masked_frames(session, video_id)
+    masked_frames = await get_tracker_masked_frames(session, video_id)
     return frames_to_ranges(masked_frames)
 
 
-async def get_missing_masks_in_range(
+async def get_missing_tracker_masks_in_range(
     session: AsyncSession,
     video_id: int,
     start_frame: int,
     end_frame: int,
 ) -> list[int]:
-    """Get frame indices in range that are missing masks.
+    """Get frame indices in range that are missing tracker masks.
 
-    Returns frames where has_mask is NULL or 0.
+    Returns frames where has_tracker_mask is NULL or 0.
 
     Args:
         session: Async database session
@@ -681,16 +681,16 @@ async def get_missing_masks_in_range(
         end_frame: End frame index (inclusive)
 
     Returns:
-        List of frame indices that are missing masks, sorted ascending
+        List of frame indices that are missing tracker masks, sorted ascending
     """
-    # Get frames that DO have masks in range
+    # Get frames that DO have tracker masks in range
     result = await session.execute(
         select(FrameData.frame_idx)
         .where(
             FrameData.video_id == video_id,
             FrameData.frame_idx >= start_frame,
             FrameData.frame_idx <= end_frame,
-            FrameData.has_mask == 1,
+            FrameData.has_tracker_mask == 1,
         )
     )
     masked_in_range = set(row[0] for row in result.all())
@@ -700,12 +700,12 @@ async def get_missing_masks_in_range(
     return sorted(all_in_range - masked_in_range)
 
 
-async def clear_has_mask(
+async def clear_has_tracker_mask(
     session: AsyncSession,
     video_id: int,
     frame_idx: int,
 ) -> None:
-    """Clear the has_mask flag for a frame (set to 0).
+    """Clear the has_tracker_mask flag for a frame (set to 0).
 
     Args:
         session: Async database session
@@ -715,16 +715,16 @@ async def clear_has_mask(
     await session.execute(
         update(FrameData)
         .where(FrameData.video_id == video_id, FrameData.frame_idx == frame_idx)
-        .values(has_mask=0)
+        .values(has_tracker_mask=0)
     )
     await session.commit()
 
 
-async def clear_all_has_mask(
+async def clear_all_has_tracker_mask(
     session: AsyncSession,
     video_id: int,
 ) -> None:
-    """Clear all has_mask flags for a video (set to 0).
+    """Clear all has_tracker_mask flags for a video (set to 0).
 
     Args:
         session: Async database session
@@ -733,9 +733,140 @@ async def clear_all_has_mask(
     await session.execute(
         update(FrameData)
         .where(FrameData.video_id == video_id)
-        .values(has_mask=0)
+        .values(has_tracker_mask=0)
     )
     await session.commit()
+
+
+# =============================================================================
+# DETECTOR MASK PRESENCE OPERATIONS
+# =============================================================================
+
+
+async def set_has_detector_mask(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+    has_mask: bool,
+) -> None:
+    """Set the has_detector_mask flag for a specific frame (upsert)."""
+    stmt = sqlite_insert(FrameData).values(
+        video_id=video_id,
+        frame_idx=frame_idx,
+        has_detector_mask=1 if has_mask else 0,
+    ).on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_detector_mask": 1 if has_mask else 0}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+def set_has_detector_mask_batch_sync(
+    session: Session,
+    video_id: int,
+    frame_indices: list[int],
+    has_mask: bool = True,
+) -> None:
+    """Batch update has_detector_mask flag for multiple frames (sync version)."""
+    if not frame_indices:
+        return
+    values = [
+        {"video_id": video_id, "frame_idx": frame_idx, "has_detector_mask": 1 if has_mask else 0}
+        for frame_idx in frame_indices
+    ]
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_detector_mask": stmt.excluded.has_detector_mask}
+    )
+    session.execute(stmt)
+    session.commit()
+
+
+async def clear_all_has_detector_mask(
+    session: AsyncSession,
+    video_id: int,
+) -> None:
+    """Clear all has_detector_mask flags for a video (set to 0)."""
+    await session.execute(
+        update(FrameData)
+        .where(FrameData.video_id == video_id)
+        .values(has_detector_mask=0)
+    )
+    await session.commit()
+
+
+# =============================================================================
+# FINAL MASK PRESENCE OPERATIONS
+# =============================================================================
+
+
+async def set_has_final_mask(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+    has_mask: bool,
+) -> None:
+    """Set the has_final_mask flag for a specific frame (upsert)."""
+    stmt = sqlite_insert(FrameData).values(
+        video_id=video_id,
+        frame_idx=frame_idx,
+        has_final_mask=1 if has_mask else 0,
+    ).on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_final_mask": 1 if has_mask else 0}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+def set_has_final_mask_batch_sync(
+    session: Session,
+    video_id: int,
+    frame_indices: list[int],
+    has_mask: bool = True,
+) -> None:
+    """Batch update has_final_mask flag for multiple frames (sync version)."""
+    if not frame_indices:
+        return
+    values = [
+        {"video_id": video_id, "frame_idx": frame_idx, "has_final_mask": 1 if has_mask else 0}
+        for frame_idx in frame_indices
+    ]
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"has_final_mask": stmt.excluded.has_final_mask}
+    )
+    session.execute(stmt)
+    session.commit()
+
+
+async def clear_all_has_final_mask(
+    session: AsyncSession,
+    video_id: int,
+) -> None:
+    """Clear all has_final_mask flags for a video (set to 0)."""
+    await session.execute(
+        update(FrameData)
+        .where(FrameData.video_id == video_id)
+        .values(has_final_mask=0)
+    )
+    await session.commit()
+
+
+async def video_has_any_final_masks(
+    session: AsyncSession,
+    video_id: int,
+) -> bool:
+    """Check if any frames in a video have final masks written."""
+    result = await session.execute(
+        select(FrameData.id)
+        .where(FrameData.video_id == video_id, FrameData.has_final_mask == 1)
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 # =============================================================================
