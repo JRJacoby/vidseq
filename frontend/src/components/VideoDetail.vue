@@ -2,11 +2,12 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideo, getVideoStreamUrl, createPropagation, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
 import { useFrameRanges } from '@/composables/useFrameRanges'
+import { useVideo } from '@/composables/useVideo'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 import DataTrack from './DataTrack.vue'
@@ -18,9 +19,8 @@ const router = useRouter()
 const projectId = computed(() => Number(route.params.id))
 const videoId = computed(() => Number(route.params.videoId))
 
-const video = ref<Video | null>(null)
-const isLoading = ref(true)
-const error = ref<string | null>(null)
+const { video, isLoading, error, refresh: refreshVideo } = useVideo(videoId, projectId)
+
 const showMask = ref(true)
 const showPrompts = ref(true)
 
@@ -64,19 +64,6 @@ const videoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
   return getVideoStreamUrl(projectId.value, videoId.value)
 })
-
-const loadVideo = async () => {
-  isLoading.value = true
-  error.value = null
-
-  try {
-    video.value = await getVideo(projectId.value, videoId.value)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load video'
-  } finally {
-    isLoading.value = false
-  }
-}
 
 const handleBack = () => {
   router.push(`/project/${projectId.value}`)
@@ -244,7 +231,6 @@ setMetadataCallback(() => {
 })
 
 onMounted(async () => {
-  await loadVideo()
   await refreshFrameRanges()
   await checkDetectorMasks()
   await checkFinalMasks()
