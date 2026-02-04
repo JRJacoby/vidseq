@@ -1,13 +1,9 @@
 import mimetypes
 from pathlib import Path
 
-import cv2
-from io import BytesIO
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from PIL import Image
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
@@ -107,35 +103,13 @@ async def get_frame(
     Returns:
         JPEG image bytes
     """
-    if frame_idx < 0 or frame_idx >= video.num_frames:
-        raise HTTPException(status_code=400, detail=f"Frame index {frame_idx} out of range [0, {video.num_frames})")
-    
     video_path = Path(video.path)
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail=f"Video file not found: {video.path}")
-    
-    # Extract frame using OpenCV
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise HTTPException(status_code=500, detail=f"Failed to open video: {video.path}")
-    
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-    
-    if not ret:
-        raise HTTPException(status_code=500, detail=f"Failed to read frame {frame_idx} from video")
-    
-    # Convert BGR to RGB
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Convert to PIL Image and then to JPEG bytes
-    pil_image = Image.fromarray(frame_rgb)
-    img_bytes = BytesIO()
-    pil_image.save(img_bytes, format='JPEG', quality=95)
-    img_bytes.seek(0)
-    
-    return Response(content=img_bytes.read(), media_type="image/jpeg")
+    jpeg_bytes = video_service.extract_frame_as_jpeg(
+        video_path=video_path,
+        frame_idx=frame_idx,
+        num_frames=video.num_frames,
+    )
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
 
 
 @router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}", status_code=204)

@@ -1,9 +1,11 @@
 """Video service - metadata extraction and database operations."""
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import cv2
+from PIL import Image
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,6 +85,68 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
         )
     finally:
         cap.release()
+
+
+def extract_frame_as_jpeg(
+    video_path: Path,
+    frame_idx: int,
+    num_frames: int | None = None,
+    quality: int = 95,
+) -> bytes:
+    """Extract a specific frame from a video and return as JPEG bytes.
+
+    Args:
+        video_path: Path to the video file
+        frame_idx: Frame index (0-based)
+        num_frames: Total frames in video (for validation). If None, reads from video.
+        quality: JPEG quality (1-100)
+
+    Returns:
+        JPEG image bytes
+
+    Raises:
+        VideoFileNotFoundError: If video file doesn't exist
+        FrameIndexOutOfRangeError: If frame_idx is out of bounds
+        VideoFileInvalidError: If video cannot be opened or frame cannot be read
+    """
+    from vidseq.services.exceptions import FrameIndexOutOfRangeError
+
+    if not video_path.exists():
+        raise VideoFileNotFoundError(str(video_path))
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise VideoFileInvalidError(str(video_path), "could not open video")
+
+        # Get frame count if not provided
+        if num_frames is None:
+            num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Validate frame index
+        if frame_idx < 0 or frame_idx >= num_frames:
+            raise FrameIndexOutOfRangeError(frame_idx, num_frames)
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+
+        if not ret:
+            raise VideoFileInvalidError(
+                str(video_path), f"could not read frame {frame_idx}"
+            )
+    finally:
+        cap.release()
+
+    # Convert BGR to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Convert to PIL Image and then to JPEG bytes
+    pil_image = Image.fromarray(frame_rgb)
+    img_bytes = BytesIO()
+    pil_image.save(img_bytes, format="JPEG", quality=quality)
+    img_bytes.seek(0)
+
+    return img_bytes.read()
 
 
 async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:

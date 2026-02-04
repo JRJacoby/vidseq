@@ -85,12 +85,12 @@ async def permission_denied_handler(request, exc: PermissionDeniedError):
 
 @app.exception_handler(VideoFileNotFoundError)
 async def video_file_not_found_handler(request, exc: VideoFileNotFoundError):
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
 @app.exception_handler(VideoFileInvalidError)
 async def video_file_invalid_handler(request, exc: VideoFileInvalidError):
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 @app.exception_handler(FrameIndexOutOfRangeError)

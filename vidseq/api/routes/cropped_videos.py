@@ -2,13 +2,10 @@
 
 import asyncio
 import mimetypes
-from io import BytesIO
 from pathlib import Path
 
-import cv2
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
@@ -150,37 +147,8 @@ async def get_cropped_video_frame(
 ):
     """Extract a specific frame from a cropped video and return it as a JPEG image."""
     cropped_path = cropped_video_service.get_cropped_video_path(project_path, video.name)
-
-    if not cropped_path.exists():
-        raise HTTPException(status_code=404, detail="Cropped video not found")
-
-    # Extract frame using OpenCV
-    cap = cv2.VideoCapture(str(cropped_path))
-    if not cap.isOpened():
-        raise HTTPException(status_code=500, detail="Failed to open cropped video")
-
-    # Get frame count for validation
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if frame_idx < 0 or frame_idx >= frame_count:
-        cap.release()
-        raise HTTPException(
-            status_code=400, detail=f"Frame index {frame_idx} out of range [0, {frame_count})"
-        )
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        raise HTTPException(status_code=500, detail=f"Failed to read frame {frame_idx}")
-
-    # Convert BGR to RGB
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Convert to PIL Image and then to JPEG bytes
-    pil_image = Image.fromarray(frame_rgb)
-    img_bytes = BytesIO()
-    pil_image.save(img_bytes, format="JPEG", quality=95)
-    img_bytes.seek(0)
-
-    return Response(content=img_bytes.read(), media_type="image/jpeg")
+    jpeg_bytes = video_service.extract_frame_as_jpeg(
+        video_path=cropped_path,
+        frame_idx=frame_idx,
+    )
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
