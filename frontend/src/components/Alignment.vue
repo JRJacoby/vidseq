@@ -2,13 +2,14 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
-    getAlignmentTrainingStreamUrl,
+    connectAlignmentTrainingStream,
+    connectAlignmentApplyStream,
     getAlignmentTraining,
     getVideosAlignmentStatus,
-    getVideosAlignmentStreamUrl,
     type TrainingProgress,
     type AlignmentApplyProgress
 } from '@/services/api'
+import { useSSEStream } from '@/composables/useSSEStream'
 import { Chart, registerables } from 'chart.js'
 
 Chart.register(...registerables)
@@ -20,11 +21,29 @@ const projectId = computed(() => projectStore.currentProjectId)
 const progress = ref<TrainingProgress | null>(null)
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
 let chart: Chart | null = null
-let eventSource: EventSource | null = null
 
 // Alignment apply progress
 const alignProgress = ref<AlignmentApplyProgress | null>(null)
-let alignEventSource: EventSource | null = null
+
+// Training stream
+const {
+    data: trainingStreamData,
+    isConnected: trainingConnected,
+    start: startTrainingStream,
+    stop: stopTrainingStream,
+} = useSSEStream<TrainingProgress>(() =>
+    connectAlignmentTrainingStream(projectId.value!)
+)
+
+// Alignment apply stream
+const {
+    data: alignStreamData,
+    isConnected: alignConnected,
+    start: startAlignStream,
+    stop: stopAlignStream,
+} = useSSEStream<AlignmentApplyProgress>(() =>
+    connectAlignmentApplyStream(projectId.value!)
+)
 
 // Initialize chart with two datasets (train and val)
 function initChart() {
@@ -85,36 +104,28 @@ function updateChart(trainHistory: number[], valHistory: number[]) {
     chart.update('none')  // No animation
 }
 
-// Connect to SSE stream
-function connectToStream() {
-    if (!projectId.value) return
-
-    // Close existing connection if any
-    if (eventSource) {
-        eventSource.close()
-        eventSource = null
-    }
-
-    const url = getAlignmentTrainingStreamUrl(projectId.value)
-    eventSource = new EventSource(url)
-
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data) as TrainingProgress
+// Handle training stream data
+watch(trainingStreamData, (data) => {
+    if (data) {
         progress.value = data
         updateChart(data.train_loss_history, data.val_loss_history)
 
-        // Close connection if training finished
         if (['completed', 'stopped', 'failed'].includes(data.status)) {
-            eventSource?.close()
-            eventSource = null
+            stopTrainingStream()
         }
     }
+})
 
-    eventSource.onerror = () => {
-        eventSource?.close()
-        eventSource = null
+// Handle alignment apply stream data
+watch(alignStreamData, (data) => {
+    if (data) {
+        alignProgress.value = data
+
+        if (['completed', 'failed'].includes(data.status)) {
+            stopAlignStream()
+        }
     }
-}
+})
 
 // Load initial training status
 async function loadTrainingStatus() {
@@ -128,40 +139,10 @@ async function loadTrainingStatus() {
 
         // If training in progress, connect to stream
         if (progress.value.is_training) {
-            connectToStream()
+            startTrainingStream()
         }
     } catch (e) {
         console.error('Failed to load training status:', e)
-    }
-}
-
-// Connect to alignment apply SSE stream
-function connectToAlignStream() {
-    if (!projectId.value) return
-
-    // Close existing connection if any
-    if (alignEventSource) {
-        alignEventSource.close()
-        alignEventSource = null
-    }
-
-    const url = getVideosAlignmentStreamUrl(projectId.value)
-    alignEventSource = new EventSource(url)
-
-    alignEventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data) as AlignmentApplyProgress
-        alignProgress.value = data
-
-        // Close connection if alignment finished
-        if (['completed', 'failed'].includes(data.status)) {
-            alignEventSource?.close()
-            alignEventSource = null
-        }
-    }
-
-    alignEventSource.onerror = () => {
-        alignEventSource?.close()
-        alignEventSource = null
     }
 }
 
@@ -174,7 +155,7 @@ async function loadAlignmentStatus() {
 
         // If alignment in progress, connect to stream
         if (alignProgress.value.is_aligning) {
-            connectToAlignStream()
+            startAlignStream()
         }
     } catch (e) {
         console.error('Failed to load alignment status:', e)
@@ -188,32 +169,28 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-    eventSource?.close()
-    alignEventSource?.close()
     chart?.destroy()
 })
 
 // Reconnect if project changes
 watch(() => projectId.value, () => {
-    eventSource?.close()
-    eventSource = null
-    alignEventSource?.close()
-    alignEventSource = null
+    stopTrainingStream()
+    stopAlignStream()
     loadTrainingStatus()
     loadAlignmentStatus()
 })
 
 // Reconnect if training starts
 watch(() => progress.value?.is_training, (isTraining) => {
-    if (isTraining && !eventSource) {
-        connectToStream()
+    if (isTraining && !trainingConnected.value) {
+        startTrainingStream()
     }
 })
 
 // Reconnect if alignment starts
 watch(() => alignProgress.value?.is_aligning, (isAligning) => {
-    if (isAligning && !alignEventSource) {
-        connectToAlignStream()
+    if (isAligning && !alignConnected.value) {
+        startAlignStream()
     }
 })
 
