@@ -22,7 +22,6 @@ from vidseq.services.alignment_service import (
     load_prediction,
     predictions_exist,
 )
-from vidseq.services.cropped_video_service import cropped_video_exists
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -97,44 +96,9 @@ async def get_alignment_status(
     project_path: Path = Depends(get_project_folder),
 ) -> AlignmentStatusResponse:
     """Get current alignment training status."""
-    logger.info(f"GET /alignment/status: project_id={project_id}")
-
     service = AlignmentService.get_instance()
-
-    label_count = await service.get_label_count(session)
-    model_trained = service.is_model_trained(project_path)
-    is_training = service.is_training()
-    is_applying = service.is_applying()
-
-    # Check if all videos have cropping completed (filesystem check)
-    result = await session.execute(select(Video))
-    videos = list(result.scalars().all())
-    video_count = len(videos)
-
-    def _count_cropped() -> int:
-        return sum(
-            1 for v in videos
-            if cropped_video_exists(project_path, v.name)
-        )
-
-    cropped_count = await asyncio.to_thread(_count_cropped)
-    all_cropped = video_count > 0 and cropped_count == video_count
-
-    logger.info(
-        f"GET /alignment/status: label_count={label_count}, model_trained={model_trained}, "
-        f"is_training={is_training}, is_applying={is_applying}, "
-        f"videos={video_count}, cropped={cropped_count}, all_cropped={all_cropped}"
-    )
-
-    response = AlignmentStatusResponse(
-        label_count=label_count,
-        model_trained=model_trained,
-        is_training=is_training,
-        is_applying=is_applying,
-        all_videos_cropped=all_cropped,
-    )
-    logger.debug(f"GET /alignment/status: response={response.model_dump()}")
-    return response
+    status = await service.get_alignment_status(session, project_path)
+    return AlignmentStatusResponse(**status)
 
 
 @router.get("/projects/{project_id}/alignment/random-frame")

@@ -1515,6 +1515,51 @@ class AlignmentService:
         logger.info(f"get_random_unlabeled_frame: selected video_id={choice[0]}, frame_idx={choice[1]}")
         return choice
 
+    async def get_alignment_status(
+        self, session: AsyncSession, project_path: Path
+    ) -> dict:
+        """Get current alignment status including label count and cropped video status.
+
+        Args:
+            session: Async database session
+            project_path: Path to the project folder
+
+        Returns:
+            Dict with keys: label_count, model_trained, is_training, is_applying, all_videos_cropped
+        """
+        label_count = await self.get_label_count(session)
+        model_trained = self.is_model_trained(project_path)
+        is_training = self.is_training()
+        is_applying = self.is_applying()
+
+        # Check if all videos have cropping completed
+        result = await session.execute(select(Video))
+        videos = list(result.scalars().all())
+        video_count = len(videos)
+
+        def _count_cropped() -> int:
+            return sum(
+                1 for v in videos
+                if cropped_video_exists(project_path, v.name)
+            )
+
+        cropped_count = await asyncio.to_thread(_count_cropped)
+        all_videos_cropped = video_count > 0 and cropped_count == video_count
+
+        logger.info(
+            f"get_alignment_status: label_count={label_count}, model_trained={model_trained}, "
+            f"is_training={is_training}, is_applying={is_applying}, "
+            f"videos={video_count}, cropped={cropped_count}, all_videos_cropped={all_videos_cropped}"
+        )
+
+        return {
+            "label_count": label_count,
+            "model_trained": model_trained,
+            "is_training": is_training,
+            "is_applying": is_applying,
+            "all_videos_cropped": all_videos_cropped,
+        }
+
     def train_model_sync(
         self,
         project_path: Path,
