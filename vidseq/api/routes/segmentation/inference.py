@@ -14,11 +14,7 @@ from vidseq.schemas.segmentation import (
     PropagateRequest,
     PropagateResponse,
 )
-from vidseq.services import (
-    frame_data_service,
-    segmentation_service,
-    segmentation_tcp_client,
-)
+from vidseq.services import segmentation_service
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +84,13 @@ async def propagate(
     Use POST /training-range to mark frames for training.
     """
     try:
-        frame_indices = segmentation_tcp_client.generate_training_masks(
+        frames_processed = await segmentation_service.propagate(
+            session=session,
             project_id=project_id,
             video_id=video.id,
+            project_path=project_path,
             start_frame_idx=request.start_frame_idx,
             max_frames=request.max_frames,
-            project_path=project_path,
             num_frames=video.num_frames,
             height=video.height,
             width=video.width,
@@ -105,8 +102,4 @@ async def propagate(
         logger.error(f"Unexpected error in propagation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Update has_tracker_mask for all propagated frames
-    for frame_idx in frame_indices:
-        await frame_data_service.set_has_tracker_mask(session, video.id, frame_idx, True)
-
-    return PropagateResponse(frames_processed=len(frame_indices))
+    return PropagateResponse(frames_processed=frames_processed)

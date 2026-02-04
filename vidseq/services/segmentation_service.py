@@ -240,3 +240,53 @@ async def submit_prompt(
 
     return mask
 
+
+async def propagate(
+    session: "AsyncSession",
+    project_id: int,
+    video_id: int,
+    project_path: Path,
+    start_frame_idx: int,
+    max_frames: int,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> int:
+    """Propagate segmentation masks forward from a frame.
+
+    Requires an active SAM session with a tracked object.
+
+    Args:
+        session: Async database session
+        project_id: ID of the project
+        video_id: ID of the video
+        project_path: Path to the project folder
+        start_frame_idx: Frame to start propagation from
+        max_frames: Maximum number of frames to propagate
+        num_frames: Total frames in video
+        height: Video height
+        width: Video width
+
+    Returns:
+        Number of frames processed
+
+    Raises:
+        RuntimeError: If propagation fails (no active session, etc.)
+    """
+    frame_indices = segmentation_tcp_client.generate_training_masks(
+        project_id=project_id,
+        video_id=video_id,
+        start_frame_idx=start_frame_idx,
+        max_frames=max_frames,
+        project_path=project_path,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+    )
+
+    # Update has_tracker_mask for all propagated frames
+    for frame_idx in frame_indices:
+        await frame_data_service.set_has_tracker_mask(session, video_id, frame_idx, True)
+
+    return len(frame_indices)
+
