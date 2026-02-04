@@ -16,6 +16,7 @@ from vidseq.services.exceptions import (
     FrameIndexOutOfRangeError,
     MultiPointWithoutMaskError,
     MissingMasksError,
+    AlignmentTrainingError,
 )
 from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
@@ -114,3 +115,8 @@ async def missing_masks_handler(request, exc: MissingMasksError):
             }
         },
     )
+
+
+@app.exception_handler(AlignmentTrainingError)
+async def alignment_training_error_handler(request, exc: AlignmentTrainingError):
+    return JSONResponse(status_code=400, content={"detail": exc.message})

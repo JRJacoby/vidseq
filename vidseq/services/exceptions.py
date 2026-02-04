@@ -89,3 +89,11 @@ class MissingMasksError(Exception):
     def __init__(self, missing_frames: list[int]):
         self.missing_frames = missing_frames
         super().__init__(f"Frames missing masks: {missing_frames}")
+
+
+class AlignmentTrainingError(Exception):
+    """Raised when alignment training cannot be started."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)

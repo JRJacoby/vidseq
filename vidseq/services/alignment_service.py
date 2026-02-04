@@ -46,6 +46,7 @@ from torch.utils.data import Dataset, DataLoader
 from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
 from vidseq.services.cropped_video_service import cropped_video_exists, get_cropped_video_path
+from vidseq.services.exceptions import AlignmentTrainingError
 
 # Constants
 DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
@@ -1559,6 +1560,70 @@ class AlignmentService:
             "is_applying": is_applying,
             "all_videos_cropped": all_videos_cropped,
         }
+
+    async def create_alignment_training(
+        self,
+        session: AsyncSession,
+        project_path: Path,
+        epochs: int = 100,
+        augment: bool = True,
+        early_stop_patience: int = 5,
+        lr_patience: int = 3,
+    ) -> dict:
+        """Start alignment model training.
+
+        Fetches labels, builds video name map, validates, and starts training
+        in a background thread.
+
+        Args:
+            session: Async database session
+            project_path: Path to the project folder
+            epochs: Maximum training epochs
+            augment: Whether to use data augmentation
+            early_stop_patience: Epochs without improvement before stopping
+            lr_patience: Epochs without improvement before reducing LR
+
+        Returns:
+            Dict with status and training parameters
+
+        Raises:
+            AlignmentTrainingError: If training already in progress or no labels available
+        """
+        if self.is_training():
+            raise AlignmentTrainingError("Training already in progress")
+
+        # Fetch all labels
+        labels = await self.get_all_labels(session)
+
+        if len(labels) == 0:
+            raise AlignmentTrainingError("No labels available for training")
+
+        # Build video_name_map: video_id -> video.name
+        video_ids = list({label.video_id for label in labels})
+        result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
+        videos = list(result.scalars().all())
+        video_name_map = {v.id: v.name for v in videos}
+
+        logger.info(
+            f"create_alignment_training: starting training with {len(labels)} labels, "
+            f"{len(video_name_map)} videos, max_epochs={epochs}, augment={augment}"
+        )
+
+        # Start training in background thread
+        asyncio.create_task(
+            asyncio.to_thread(
+                self.train_model_sync,
+                project_path,
+                labels,
+                video_name_map,
+                epochs,
+                augment,
+                early_stop_patience,
+                lr_patience,
+            )
+        )
+
+        return {"status": "started", "max_epochs": epochs, "augment": augment}
 
     def train_model_sync(
         self,

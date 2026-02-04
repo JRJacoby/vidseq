@@ -9,7 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
@@ -226,25 +225,6 @@ async def delete_model(
     return None
 
 
-def _run_training_in_background(
-    service: AlignmentService,
-    project_path: Path,
-    labels: list,
-    video_name_map: dict,
-    epochs: int,
-    augment: bool = True,
-    early_stop_patience: int = 5,
-    lr_patience: int = 3,
-):
-    """Run training synchronously (called from background task)."""
-    service.train_model_sync(
-        project_path, labels, video_name_map, epochs,
-        augment=augment,
-        early_stop_patience=early_stop_patience,
-        lr_patience=lr_patience,
-    )
-
-
 @router.post("/projects/{project_id}/alignment/training")
 async def create_alignment_training(
     project_id: int,
@@ -264,50 +244,15 @@ async def create_alignment_training(
     (/alignment/training/stream) to monitor progress, or the status endpoint
     (/alignment/training/status) to check current state.
     """
-    logger.info(f"POST /alignment/train: project_id={project_id}, max_epochs={epochs}")
-
     service = AlignmentService.get_instance()
-
-    if service.is_training():
-        logger.warning(f"POST /alignment/train: training already in progress")
-        raise HTTPException(status_code=400, detail="Training already in progress")
-
-    # Fetch all labels
-    labels = await service.get_all_labels(session)
-    logger.info(f"POST /alignment/train: label_count={len(labels)}")
-
-    if len(labels) == 0:
-        logger.warning(f"POST /alignment/train: no labels available for training")
-        raise HTTPException(
-            status_code=400, detail="No labels available for training"
-        )
-
-    # Build video_name_map: video_id -> video.name
-    video_ids = list({l.video_id for l in labels})
-    result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
-    videos = list(result.scalars().all())
-    video_name_map = {v.id: v.name for v in videos}
-    logger.info(f"POST /alignment/train: video_name_map has {len(video_name_map)} videos")
-
-    # Start training in background thread (fire-and-forget)
-    # Use asyncio.to_thread but don't await it - let it run in background
-    logger.info(f"POST /alignment/train: starting training in background (augment={augment})...")
-    asyncio.create_task(
-        asyncio.to_thread(
-            _run_training_in_background,
-            service,
-            project_path,
-            labels,
-            video_name_map,
-            epochs,
-            augment,
-            early_stop_patience,
-            lr_patience,
-        )
+    return await service.create_alignment_training(
+        session=session,
+        project_path=project_path,
+        epochs=epochs,
+        augment=augment,
+        early_stop_patience=early_stop_patience,
+        lr_patience=lr_patience,
     )
-
-    logger.info(f"POST /alignment/train: training started, returning immediately")
-    return {"status": "started", "max_epochs": epochs, "augment": augment}
 
 
 @router.get("/projects/{project_id}/alignment/training")
