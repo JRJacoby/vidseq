@@ -2,7 +2,6 @@
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  getVideo,
   getCroppedVideoStreamUrl,
   hasAlignmentPredictions,
   getStoredAlignmentPredictionUrl,
@@ -10,9 +9,9 @@ import {
   saveAlignmentLabel,
   deleteAlignmentLabel,
   deleteVideoAlignmentLabels,
-  type Video,
 } from '@/services/api'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
+import { useVideo } from '@/composables/useVideo'
 import TimelineSystem from './TimelineSystem.vue'
 import VideoTimeline from './VideoTimeline.vue'
 import DataTrack from './DataTrack.vue'
@@ -23,9 +22,7 @@ const router = useRouter()
 const projectId = computed(() => Number(route.params.id))
 const videoId = computed(() => Number(route.params.videoId))
 
-const video = ref<Video | null>(null)
-const isLoading = ref(true)
-const error = ref<string | null>(null)
+const { video, isLoading, error, refresh: refreshVideo } = useVideo(videoId, projectId)
 
 const viewStart = ref(0)
 const viewEnd = ref(0)
@@ -56,12 +53,9 @@ const currentFrameIdx = computed(() => {
   return Math.floor(currentTime.value * video.value.fps)
 })
 
-const loadVideo = async () => {
-  isLoading.value = true
-  error.value = null
-
+const loadExtraData = async () => {
+  if (!video.value) return
   try {
-    video.value = await getVideo(projectId.value, videoId.value)
     // Check if stored predictions exist
     hasStoredPredictions.value = await hasAlignmentPredictions(
       projectId.value,
@@ -74,11 +68,15 @@ const loadVideo = async () => {
     )
     alignmentLabelFrames.value = labelsResponse.frame_indices
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load video'
-  } finally {
-    isLoading.value = false
+    // Extra data loading failed, but video loaded fine
+    console.error('Failed to load extra data:', e)
   }
 }
+
+// Load extra data when video loads
+watch(video, (v) => {
+  if (v) loadExtraData()
+})
 
 const handleBack = () => {
   router.push(`/project/${projectId.value}`)
@@ -347,9 +345,7 @@ watch([() => videoRef.value?.videoWidth, () => videoRef.value?.videoHeight], () 
   }
 })
 
-onMounted(async () => {
-  await loadVideo()
-
+onMounted(() => {
   // Handle query params from AlignedVideoDetail navigation
   if (route.query.training === 'true') {
     isTrainingMode.value = true
