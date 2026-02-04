@@ -698,6 +698,10 @@ export function getAlignmentTrainingStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/alignment/training/stream`
 }
 
+export function connectAlignmentTrainingStream(projectId: number): EventSource {
+    return new EventSource(getAlignmentTrainingStreamUrl(projectId))
+}
+
 // --- Alignment Apply Progress (for real-time monitoring) ---
 
 export interface AlignmentApplyProgress {
@@ -733,6 +737,10 @@ export async function getVideosAlignmentStatus(projectId: number): Promise<Align
 
 export function getVideosAlignmentStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/videos/alignment/stream`
+}
+
+export function connectAlignmentApplyStream(projectId: number): EventSource {
+    return new EventSource(getVideosAlignmentStreamUrl(projectId))
 }
 
 // --- Stored Alignment Predictions (for debugging) ---
@@ -993,6 +1001,10 @@ export function getARHMMStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/arhmm/stream`
 }
 
+export function connectARHMMStream(projectId: number): EventSource {
+    return new EventSource(getARHMMStreamUrl(projectId))
+}
+
 export interface ARHMMAnalysis {
     duration_histogram: {
         bin_edges: number[]
@@ -1080,6 +1092,10 @@ export function getCrowdMovieStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/stream`
 }
 
+export function connectCrowdMovieStream(projectId: number): EventSource {
+    return new EventSource(getCrowdMovieStreamUrl(projectId))
+}
+
 export function getCrowdMovieVideoUrl(projectId: number, syllable: number): string {
     return `${API_BASE}/projects/${projectId}/arhmm/crowd-movies/${syllable}/video`
 }
@@ -1163,6 +1179,10 @@ export async function getDetectionTraining(projectId: number): Promise<DetectorT
 
 export function getDetectionTrainingStreamUrl(projectId: number): string {
     return `${API_BASE}/projects/${projectId}/detection/training/stream`
+}
+
+export function connectDetectorTrainingStream(projectId: number): EventSource {
+    return new EventSource(getDetectionTrainingStreamUrl(projectId))
 }
 
 export async function getDetectorMask(
