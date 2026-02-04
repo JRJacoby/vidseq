@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
-from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
 from vidseq.services import alignment_service
 from vidseq.services.alignment_service import (
@@ -21,7 +20,6 @@ from vidseq.services.alignment_service import (
     load_prediction,
     predictions_exist,
 )
-from vidseq.services.database_manager import DatabaseManager
 
 
 def get_aligned_video_path(project_path: Path, video_name: str) -> Path:
@@ -321,15 +319,6 @@ async def stream_training_progress(
     )
 
 
-def _run_alignment_in_background(
-    service: AlignmentService,
-    project_path: Path,
-    project_engine,
-):
-    """Run alignment synchronously (called from background task)."""
-    service.apply_alignment_sync(project_path, project_engine)
-
-
 @router.post("/projects/{project_id}/videos/alignment")
 async def create_videos_alignment(
     project_id: int,
@@ -341,35 +330,8 @@ async def create_videos_alignment(
     Returns immediately after starting. Use the SSE stream endpoint
     (/alignment/apply/stream) to monitor progress.
     """
-    logger.info(f"POST /alignment/apply: project_id={project_id}")
-
     service = AlignmentService.get_instance()
-
-    if service.is_applying():
-        logger.warning(f"POST /alignment/apply: alignment already in progress")
-        raise HTTPException(status_code=400, detail="Alignment already in progress")
-
-    if not service.is_model_trained(project_path):
-        logger.warning(f"POST /alignment/apply: model not trained yet")
-        raise HTTPException(status_code=404, detail="Model not trained yet")
-
-    # Get project engine for sync operations
-    db_manager = DatabaseManager.get_instance()
-    project_engine = db_manager.get_project_engine(project_path)
-
-    # Start alignment in background thread (fire-and-forget)
-    logger.info(f"POST /alignment/apply: starting alignment in background...")
-    asyncio.create_task(
-        asyncio.to_thread(
-            _run_alignment_in_background,
-            service,
-            project_path,
-            project_engine,
-        )
-    )
-
-    logger.info(f"POST /alignment/apply: alignment started, returning immediately")
-    return {"status": "started"}
+    return await service.create_videos_alignment(project_path)
 
 
 @router.get("/projects/{project_id}/videos/alignment/status")

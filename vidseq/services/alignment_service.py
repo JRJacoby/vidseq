@@ -46,6 +46,7 @@ from torch.utils.data import Dataset, DataLoader
 from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
 from vidseq.services.cropped_video_service import cropped_video_exists, get_cropped_video_path
+from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.exceptions import AlignmentTrainingError
 
 # Constants
@@ -1624,6 +1625,46 @@ class AlignmentService:
         )
 
         return {"status": "started", "max_epochs": epochs, "augment": augment}
+
+    async def create_videos_alignment(self, project_path: Path) -> dict:
+        """Apply alignment to all cropped videos.
+
+        Creates aligned videos in <project>/aligned_videos/ folder.
+        Starts processing in a background thread.
+
+        Args:
+            project_path: Path to the project folder
+
+        Returns:
+            Dict with status
+
+        Raises:
+            AlignmentTrainingError: If alignment already in progress or model not trained
+        """
+        if self.is_applying():
+            raise AlignmentTrainingError("Alignment already in progress")
+
+        if not self.is_model_trained(project_path):
+            raise AlignmentTrainingError("Model not trained yet")
+
+        # Get project engine for sync operations
+        db_manager = DatabaseManager.get_instance()
+        project_engine = db_manager.get_project_engine(project_path)
+
+        logger.info(
+            f"create_videos_alignment: starting alignment in background for project at {project_path}"
+        )
+
+        # Start alignment in background thread
+        asyncio.create_task(
+            asyncio.to_thread(
+                self.apply_alignment_sync,
+                project_path,
+                project_engine,
+            )
+        )
+
+        return {"status": "started"}
 
     def train_model_sync(
         self,
