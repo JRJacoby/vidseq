@@ -2247,3 +2247,63 @@ class AlignmentService:
 
 # Module-level singleton instance
 alignment_service = AlignmentService.get_instance()
+
+
+# ----- Alignment Label CRUD -----
+
+
+async def get_video_alignment_label_frames(
+    session: AsyncSession,
+    video_id: int,
+) -> list[int]:
+    """Get frame indices that have alignment labels for a video.
+
+    Args:
+        session: Project database session
+        video_id: ID of the video
+
+    Returns:
+        List of frame indices with alignment labels, ordered ascending
+    """
+    result = await session.execute(
+        select(AlignmentLabel.frame_idx)
+        .where(AlignmentLabel.video_id == video_id)
+        .order_by(AlignmentLabel.frame_idx)
+    )
+    return list(result.scalars().all())
+
+
+async def delete_video_alignment_label(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> None:
+    """Delete an alignment label for a specific frame.
+
+    Args:
+        session: Project database session
+        video_id: ID of the video
+        frame_idx: Frame index
+    """
+    await session.execute(
+        delete(AlignmentLabel)
+        .where(AlignmentLabel.video_id == video_id)
+        .where(AlignmentLabel.frame_idx == frame_idx)
+    )
+    await session.commit()
+
+
+async def delete_video_alignment_labels(
+    session: AsyncSession,
+    video_id: int,
+) -> None:
+    """Delete all alignment labels for a video.
+
+    Args:
+        session: Project database session
+        video_id: ID of the video
+    """
+    await session.execute(
+        delete(AlignmentLabel).where(AlignmentLabel.video_id == video_id)
+    )
+    await session.commit()
