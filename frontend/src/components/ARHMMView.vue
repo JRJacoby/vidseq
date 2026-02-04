@@ -5,19 +5,20 @@ import {
     getARHMMStatus,
     createARHMMTraining,
     deleteARHMMTraining,
-    getARHMMStreamUrl,
+    connectARHMMStream,
     getARHMMAnalysis,
     createCrowdMoviesGeneration,
     deleteCrowdMoviesGeneration,
     getCrowdMovieStatus,
     getCrowdMovieList,
-    getCrowdMovieStreamUrl,
+    connectCrowdMovieStream,
     getCrowdMovieVideoUrl,
     type ARHMMProgress,
     type ARHMMAnalysis,
     type CrowdMovieProgress,
     type CrowdMovieEntry,
 } from '@/services/api'
+import { useSSEStream } from '@/composables/useSSEStream'
 import { Chart, registerables } from 'chart.js'
 import zoomPlugin from 'chartjs-plugin-zoom'
 
@@ -29,7 +30,15 @@ const projectId = computed(() => projectStore.currentProjectId)
 const progress = ref<ARHMMProgress | null>(null)
 const isLoading = ref(true)
 const actionError = ref<string | null>(null)
-let eventSource: EventSource | null = null
+
+// ARHMM stream
+const {
+    data: arhmmStreamData,
+    start: startARHMMStream,
+    stop: stopARHMMStream,
+} = useSSEStream<ARHMMProgress>(() =>
+    connectARHMMStream(projectId.value!)
+)
 
 // Analysis charts
 const analysisData = ref<ARHMMAnalysis | null>(null)
@@ -44,7 +53,44 @@ const crowdMovieList = ref<CrowdMovieEntry[]>([])
 const selectedSyllable = ref<number | null>(null)
 const crowdMovieError = ref<string | null>(null)
 const crowdMovieVideoRef = ref<HTMLVideoElement | null>(null)
-let crowdMovieEventSource: EventSource | null = null
+
+// Crowd movie stream
+const {
+    data: crowdMovieStreamData,
+    start: startCrowdMovieStream,
+    stop: stopCrowdMovieStream,
+} = useSSEStream<CrowdMovieProgress>(() =>
+    connectCrowdMovieStream(projectId.value!)
+)
+
+// Handle ARHMM stream data
+watch(arhmmStreamData, (data) => {
+    if (data) {
+        progress.value = data
+
+        if (['completed', 'failed'].includes(data.status)) {
+            stopARHMMStream()
+            if (data.status === 'completed') {
+                loadAnalysis()
+                loadCrowdMovies()
+            }
+        }
+    }
+})
+
+// Handle crowd movie stream data
+watch(crowdMovieStreamData, (data) => {
+    if (data) {
+        crowdMovieProgress.value = data
+
+        if (['completed', 'failed'].includes(data.status)) {
+            stopCrowdMovieStream()
+            if (data.status === 'completed') {
+                loadCrowdMovies()
+            }
+        }
+    }
+})
 
 // Load initial status
 async function loadStatus() {
@@ -53,7 +99,7 @@ async function loadStatus() {
     try {
         progress.value = await getARHMMStatus(projectId.value)
         if (progress.value.is_running) {
-            connectToStream()
+            startARHMMStream()
         }
         if (progress.value.status === 'completed') {
             loadAnalysis()
@@ -66,38 +112,6 @@ async function loadStatus() {
     }
 }
 
-// SSE streaming
-function connectToStream() {
-    if (!projectId.value) return
-
-    if (eventSource) {
-        eventSource.close()
-        eventSource = null
-    }
-
-    const url = getARHMMStreamUrl(projectId.value)
-    eventSource = new EventSource(url)
-
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data) as ARHMMProgress
-        progress.value = data
-
-        if (['completed', 'failed'].includes(data.status)) {
-            eventSource?.close()
-            eventSource = null
-            if (data.status === 'completed') {
-                loadAnalysis()
-                loadCrowdMovies()
-            }
-        }
-    }
-
-    eventSource.onerror = () => {
-        eventSource?.close()
-        eventSource = null
-    }
-}
-
 async function handleStart() {
     if (!projectId.value) return
     actionError.value = null
@@ -106,7 +120,7 @@ async function handleStart() {
         // Give the backend a moment to initialize progress
         await new Promise(r => setTimeout(r, 300))
         await loadStatus()
-        connectToStream()
+        startARHMMStream()
     } catch (e: any) {
         actionError.value = e.message || 'Failed to start ARHMM'
     }
@@ -259,40 +273,10 @@ async function loadCrowdMovies() {
         // Also load current generation status
         crowdMovieProgress.value = await getCrowdMovieStatus(projectId.value)
         if (crowdMovieProgress.value.is_running) {
-            connectToCrowdMovieStream()
+            startCrowdMovieStream()
         }
     } catch (e) {
         console.error('Failed to load crowd movies:', e)
-    }
-}
-
-function connectToCrowdMovieStream() {
-    if (!projectId.value) return
-
-    if (crowdMovieEventSource) {
-        crowdMovieEventSource.close()
-        crowdMovieEventSource = null
-    }
-
-    const url = getCrowdMovieStreamUrl(projectId.value)
-    crowdMovieEventSource = new EventSource(url)
-
-    crowdMovieEventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data) as CrowdMovieProgress
-        crowdMovieProgress.value = data
-
-        if (['completed', 'failed'].includes(data.status)) {
-            crowdMovieEventSource?.close()
-            crowdMovieEventSource = null
-            if (data.status === 'completed') {
-                loadCrowdMovies()
-            }
-        }
-    }
-
-    crowdMovieEventSource.onerror = () => {
-        crowdMovieEventSource?.close()
-        crowdMovieEventSource = null
     }
 }
 
@@ -303,7 +287,7 @@ async function handleGenerateCrowdMovies() {
         await createCrowdMoviesGeneration(projectId.value)
         await new Promise(r => setTimeout(r, 300))
         crowdMovieProgress.value = await getCrowdMovieStatus(projectId.value)
-        connectToCrowdMovieStream()
+        startCrowdMovieStream()
     } catch (e: any) {
         crowdMovieError.value = e.message || 'Failed to start crowd movie generation'
     }
@@ -349,25 +333,21 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-    eventSource?.close()
-    crowdMovieEventSource?.close()
     durationChart?.destroy()
     frequencyChart?.destroy()
 })
 
 // Reconnect on project change
 watch(() => projectId.value, () => {
-    eventSource?.close()
-    eventSource = null
-    crowdMovieEventSource?.close()
-    crowdMovieEventSource = null
+    stopARHMMStream()
+    stopCrowdMovieStream()
     loadStatus()
 })
 
 // Reconnect if fitting starts
 watch(() => progress.value?.is_running, (isRunning) => {
-    if (isRunning && !eventSource) {
-        connectToStream()
+    if (isRunning) {
+        startARHMMStream()
     }
 })
 
