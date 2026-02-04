@@ -3,15 +3,14 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDebounceFn } from '@vueuse/core'
 import {
-  getVideo,
   getAlignedVideoStreamUrl,
   getPCAStatus,
   getPCAScoresDownsampled,
   checkPCAScoresExist,
-  type Video,
   type PCAScorePoint,
 } from '@/services/api'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
+import { useVideo } from '@/composables/useVideo'
 import VideoTimeline from './VideoTimeline.vue'
 import TimelineSystem from './TimelineSystem.vue'
 import DataTrack from './DataTrack.vue'
@@ -22,9 +21,7 @@ const router = useRouter()
 const projectId = computed(() => Number(route.params.id))
 const videoId = computed(() => Number(route.params.videoId))
 
-const video = ref<Video | null>(null)
-const isLoading = ref(true)
-const error = ref<string | null>(null)
+const { video, isLoading, error } = useVideo(videoId, projectId)
 
 const viewStart = ref(0)
 const viewEnd = ref(0)
@@ -33,19 +30,6 @@ const alignedVideoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
   return getAlignedVideoStreamUrl(projectId.value, videoId.value)
 })
-
-const loadVideo = async () => {
-  isLoading.value = true
-  error.value = null
-
-  try {
-    video.value = await getVideo(projectId.value, videoId.value)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Failed to load video'
-  } finally {
-    isLoading.value = false
-  }
-}
 
 const handleBack = () => {
   router.push(`/project/${projectId.value}`)
@@ -165,7 +149,6 @@ const loadPCAStatus = async () => {
 }
 
 onMounted(async () => {
-  await loadVideo()
   await loadPCAStatus()
   if (hasPCAScores.value) {
     await fetchPCAScores()
