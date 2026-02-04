@@ -62,3 +62,30 @@ class VideoFileInvalidError(Exception):
         self.path = path
         self.reason = reason
         super().__init__(f"Invalid video file {path}: {reason}")
+
+
+class FrameIndexOutOfRangeError(Exception):
+    """Raised when a frame index is outside valid bounds."""
+
+    def __init__(self, frame_idx: int, num_frames: int):
+        self.frame_idx = frame_idx
+        self.num_frames = num_frames
+        super().__init__(f"Frame index {frame_idx} out of range [0, {num_frames})")
+
+
+class MultiPointWithoutMaskError(Exception):
+    """Raised when multi-point prompt submitted without existing mask."""
+
+    def __init__(self):
+        super().__init__(
+            "Cannot submit multiple points without an existing mask. "
+            "Submit a single point first to create a mask."
+        )
+
+
+class MissingMasksError(Exception):
+    """Raised when required masks are missing for an operation."""
+
+    def __init__(self, missing_frames: list[int]):
+        self.missing_frames = missing_frames
+        super().__init__(f"Frames missing masks: {missing_frames}")

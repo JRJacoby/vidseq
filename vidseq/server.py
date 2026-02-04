@@ -13,6 +13,9 @@ from vidseq.services.exceptions import (
     PermissionDeniedError,
     VideoFileNotFoundError,
     VideoFileInvalidError,
+    FrameIndexOutOfRangeError,
+    MultiPointWithoutMaskError,
+    MissingMasksError,
 )
 from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
@@ -88,3 +91,26 @@ async def video_file_not_found_handler(request, exc: VideoFileNotFoundError):
 @app.exception_handler(VideoFileInvalidError)
 async def video_file_invalid_handler(request, exc: VideoFileInvalidError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(FrameIndexOutOfRangeError)
+async def frame_index_out_of_range_handler(request, exc: FrameIndexOutOfRangeError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(MultiPointWithoutMaskError)
+async def multi_point_without_mask_handler(request, exc: MultiPointWithoutMaskError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(MissingMasksError)
+async def missing_masks_handler(request, exc: MissingMasksError):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": {
+                "message": "Some frames are missing masks",
+                "missing_frames": exc.missing_frames,
+            }
+        },
+    )
