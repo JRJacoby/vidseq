@@ -2,11 +2,12 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import {
-    getDetectionTrainingStreamUrl,
+    connectDetectorTrainingStream,
     getDetectionTraining,
     deleteDetectionTraining,
     type DetectorTrainingProgress,
 } from '@/services/api'
+import { useSSEStream } from '@/composables/useSSEStream'
 import { Chart, registerables } from 'chart.js'
 
 Chart.register(...registerables)
@@ -14,11 +15,19 @@ Chart.register(...registerables)
 const projectStore = useProjectStore()
 const projectId = computed(() => projectStore.currentProjectId)
 
+const {
+    data: streamData,
+    isConnected,
+    start: startStream,
+    stop: stopStream,
+} = useSSEStream<DetectorTrainingProgress>(() =>
+    connectDetectorTrainingStream(projectId.value!)
+)
+
 // Training progress
 const progress = ref<DetectorTrainingProgress | null>(null)
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
 let chart: Chart | null = null
-let eventSource: EventSource | null = null
 
 // Initialize chart with two datasets (train and val)
 function initChart() {
@@ -79,36 +88,18 @@ function updateChart(trainHistory: number[], valHistory: number[]) {
     chart.update('none')  // No animation
 }
 
-// Connect to SSE stream
-function connectToStream() {
-    if (!projectId.value) return
-
-    // Close existing connection if any
-    if (eventSource) {
-        eventSource.close()
-        eventSource = null
-    }
-
-    const url = getDetectionTrainingStreamUrl(projectId.value)
-    eventSource = new EventSource(url)
-
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data) as DetectorTrainingProgress
+// Watch stream data updates
+watch(streamData, (data) => {
+    if (data) {
         progress.value = data
         updateChart(data.train_loss_history, data.val_loss_history)
 
-        // Close connection if training finished
+        // Stop stream if training finished
         if (['completed', 'stopped', 'failed', 'idle'].includes(data.status)) {
-            eventSource?.close()
-            eventSource = null
+            stopStream()
         }
     }
-
-    eventSource.onerror = () => {
-        eventSource?.close()
-        eventSource = null
-    }
-}
+})
 
 // Load initial training status
 async function loadTrainingStatus() {
@@ -122,7 +113,7 @@ async function loadTrainingStatus() {
 
         // If training in progress, connect to stream
         if (progress.value.is_training || progress.value.status === 'applying') {
-            connectToStream()
+            startStream()
         }
     } catch (e) {
         console.error('Failed to load training status:', e)
@@ -145,21 +136,19 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-    eventSource?.close()
     chart?.destroy()
 })
 
 // Reconnect if project changes
 watch(() => projectId.value, () => {
-    eventSource?.close()
-    eventSource = null
+    stopStream()
     loadTrainingStatus()
 })
 
 // Reconnect if training starts
 watch(() => progress.value?.is_training, (isTraining) => {
-    if (isTraining && !eventSource) {
-        connectToStream()
+    if (isTraining && !isConnected.value) {
+        startStream()
     }
 })
 
