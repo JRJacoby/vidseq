@@ -1,7 +1,7 @@
 # Frontend Architecture Refactor Overview
 
 **Date:** 2026-02-04
-**Status:** Planning
+**Status:** Phase 1 Complete
 
 ## Goal
 
@@ -24,19 +24,22 @@ Refactor frontend to follow clean architecture:
 
 ---
 
-## Phase 1: Extract Reusable Composables
+## Phase 1: Extract Reusable Composables ✅ COMPLETE
 
 **Goal:** Create composables that eliminate duplicate logic across multiple components.
 
-### 1.1 `useVideoMetadata`
+### 1.1 `useVideo` ✅
 - **From:** VideoDetail.vue, CroppedVideoDetail.vue, AlignedVideoDetail.vue
 - **Logic:** Video data fetching, loading state, error handling
-- **Lines moved:** ~60 per component
+- **Lines moved:** ~40 per component
 
-### 1.2 `useSSEStream`
+### 1.2 `useSSEStream` ✅
 - **From:** DetectorTraining.vue, Alignment.vue, ARHMMView.vue
 - **Logic:** SSE connection, event parsing, cleanup
 - **Lines moved:** ~50 per component
+
+### 1.3 api.ts SSE Functions ✅
+- Added 5 `connect*Stream()` functions to keep web communication in API layer
 
 ---
 
