@@ -2,7 +2,7 @@ import { ref, watch, onUnmounted, computed, type Ref } from 'vue'
 import {
     getTrackerMask,
     getTrackerMasks,
-    getDetectorMasksBatch,
+    getDetectorMasks,
     submitPrompt,
     deleteSegmentation,
     deleteVideoSegmentation,
@@ -82,7 +82,7 @@ export function useSegmentation(
         try {
             // Select batch function based on mask view mode
             const batchFn = maskViewMode.value === 'detector'
-                ? getDetectorMasksBatch
+                ? getDetectorMasks
                 : maskViewMode.value === 'final'
                     ? getFinalMasks
                     : getTrackerMasks

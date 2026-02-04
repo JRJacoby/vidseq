@@ -16,7 +16,7 @@ router = APIRouter()
 # ----- Tracker masks -----
 
 @router.get(
-    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-mask/{frame_idx}",
+    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-masks/{frame_idx}",
 )
 async def get_tracker_mask(
     frame_idx: int,
