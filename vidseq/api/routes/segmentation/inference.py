@@ -3,7 +3,6 @@
 import logging
 from pathlib import Path
 
-import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,63 +47,23 @@ async def submit_prompt(
     """
     video_path = Path(video.path)
 
-    # Check if this frame already has a mask
-    has_existing_mask = await frame_data_service.get_has_tracker_mask(
-        session, video.id, frame_idx
-    )
-
-    # Validate: multi-point requires existing mask
-    if len(request.points) > 1 and not has_existing_mask:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot submit multiple points without an existing mask. Submit a single point first to create a mask."
-        )
-
     # Convert points to backend format
     points = [{"x": p.x, "y": p.y} for p in request.points]
     labels = [1 if p.type == "positive_point" else 0 for p in request.points]
 
     try:
-        if has_existing_mask:
-            # Refine existing mask using previous logits as dense prompt
-            mask = segmentation_tcp_client.refine_mask(
-                project_id=project_id,
-                video_id=video.id,
-                frame_idx=frame_idx,
-                points=points,
-                labels=labels,
-            )
-        else:
-            # Create new mask on blank frame (single point only, validated above)
-            p = request.points[0]
-            label = 1 if p.type == "positive_point" else 0
-            mask = segmentation_tcp_client.add_point_prompt(
-                project_id=project_id,
-                video_id=video.id,
-                video_path=video_path,
-                project_path=project_path,
-                frame_idx=frame_idx,
-                x=p.x,
-                y=p.y,
-                label=label,
-            )
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Update mask presence index
-    has_content = bool(np.any(mask > 0))
-    await frame_data_service.set_has_tracker_mask(
-        session, video.id, frame_idx, has_content
-    )
-
-    # If refinement resulted in an empty mask, reset the frame's SAM state
-    if has_existing_mask and not has_content:
-        segmentation_tcp_client.reset_frame(
+        mask = await segmentation_service.submit_prompt(
+            session=session,
             project_id=project_id,
             video_id=video.id,
+            video_path=video_path,
             project_path=project_path,
             frame_idx=frame_idx,
+            points=points,
+            labels=labels,
         )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     mask_png = segmentation_service.mask_to_png(mask)
     return Response(content=mask_png, media_type="image/png")
