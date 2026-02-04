@@ -10,14 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vidseq.models.conditioning_frame import ConditioningFrame
 from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
-from vidseq.services import segmentation_service, segmentation_tcp_client
 from vidseq.services.array_storage import (
+    create_video_segmentation_arrays,
     tracker_masks,
     tracker_logits,
     detector_masks,
     final_masks,
     reset_video_segmentation_arrays,
 )
+from vidseq.services.exceptions import (
+    VideoFileNotFoundError,
+    VideoFileInvalidError,
+)
+from vidseq.services import segmentation_service, segmentation_tcp_client
 
 
 @dataclass(frozen=True)
@@ -29,45 +34,47 @@ class VideoMetadata:
     fps: float
 
 
-class VideoMetadataError(Exception):
-    """Error reading video metadata."""
-    pass
-
-
 def get_video_metadata(video_path: Path | str) -> VideoMetadata:
     """
     Extract metadata from a video file.
-    
+
     Args:
         video_path: Path to the video file
-        
+
     Returns:
         VideoMetadata with num_frames, height, width, fps
-        
+
     Raises:
-        VideoMetadataError: If the video cannot be opened or metadata cannot be read
+        VideoFileNotFoundError: If the video file doesn't exist
+        VideoFileInvalidError: If the video cannot be opened or metadata cannot be read
     """
     video_path = Path(video_path)
-    
+
+    if not video_path.exists():
+        raise VideoFileNotFoundError(str(video_path))
+
+    if not video_path.is_file():
+        raise VideoFileInvalidError(str(video_path), "path is not a file")
+
     cap = cv2.VideoCapture(str(video_path))
     try:
         if not cap.isOpened():
-            raise VideoMetadataError(f"Could not open video: {video_path}")
-        
+            raise VideoFileInvalidError(str(video_path), "could not open video")
+
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         fps = cap.get(cv2.CAP_PROP_FPS)
-        
+
         if fps <= 0:
-            raise VideoMetadataError(f"Could not read FPS from video: {video_path}")
-        
+            raise VideoFileInvalidError(str(video_path), "could not read FPS")
+
         if num_frames <= 0:
-            raise VideoMetadataError(f"Could not read frame count from video: {video_path}")
-        
+            raise VideoFileInvalidError(str(video_path), "could not read frame count")
+
         if height <= 0 or width <= 0:
-            raise VideoMetadataError(f"Could not read dimensions from video: {video_path}")
-        
+            raise VideoFileInvalidError(str(video_path), "could not read dimensions")
+
         return VideoMetadata(
             num_frames=num_frames,
             height=height,
@@ -107,6 +114,61 @@ async def get_all_videos(session: AsyncSession) -> list[Video]:
         select(Video).order_by(Video.id)
     )
     return list(result.scalars().all())
+
+
+async def add_videos(
+    session: AsyncSession,
+    project_path: Path,
+    video_paths: list[Path],
+) -> list[Video]:
+    """Add multiple videos to a project.
+
+    Validates each video path, extracts metadata, creates database records,
+    and initializes H5 storage files.
+
+    Args:
+        session: Project database session
+        project_path: Path to the project folder
+        video_paths: List of paths to video files
+
+    Returns:
+        List of created Video records
+
+    Raises:
+        VideoFileNotFoundError: If a video file doesn't exist
+        VideoFileInvalidError: If a video cannot be read
+    """
+    added_videos = []
+
+    for video_path in video_paths:
+        # get_video_metadata raises VideoFileNotFoundError or VideoFileInvalidError
+        meta = get_video_metadata(video_path)
+
+        video = Video(
+            name=video_path.name,
+            path=str(video_path),
+            fps=meta.fps,
+            height=meta.height,
+            width=meta.width,
+            num_frames=meta.num_frames,
+        )
+        session.add(video)
+        added_videos.append(video)
+
+    await session.commit()
+
+    # Create H5 files after commit (need video.id)
+    for video in added_videos:
+        await session.refresh(video)
+        create_video_segmentation_arrays(
+            project_path=project_path,
+            video_id=video.id,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+        )
+
+    return added_videos
 
 
 async def delete_frame_data(
