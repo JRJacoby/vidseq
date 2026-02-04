@@ -4,6 +4,7 @@ This module provides CRUD operations for frame-level metadata stored in SQLite,
 replacing the previous HDF5-based storage for this data.
 """
 
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -384,6 +385,53 @@ async def unmark_training_range(
     await session.commit()
 
 
+async def create_training_range(
+    session: AsyncSession,
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+) -> None:
+    """Create a training range by computing bboxes from masks and marking frames.
+
+    Validates that all frames in range have tracker masks, then:
+    1. Loads masks from H5 file
+    2. Computes bbox for each frame
+    3. Saves bboxes to database
+    4. Marks frames as training
+
+    Args:
+        session: Async database session
+        project_path: Path to the project folder
+        video_id: ID of the video
+        start_frame: First frame of range (inclusive)
+        end_frame: Last frame of range (inclusive)
+
+    Raises:
+        MissingMasksError: If any frames in range are missing masks
+    """
+    from vidseq.services.array_storage import tracker_masks, compute_bbox_from_mask
+    from vidseq.services.exceptions import MissingMasksError
+
+    # Validate all frames have masks
+    missing_frames = await get_missing_tracker_masks_in_range(
+        session, video_id, start_frame, end_frame
+    )
+    if missing_frames:
+        raise MissingMasksError(missing_frames)
+
+    # Load masks and compute bboxes
+    with tracker_masks(project_path, video_id, "r") as masks:
+        for frame_idx in range(start_frame, end_frame + 1):
+            mask = masks[frame_idx]
+            bbox = compute_bbox_from_mask(mask)
+            if bbox is not None:
+                await save_bbox(session, video_id, frame_idx, bbox)
+
+    # Mark frames as training
+    await mark_training_range(session, video_id, start_frame, end_frame)
+
+
 # =============================================================================
 # SCORE OPERATIONS
 # =============================================================================
@@ -698,6 +746,10 @@ async def get_missing_tracker_masks_in_range(
     # Return frames NOT in the masked set
     all_in_range = set(range(start_frame, end_frame + 1))
     return sorted(all_in_range - masked_in_range)
+
+
+# Alias for backwards compatibility
+get_missing_masks_in_range = get_missing_tracker_masks_in_range
 
 
 async def clear_has_tracker_mask(

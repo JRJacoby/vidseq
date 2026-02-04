@@ -2,13 +2,12 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.services import frame_data_service
-from vidseq.services.array_storage import tracker_masks, compute_bbox_from_mask
 
 router = APIRouter()
 
@@ -53,30 +52,13 @@ async def create_training_range(
 
     All frames in range must have masks. Use GET /training-range/validation first.
     """
-    missing_frames = await frame_data_service.get_missing_masks_in_range(
-        session, video.id, start_frame, end_frame
+    await frame_data_service.create_training_range(
+        session=session,
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        end_frame=end_frame,
     )
-
-    if missing_frames:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Some frames are missing masks",
-                "missing_frames": missing_frames,
-            }
-        )
-
-    # Load masks and compute bboxes, then save to SQLite
-    with tracker_masks(project_path, video.id, "r") as masks:
-        for frame_idx in range(start_frame, end_frame + 1):
-            mask = masks[frame_idx]
-            bbox = compute_bbox_from_mask(mask)
-            if bbox is not None:
-                await frame_data_service.save_bbox(session, video.id, frame_idx, bbox)
-
-    # Mark frames as training
-    await frame_data_service.mark_training_range(session, video.id, start_frame, end_frame)
-
     return None
 
 
