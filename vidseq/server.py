@@ -2,8 +2,18 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from vidseq import __version__
+from vidseq.services.exceptions import (
+    DBRecordNotFoundError,
+    ParentDirectoryNotFoundError,
+    PathNotDirectoryError,
+    ProjectAlreadyExistsError,
+    PermissionDeniedError,
+    VideoFileNotFoundError,
+    VideoFileInvalidError,
+)
 from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
 
@@ -40,3 +50,41 @@ app.include_router(alignment.router, prefix="/api", tags=["alignment"])
 app.include_router(pca.router, prefix="/api", tags=["pca"])
 app.include_router(arhmm.router, prefix="/api", tags=["arhmm"])
 app.include_router(detector.router, prefix="/api", tags=["detector"])
+
+
+# Exception handlers - translate service exceptions to HTTP responses
+
+
+@app.exception_handler(DBRecordNotFoundError)
+async def db_record_not_found_handler(request, exc: DBRecordNotFoundError):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(ParentDirectoryNotFoundError)
+async def parent_directory_not_found_handler(request, exc: ParentDirectoryNotFoundError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(PathNotDirectoryError)
+async def path_not_directory_handler(request, exc: PathNotDirectoryError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ProjectAlreadyExistsError)
+async def project_already_exists_handler(request, exc: ProjectAlreadyExistsError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(PermissionDeniedError)
+async def permission_denied_handler(request, exc: PermissionDeniedError):
+    return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+
+@app.exception_handler(VideoFileNotFoundError)
+async def video_file_not_found_handler(request, exc: VideoFileNotFoundError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(VideoFileInvalidError)
+async def video_file_invalid_handler(request, exc: VideoFileInvalidError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
