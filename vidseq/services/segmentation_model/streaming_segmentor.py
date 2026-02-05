@@ -54,17 +54,13 @@ USAGE
 
 from __future__ import annotations
 
-import sys
 from typing import Callable
-
-# Add SAM2 repo to path for imports
-sys.path.insert(0, "/n/groups/datta/john/repos/sam2")
 
 import cv2
 import numpy as np
 import torch
 
-from sam2.build_sam import build_sam2_video_predictor
+from sam2.build_sam import build_sam2_hq_video_predictor
 
 
 class SAM2StreamingSegmentor:
@@ -95,13 +91,13 @@ class SAM2StreamingSegmentor:
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        print(f"Loading SAM2 model on {self.device}...")
-        self.predictor = build_sam2_video_predictor(
+        print(f"Loading SAM2-HQ model on {self.device}...")
+        self.predictor = build_sam2_hq_video_predictor(
             config_file="configs/sam2.1/sam2.1_hiera_l.yaml",
-            ckpt_path="/n/groups/datta/john/repos/sam2/checkpoints/sam2.1_hiera_large.pt",
+            ckpt_path="/n/groups/datta/john/repos/sam-hq/sam-hq2/checkpoints/sam2.1_hq_hiera_large.pt",
             device=self.device,
         )
-        print("SAM2 model loaded.")
+        print("SAM2-HQ model loaded.")
 
         # Compile model components for faster inference
         if compile_model and self.device == "cuda":
