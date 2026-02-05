@@ -18,8 +18,19 @@ if TYPE_CHECKING:
 
 
 def mask_to_png(mask: np.ndarray) -> bytes:
-    """Convert a numpy mask to PNG bytes."""
-    img = Image.fromarray(mask)
+    """Convert a numpy mask to PNG bytes.
+
+    Creates an RGBA PNG with the mask rendered as a semi-transparent blue overlay.
+    Masked pixels (value > 0) become light blue, non-masked pixels are transparent.
+    """
+    rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
+    masked = mask > 0
+    rgba[masked, 0] = 102   # R
+    rgba[masked, 1] = 179   # G
+    rgba[masked, 2] = 255   # B
+    rgba[masked, 3] = 102   # A (semi-transparent)
+    # Non-masked pixels stay (0, 0, 0, 0) = fully transparent
+    img = Image.fromarray(rgba, mode='RGBA')
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     return buffer.getvalue()
@@ -43,11 +54,6 @@ def get_mask_png(
     """
     with tracker_masks(project_path, video.id, "r") as masks:
         mask = masks[frame_idx]
-
-    # DEBUG: Log mask loading
-    print(f"[DEBUG get_mask_png] project={project_path}, video={video.id}, frame={frame_idx}")
-    print(f"[DEBUG get_mask_png] mask sum={int(mask.sum())}, shape={mask.shape}, "
-          f"min={mask.min()}, max={mask.max()}")
 
     return mask_to_png(mask)
 
@@ -141,6 +147,48 @@ def get_final_masks_batch_json(
     return result
 
 
+async def init_session(
+    session: "AsyncSession",
+    project_id: int,
+    video: "Video",
+    project_path: Path,
+) -> "segmentation_tcp_client.VideoSessionInfo":
+    """Initialize a SAM session for a video.
+
+    Queries conditioning frames from the database and initializes
+    the session on the GPU worker.
+
+    Args:
+        session: Async database session
+        project_id: ID of the project
+        video: Video model instance
+        project_path: Path to the project folder
+
+    Returns:
+        VideoSessionInfo with video dimensions and frame count
+    """
+    from sqlalchemy import select
+    from vidseq.models.conditioning_frame import ConditioningFrame
+
+    # Query conditioning frames for this video
+    result = await session.execute(
+        select(ConditioningFrame.frame_idx)
+        .where(ConditioningFrame.video_id == video.id)
+    )
+    cond_frame_indices = list(result.scalars().all())
+
+    return segmentation_tcp_client.init_session(
+        project_id=project_id,
+        video_id=video.id,
+        video_path=Path(video.path),
+        project_path=project_path,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
+        cond_frame_indices=cond_frame_indices,
+    )
+
+
 def reset_frame_memory(project_id: int, video_id: int, frame_idx: int) -> None:
     """Clear SAM memory for a single frame.
 
@@ -159,8 +207,6 @@ async def submit_prompt(
     session: "AsyncSession",
     project_id: int,
     video_id: int,
-    video_path: Path,
-    project_path: Path,
     frame_idx: int,
     points: list[dict],
     labels: list[int],
@@ -177,8 +223,6 @@ async def submit_prompt(
         session: Async database session
         project_id: ID of the project
         video_id: ID of the video
-        video_path: Path to the video file
-        project_path: Path to the project folder
         frame_idx: Frame index (0-based)
         points: List of {"x": float, "y": float} normalized coords
         labels: List of labels (1=positive, 0=negative)
@@ -210,13 +254,24 @@ async def submit_prompt(
         )
     else:
         # Create new mask on blank frame (single point only, validated above)
+        # First, create conditioning frame record if not exists
+        from sqlalchemy import select
+        from vidseq.models.conditioning_frame import ConditioningFrame
+
+        existing = await session.execute(
+            select(ConditioningFrame)
+            .where(ConditioningFrame.video_id == video_id)
+            .where(ConditioningFrame.frame_idx == frame_idx)
+        )
+        if existing.scalar_one_or_none() is None:
+            session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
+            await session.commit()
+
         p = points[0]
         label = labels[0]
         mask = segmentation_tcp_client.add_point_prompt(
             project_id=project_id,
             video_id=video_id,
-            video_path=video_path,
-            project_path=project_path,
             frame_idx=frame_idx,
             x=p["x"],
             y=p["y"],
@@ -231,10 +286,21 @@ async def submit_prompt(
 
     # If refinement resulted in an empty mask, reset the frame's SAM state
     if has_existing_mask and not has_content:
+        # Remove conditioning frame record from database
+        from sqlalchemy import delete
+        from vidseq.models.conditioning_frame import ConditioningFrame
+
+        await session.execute(
+            delete(ConditioningFrame)
+            .where(ConditioningFrame.video_id == video_id)
+            .where(ConditioningFrame.frame_idx == frame_idx)
+        )
+        await session.commit()
+
+        # Clear SAM memory
         segmentation_tcp_client.reset_frame(
             project_id=project_id,
             video_id=video_id,
-            project_path=project_path,
             frame_idx=frame_idx,
         )
 
@@ -285,8 +351,54 @@ async def propagate(
     )
 
     # Update has_tracker_mask for all propagated frames
-    for frame_idx in frame_indices:
-        await frame_data_service.set_has_tracker_mask(session, video_id, frame_idx, True)
+    await frame_data_service.set_has_tracker_mask(session, video_id, frame_indices, True)
 
     return len(frame_indices)
+
+
+async def segment_all_videos(
+    session: "AsyncSession",
+    project_id: int,
+    project_path: Path,
+    videos: list,
+) -> list[int]:
+    """Segment all videos using detector-tracker approach.
+
+    Runs propagate_with_detector on each video and updates database flags.
+
+    Args:
+        session: Async database session
+        project_id: ID of the project
+        project_path: Path to the project folder
+        videos: List of Video model instances
+
+    Returns:
+        List of job IDs (empty for now - synchronous execution)
+    """
+    from sqlalchemy import select
+    from vidseq.models.conditioning_frame import ConditioningFrame
+
+    # Query conditioning frames for all videos
+    cond_frames_by_video: dict[int, list[int]] = {}
+    for video in videos:
+        result = await session.execute(
+            select(ConditioningFrame.frame_idx)
+            .where(ConditioningFrame.video_id == video.id)
+        )
+        cond_frames_by_video[video.id] = list(result.scalars().all())
+
+    job_ids = await segmentation_tcp_client.segment_all_videos(
+        project_id=project_id,
+        project_path=project_path,
+        videos=videos,
+        cond_frames_by_video=cond_frames_by_video,
+    )
+
+    # Update database flags for all frames in all videos
+    for video in videos:
+        all_frames = list(range(video.num_frames))
+        await frame_data_service.set_has_tracker_mask(session, video.id, all_frames, True)
+        await frame_data_service.set_has_final_mask(session, video.id, all_frames, True)
+
+    return job_ids
 

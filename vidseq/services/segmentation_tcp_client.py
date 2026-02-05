@@ -278,6 +278,19 @@ class SegmentationService:
             "error": self._error_message,
         }
 
+    def _load_model_in_background(self) -> None:
+        """Send load_model command and update status when done. Runs in a thread."""
+        try:
+            result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
+            if result.get("status") == "ready":
+                self._status = SegmentationStatus.READY
+            else:
+                self._status = SegmentationStatus.ERROR
+                self._error_message = result.get("error", "Unknown error loading model")
+        except Exception as e:
+            self._status = SegmentationStatus.ERROR
+            self._error_message = str(e)
+
     def _start_worker(self) -> None:
         """Start the segmentation worker process and begin loading the model."""
         # Check if worker is already running
@@ -287,14 +300,9 @@ class SegmentationService:
                 self._tcp_client = SegmentationTCPClient()
                 try:
                     self._tcp_client.connect("localhost", port)
-                    # Still need to load model - worker may have been started manually
+                    # Load model in background thread
                     self._status = SegmentationStatus.LOADING_MODEL
-                    result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
-                    if result.get("status") == "ready":
-                        self._status = SegmentationStatus.READY
-                    else:
-                        self._status = SegmentationStatus.ERROR
-                        self._error_message = result.get("error", "Unknown error loading model")
+                    threading.Thread(target=self._load_model_in_background, daemon=True).start()
                     return
                 except Exception as e:
                     print(f"[Segmentation Service] Failed to connect to existing worker: {e}")
@@ -337,31 +345,12 @@ class SegmentationService:
             self._tcp_client = None
             return
 
+        # Load model in background thread
         self._status = SegmentationStatus.LOADING_MODEL
-
-        # Send load_model command
-        try:
-            result = self._tcp_client.send_command({"type": "load_model"}, timeout=600.0)
-            if result.get("status") == "ready":
-                self._status = SegmentationStatus.READY
-            elif result.get("status") == "error":
-                self._status = SegmentationStatus.ERROR
-                self._error_message = result.get("error", "Unknown error")
-        except Exception as e:
-            self._status = SegmentationStatus.ERROR
-            self._error_message = str(e)
+        threading.Thread(target=self._load_model_in_background, daemon=True).start()
 
     def start_loading_in_background(self) -> None:
         """Start loading segmentation model in background (via worker process)."""
-        # Don't start if YOLO is training (to avoid GPU memory conflicts)
-        try:
-            from vidseq.services import yolo_service
-            yolo = yolo_service.YOLOService.get_instance()
-            if yolo.is_training():
-                return
-        except Exception:
-            pass
-
         if self._status == SegmentationStatus.NOT_LOADED:
             self._start_worker()
 
@@ -439,37 +428,32 @@ class SegmentationService:
                 self._tcp_client = None
             raise RuntimeError(f"Failed to communicate with segmentation worker: {e}") from e
 
-    def init_session(self, project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
-        """Initialize a segmentation session for a video."""
+    def init_session(
+        self,
+        project_id: int,
+        video_id: int,
+        video_path: Path,
+        project_path: Path,
+        num_frames: int,
+        height: int,
+        width: int,
+        cond_frame_indices: list[int],
+    ) -> VideoSessionInfo:
+        """Initialize a segmentation session for a video.
+
+        Args:
+            project_id: ID of the project
+            video_id: ID of the video
+            video_path: Path to the video file
+            project_path: Path to the project folder
+            num_frames: Total number of frames in the video
+            height: Video height in pixels
+            width: Video width in pixels
+            cond_frame_indices: List of frame indices that have conditioning data
+        """
         session_key = (project_id, video_id)
         if session_key in self._sessions:
             return self._sessions[session_key]
-
-        # Query conditioning frames and video metadata from database
-        from sqlalchemy import select
-        from sqlalchemy.orm import Session
-        from vidseq.models.conditioning_frame import ConditioningFrame
-        from vidseq.models.video import Video
-        from vidseq.services.database_manager import DatabaseManager
-
-        db_manager = DatabaseManager.get_instance()
-        project_engine = db_manager.get_project_engine(project_path)
-
-        with Session(project_engine) as db_session:
-            # Get video metadata
-            video = db_session.execute(
-                select(Video).where(Video.id == video_id)
-            ).scalar_one()
-            num_frames = video.num_frames
-            height = video.height
-            width = video.width
-
-            # Get conditioning frames
-            result = db_session.execute(
-                select(ConditioningFrame.frame_idx)
-                .where(ConditioningFrame.video_id == video_id)
-            )
-            cond_frame_indices = list(result.scalars().all())
 
         result = self._send_and_wait({
             "type": "init_session",
@@ -519,8 +503,6 @@ class SegmentationService:
         self,
         project_id: int,
         video_id: int,
-        video_path: Path,
-        project_path: Path,
         frame_idx: int,
         x: float,
         y: float,
@@ -529,11 +511,11 @@ class SegmentationService:
         """
         Add a point prompt and return the mask.
 
+        Requires an active session (call init_session first).
+
         Args:
             project_id: ID of the project
             video_id: ID of the video
-            video_path: Path to video file (used to init session if needed)
-            project_path: Path to the project folder
             frame_idx: Frame index to segment
             x: X coordinate in normalized [0, 1] coords
             y: Y coordinate in normalized [0, 1] coords
@@ -541,31 +523,13 @@ class SegmentationService:
 
         Returns:
             Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+
+        Raises:
+            RuntimeError: If no session exists for this video
         """
         session = self.get_session(project_id, video_id)
         if session is None:
-            session = self.init_session(project_id, video_id, video_path, project_path)
-
-        # Add conditioning frame record to database
-        from sqlalchemy import select
-        from sqlalchemy.orm import Session
-        from vidseq.models.conditioning_frame import ConditioningFrame
-        from vidseq.services.database_manager import DatabaseManager
-
-        db_manager = DatabaseManager.get_instance()
-        project_engine = db_manager.get_project_engine(project_path)
-
-        with Session(project_engine) as db_session:
-            # Check if already exists
-            existing = db_session.execute(
-                select(ConditioningFrame)
-                .where(ConditioningFrame.video_id == video_id)
-                .where(ConditioningFrame.frame_idx == frame_idx)
-            ).scalar_one_or_none()
-
-            if existing is None:
-                db_session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
-                db_session.commit()
+            raise RuntimeError("No session exists. Initialize session first.")
 
         result = self._send_and_wait({
             "type": "add_prompt",
@@ -672,36 +636,19 @@ class SegmentationService:
         self,
         project_id: int,
         video_id: int,
-        project_path: Path,
         frame_idx: int,
     ) -> None:
         """
-        Reset a single frame (clear mask and remove from conditioning frames).
+        Reset a single frame's SAM state.
+
+        Clears SAM memory for the frame. Does not modify database.
+        The caller is responsible for removing conditioning frame records.
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
-            project_path: Path to the project folder
             frame_idx: Frame index to reset
         """
-        # Remove from database
-        from sqlalchemy import delete
-        from sqlalchemy.orm import Session
-        from vidseq.models.conditioning_frame import ConditioningFrame
-        from vidseq.services.database_manager import DatabaseManager
-
-        db_manager = DatabaseManager.get_instance()
-        project_engine = db_manager.get_project_engine(project_path)
-
-        with Session(project_engine) as db_session:
-            db_session.execute(
-                delete(ConditioningFrame)
-                .where(ConditioningFrame.video_id == video_id)
-                .where(ConditioningFrame.frame_idx == frame_idx)
-            )
-            db_session.commit()
-
-        # Tell worker to reset frame
         self.reset_frame_memory(project_id, video_id, frame_idx)
 
     def reset_frame_memory(
@@ -737,30 +684,16 @@ class SegmentationService:
         project_path: Path,
     ) -> None:
         """
-        Reset entire video (clear all masks and conditioning frames).
+        Reset video's SAM state.
+
+        Clears SAM memory for the video. Does not modify database.
+        The caller is responsible for removing conditioning frame records.
 
         Args:
             project_id: ID of the project
             video_id: ID of the video
-            project_path: Path to the project folder
+            project_path: Path to the project folder (needed by worker)
         """
-        # Remove all conditioning frames from database
-        from sqlalchemy import delete
-        from sqlalchemy.orm import Session
-        from vidseq.models.conditioning_frame import ConditioningFrame
-        from vidseq.services.database_manager import DatabaseManager
-
-        db_manager = DatabaseManager.get_instance()
-        project_engine = db_manager.get_project_engine(project_path)
-
-        with Session(project_engine) as db_session:
-            db_session.execute(
-                delete(ConditioningFrame)
-                .where(ConditioningFrame.video_id == video_id)
-            )
-            db_session.commit()
-
-        # Tell worker to reset video
         session = self.get_session(project_id, video_id)
         if session is not None:
             self._send_and_wait({
@@ -828,6 +761,7 @@ class SegmentationService:
         project_id: int,
         project_path: Path,
         videos: list,
+        cond_frames_by_video: dict[int, list[int]] | None = None,
     ) -> list[int]:
         """
         Start batch segmentation for all videos in a project using detector-tracker approach.
@@ -841,10 +775,13 @@ class SegmentationService:
             project_id: ID of the project
             project_path: Path to the project folder
             videos: List of Video model instances
+            cond_frames_by_video: Dict mapping video_id to list of conditioning frame indices
 
         Returns:
             List of job IDs created (empty for now - synchronous execution)
         """
+        if cond_frames_by_video is None:
+            cond_frames_by_video = {}
         if not videos:
             return []
 
@@ -864,7 +801,10 @@ class SegmentationService:
         for video in videos:
             print(f"[Segmentation Service] Segmenting video {video.id} ({video.name})...")
 
-            # Initialize session (this also loads detector masks)
+            # Get conditioning frames from the dict passed by service layer
+            cond_frame_indices = cond_frames_by_video.get(video.id, [])
+
+            # Initialize session with conditioning frames
             try:
                 result = self._send_and_wait({
                     "type": "init_session",
@@ -874,7 +814,7 @@ class SegmentationService:
                     "num_frames": video.num_frames,
                     "height": video.height,
                     "width": video.width,
-                    "cond_frame_indices": [],  # Fresh session
+                    "cond_frame_indices": cond_frame_indices,
                 }, timeout=600.0)
 
                 if result.get("status") != "ok":
@@ -885,6 +825,7 @@ class SegmentationService:
                 result = self._send_streaming({
                     "type": "propagate_with_detector",
                     "video_id": video.id,
+                    "project_path": str(project_path),
                     "num_frames": video.num_frames,
                     "iou_threshold": 0.5,
                 }, timeout=3600.0)  # 1 hour timeout for long videos
@@ -943,9 +884,21 @@ def start_loading_in_background() -> None:
     SegmentationService.get_instance().start_loading_in_background()
 
 
-def init_session(project_id: int, video_id: int, video_path: Path, project_path: Path) -> VideoSessionInfo:
+def init_session(
+    project_id: int,
+    video_id: int,
+    video_path: Path,
+    project_path: Path,
+    num_frames: int,
+    height: int,
+    width: int,
+    cond_frame_indices: list[int],
+) -> VideoSessionInfo:
     """Initialize a segmentation session for a video."""
-    return SegmentationService.get_instance().init_session(project_id, video_id, video_path, project_path)
+    return SegmentationService.get_instance().init_session(
+        project_id, video_id, video_path, project_path,
+        num_frames, height, width, cond_frame_indices,
+    )
 
 
 def get_session(project_id: int, video_id: int) -> Optional[VideoSessionInfo]:
@@ -961,8 +914,6 @@ def close_session(project_id: int, video_id: int) -> bool:
 def add_point_prompt(
     project_id: int,
     video_id: int,
-    video_path: Path,
-    project_path: Path,
     frame_idx: int,
     x: float,
     y: float,
@@ -971,11 +922,11 @@ def add_point_prompt(
     """
     Add a point prompt and return the mask.
 
+    Requires an active session (call init_session first).
+
     Args:
         project_id: ID of the project
         video_id: ID of the video
-        video_path: Path to video file (used to init session if needed)
-        project_path: Path to the project folder
         frame_idx: Frame index to segment
         x: X coordinate in normalized [0, 1] coords
         y: Y coordinate in normalized [0, 1] coords
@@ -985,7 +936,7 @@ def add_point_prompt(
         Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
     """
     return SegmentationService.get_instance().add_point_prompt(
-        project_id, video_id, video_path, project_path, frame_idx, x, y, label
+        project_id, video_id, frame_idx, x, y, label
     )
 
 
@@ -1036,19 +987,20 @@ def propagate(
 def reset_frame(
     project_id: int,
     video_id: int,
-    project_path: Path,
     frame_idx: int,
 ) -> None:
     """
-    Reset a single frame (clear mask and remove from conditioning frames).
+    Reset a single frame's SAM state.
+
+    Clears SAM memory for the frame. Does not modify database.
+    The caller is responsible for removing conditioning frame records.
 
     Args:
         project_id: ID of the project
         video_id: ID of the video
-        project_path: Path to the project folder
         frame_idx: Frame index to reset
     """
-    SegmentationService.get_instance().reset_frame(project_id, video_id, project_path, frame_idx)
+    SegmentationService.get_instance().reset_frame(project_id, video_id, frame_idx)
 
 
 def reset_frame_memory(
@@ -1111,8 +1063,9 @@ async def segment_all_videos(
     project_id: int,
     project_path: Path,
     videos: list,
+    cond_frames_by_video: dict[int, list[int]] | None = None,
 ) -> list[int]:
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
-        project_id, project_path, videos
+        project_id, project_path, videos, cond_frames_by_video
     )

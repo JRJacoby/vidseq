@@ -5,7 +5,7 @@ replacing the previous HDF5-based storage for this data.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 import numpy as np
 from sqlalchemy import and_, delete, select, update
@@ -392,17 +392,13 @@ async def create_training_range(
     start_frame: int,
     end_frame: int,
 ) -> None:
-    """Create a training range by computing bboxes from masks and marking frames.
+    """Create a training range by validating masks exist and marking frames.
 
-    Validates that all frames in range have tracker masks, then:
-    1. Loads masks from H5 file
-    2. Computes bbox for each frame
-    3. Saves bboxes to database
-    4. Marks frames as training
+    Validates that all frames in range have tracker masks, then marks them as training.
 
     Args:
         session: Async database session
-        project_path: Path to the project folder
+        project_path: Path to the project folder (unused, kept for API compatibility)
         video_id: ID of the video
         start_frame: First frame of range (inclusive)
         end_frame: Last frame of range (inclusive)
@@ -410,7 +406,6 @@ async def create_training_range(
     Raises:
         MissingMasksError: If any frames in range are missing masks
     """
-    from vidseq.services.array_storage import tracker_masks, compute_bbox_from_mask
     from vidseq.services.exceptions import MissingMasksError
 
     # Validate all frames have masks
@@ -419,14 +414,6 @@ async def create_training_range(
     )
     if missing_frames:
         raise MissingMasksError(missing_frames)
-
-    # Load masks and compute bboxes
-    with tracker_masks(project_path, video_id, "r") as masks:
-        for frame_idx in range(start_frame, end_frame + 1):
-            mask = masks[frame_idx]
-            bbox = compute_bbox_from_mask(mask)
-            if bbox is not None:
-                await save_bbox(session, video_id, frame_idx, bbox)
 
     # Mark frames as training
     await mark_training_range(session, video_id, start_frame, end_frame)
@@ -567,24 +554,35 @@ async def load_scores_in_range(
 async def set_has_tracker_mask(
     session: AsyncSession,
     video_id: int,
-    frame_idx: int,
+    frame_indices: Union[int, Iterable[int]],
     has_mask: bool,
 ) -> None:
-    """Set the has_tracker_mask flag for a specific frame (upsert).
+    """Set the has_tracker_mask flag for one or more frames (upsert).
 
     Args:
         session: Async database session
         video_id: ID of the video
-        frame_idx: Frame index (0-based)
-        has_mask: True if frame has a tracker mask, False otherwise
+        frame_indices: Single frame index or iterable of frame indices (0-based)
+        has_mask: True if frames have a tracker mask, False otherwise
     """
-    stmt = sqlite_insert(FrameData).values(
-        video_id=video_id,
-        frame_idx=frame_idx,
-        has_tracker_mask=1 if has_mask else 0,
-    ).on_conflict_do_update(
+    # Normalize to list
+    if isinstance(frame_indices, int):
+        indices = [frame_indices]
+    else:
+        indices = list(frame_indices)
+
+    if not indices:
+        return
+
+    mask_value = 1 if has_mask else 0
+    values = [
+        {"video_id": video_id, "frame_idx": idx, "has_tracker_mask": mask_value}
+        for idx in indices
+    ]
+
+    stmt = sqlite_insert(FrameData).values(values).on_conflict_do_update(
         index_elements=["video_id", "frame_idx"],
-        set_={"has_tracker_mask": 1 if has_mask else 0}
+        set_={"has_tracker_mask": mask_value}
     )
     await session.execute(stmt)
     await session.commit()
@@ -857,17 +855,28 @@ async def clear_all_has_detector_mask(
 async def set_has_final_mask(
     session: AsyncSession,
     video_id: int,
-    frame_idx: int,
+    frame_indices: Union[int, Iterable[int]],
     has_mask: bool,
 ) -> None:
-    """Set the has_final_mask flag for a specific frame (upsert)."""
-    stmt = sqlite_insert(FrameData).values(
-        video_id=video_id,
-        frame_idx=frame_idx,
-        has_final_mask=1 if has_mask else 0,
-    ).on_conflict_do_update(
+    """Set the has_final_mask flag for one or more frames (upsert)."""
+    # Normalize to list
+    if isinstance(frame_indices, int):
+        indices = [frame_indices]
+    else:
+        indices = list(frame_indices)
+
+    if not indices:
+        return
+
+    mask_value = 1 if has_mask else 0
+    values = [
+        {"video_id": video_id, "frame_idx": idx, "has_final_mask": mask_value}
+        for idx in indices
+    ]
+
+    stmt = sqlite_insert(FrameData).values(values).on_conflict_do_update(
         index_elements=["video_id", "frame_idx"],
-        set_={"has_final_mask": 1 if has_mask else 0}
+        set_={"has_final_mask": mask_value}
     )
     await session.execute(stmt)
     await session.commit()

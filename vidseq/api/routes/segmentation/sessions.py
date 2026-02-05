@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services import segmentation_tcp_client, video_service
+from vidseq.services import segmentation_service, segmentation_tcp_client, video_service
 
 router = APIRouter()
 
@@ -39,7 +39,8 @@ async def create_videos_segmentation(
             detail="Detector model not found. Please train the detector first."
         )
 
-    job_ids = await segmentation_tcp_client.segment_all_videos(
+    job_ids = await segmentation_service.segment_all_videos(
+        session=session,
         project_id=project_id,
         project_path=project_path,
         videos=videos,
@@ -91,6 +92,7 @@ async def init_video_session(
     project_id: int,
     video: Video = Depends(get_video),
     project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
 ):
     """
     Initialize a SAM session for a video.
@@ -99,10 +101,10 @@ async def init_video_session(
     Call this when entering the video detail view.
     Returns 503 if SAM model isn't loaded yet.
     """
-    video_path = Path(video.path)
-
     try:
-        session_info = segmentation_tcp_client.init_session(project_id, video.id, video_path, project_path)
+        session_info = await segmentation_service.init_session(
+            session, project_id, video, project_path
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 

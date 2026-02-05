@@ -124,7 +124,7 @@ _video_resources: dict[int, VideoResources] = {}
 
 
 def handle_load_model(_checkpoint_path: Optional[Path]) -> tuple[dict, StreamingSegmentor]:
-    """Load SAM3 model via StreamingSegmentor.
+    """Load SAM2 model via StreamingSegmentor.
 
     Returns:
         Tuple of (response_dict, segmentor)
@@ -133,14 +133,14 @@ def handle_load_model(_checkpoint_path: Optional[Path]) -> tuple[dict, Streaming
 
     # Skip if already loaded
     if _segmentor is not None:
-        print("[SAM Worker] Model already loaded, skipping")
+        print("[Segmentation Worker] Model already loaded, skipping")
         return {"type": "status", "status": "ready"}, _segmentor
 
-    print(f"[SAM Worker] Loading model via StreamingSegmentor...")
+    print(f"[Segmentation Worker] Loading model via StreamingSegmentor...")
 
     _segmentor = StreamingSegmentor(device="cuda")
 
-    print("[SAM Worker] Model loaded!")
+    print("[Segmentation Worker] Model loaded!")
     return {"type": "status", "status": "ready"}, _segmentor
 
 
@@ -168,7 +168,7 @@ def handle_init_session(
     width = params["width"]
     cond_frame_indices = set(params.get("cond_frame_indices", []))
 
-    print(f"[SAM3 Worker] Initializing session for video {video_id}...")
+    print(f"[Segmentation Worker] Initializing session for video {video_id}...")
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -268,7 +268,7 @@ def handle_add_prompt(
         logits_data[frame_idx] = logits
 
     after_sum = int(mask.sum())
-    print(f"[SAM3 Worker] add_prompt frame={frame_idx} label={label} "
+    print(f"[Segmentation Worker] add_prompt frame={frame_idx} label={label} "
           f"point=({px:.1f}, {py:.1f}) mask_sum: {before_sum} -> {after_sum}")
 
     return {
@@ -346,7 +346,7 @@ def handle_refine_mask(
         logits_data[frame_idx] = logits
 
     after_sum = int(mask.sum())
-    print(f"[SAM3 Worker] refine_mask frame={frame_idx} "
+    print(f"[Segmentation Worker] refine_mask frame={frame_idx} "
           f"num_points={len(locations)} mask_sum: {before_sum} -> {after_sum}")
 
     return {
@@ -489,7 +489,7 @@ def handle_propagate_with_detector(
     # Load detector model with cleanup on exit
     detector = None
     try:
-        print(f"[SAM Worker] Loading detector model from {model_path}")
+        print(f"[Segmentation Worker] Loading detector model from {model_path}")
         detector = SegFormerDetector(device="cuda")
         detector.load_decoder(str(model_path))
         detector.eval()
@@ -503,12 +503,12 @@ def handle_propagate_with_detector(
             """Run detector on a single frame."""
             # GPU preprocessing
             frame_gpu = torch.from_numpy(frame).to("cuda")
-            pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+            pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div(255.0)
             pixel_values = pixel_values.unsqueeze(0)
             pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
 
             # Inference
-            with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 logits = detector(pixel_values)
 
             # Post-process: argmax, resize, to numpy
@@ -648,7 +648,7 @@ def handle_close_session(
     """
     video_id = params["video_id"]
 
-    print(f"[SAM3 Worker] Closing session for video {video_id}...")
+    print(f"[Segmentation Worker] Closing session for video {video_id}...")
 
     if segmentor is not None:
         _close_video_resources(video_id, segmentor)
@@ -667,7 +667,7 @@ def handle_shutdown(segmentor: StreamingSegmentor) -> dict:
     """
     global _video_resources
 
-    print("[SAM3 Worker] Shutting down...")
+    print("[Segmentation Worker] Shutting down...")
 
     for video_id in list(_video_resources.keys()):
         try:
