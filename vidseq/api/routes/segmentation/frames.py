@@ -22,12 +22,13 @@ async def get_frame_ranges(
     project_path: Path = Depends(get_project_folder),
 ):
     """
-    Get masked and training frame ranges for data track visualization.
+    Get tracker masked and training frame ranges for data track visualization.
 
     Returns contiguous ranges as [start, end] pairs (inclusive).
+    Tracker masks are from SAM2 segmentation; training ranges are user-marked.
     """
-    # Get masked ranges from SQLite (indexed query)
-    masked_ranges = await frame_data_service.get_masked_frame_ranges(
+    # Get tracker masked ranges from SQLite (indexed query)
+    tracker_masked_ranges = await frame_data_service.get_tracker_masked_frame_ranges(
         session, video.id
     )
 
@@ -37,7 +38,7 @@ async def get_frame_ranges(
     )
 
     return {
-        "masked_ranges": [[r[0], r[1]] for r in masked_ranges],
+        "tracker_masked_ranges": [[r[0], r[1]] for r in tracker_masked_ranges],
         "training_ranges": [[r[0], r[1]] for r in training_ranges],
     }
 

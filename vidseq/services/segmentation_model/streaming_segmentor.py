@@ -81,6 +81,11 @@ class SAM2StreamingSegmentor:
     # Low-res logits size (SAM2 outputs 256x256)
     LOGITS_SIZE = 256
 
+    # Memory window size for non-conditioning frames.
+    # SAM2's num_maskmem defaults to 7 (1 current + 6 previous frames).
+    # We use 6 for loading previous frames, 7 for eviction threshold.
+    MEM_WINDOW = 6
+
     def __init__(self, device: str | None = None, compile_model: bool = True):
         """Initialize the segmentor and load the SAM2 model.
 
@@ -108,7 +113,12 @@ class SAM2StreamingSegmentor:
                 mode="max-autotune",
                 fullgraph=True,
             )
-            print("SAM2 image encoder compiled.")
+            # Run warmup inference to trigger actual compilation (torch.compile is lazy)
+            print("Running warmup inference (this may take a minute)...")
+            dummy_input = torch.zeros(1, 3, self.INPUT_SIZE, self.INPUT_SIZE, device=self.device)
+            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
+                _ = self.predictor.forward_image(dummy_input)
+            print("SAM2 image encoder ready.")
 
         # Sessions dict: video_id -> session state
         self.sessions: dict[str, dict] = {}
@@ -153,14 +163,16 @@ class SAM2StreamingSegmentor:
     def _get_image_features(
         self, video_id: str, frame_idx: int, frame: np.ndarray
     ) -> tuple[torch.Tensor, dict]:
-        """Get image features for a frame, with caching.
+        """Get image features for a frame.
 
         Preprocesses the frame and runs through the SAM2 image encoder.
-        Caches only the most recent frame's features to avoid memory bloat.
+
+        Note: No caching - with torch.compile and CUDA graphs, the backbone is fast,
+        and caching causes issues with stale tensor references to CUDA graph buffers.
 
         Args:
             video_id: The video identifier.
-            frame_idx: Frame index (used for caching).
+            frame_idx: Frame index (unused, kept for API compatibility).
             frame: BGR uint8 frame data (H, W, 3).
 
         Returns:
@@ -168,13 +180,6 @@ class SAM2StreamingSegmentor:
             - image_tensor is the preprocessed image tensor (1, 3, 1024, 1024)
             - backbone_out is the dict from forward_image with backbone_fpn, vision_pos_enc
         """
-        session = self.sessions[video_id]
-        cached = session.get("cached_features", {})
-
-        # Check cache
-        if cached.get("frame_idx") == frame_idx:
-            return cached["image"], cached["backbone_out"]
-
         # GPU-accelerated preprocessing: transfer raw BGR uint8, then process on GPU
         # 1. Transfer raw uint8 to GPU (smaller transfer than float32)
         frame_gpu = torch.from_numpy(frame).to(self.device)  # (H, W, 3) uint8
@@ -196,13 +201,6 @@ class SAM2StreamingSegmentor:
         # Run through image encoder with autocast for automatic mixed precision
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             backbone_out = self.predictor.forward_image(image_tensor)
-
-        # Cache (only most recent frame)
-        session["cached_features"] = {
-            "frame_idx": frame_idx,
-            "image": image_tensor,
-            "backbone_out": backbone_out,
-        }
 
         return image_tensor, backbone_out
 
@@ -341,7 +339,7 @@ class SAM2StreamingSegmentor:
         """Prepare non_cond_frame_outputs for tracking at frame_idx.
 
         Clears all existing non-cond memory, then walks backward from frame_idx-1,
-        loading masks and encoding them into memory. Stops after 6 frames
+        loading masks and encoding them into memory. Stops after MEM_WINDOW frames
         or when hitting a gap (empty mask).
 
         Args:
@@ -350,7 +348,6 @@ class SAM2StreamingSegmentor:
             frames: Indexable frame source returning BGR uint8 (H, W, 3).
             masks: Indexable mask source returning uint8 (H, W).
         """
-        MEM_WINDOW = 6
 
         session = self.sessions[video_id]
         output_dict = session["output_dict"]
@@ -366,7 +363,7 @@ class SAM2StreamingSegmentor:
         # 3. Walk backward, encode into memory
         frames_added = 0
         for prev_idx in range(frame_idx - 1, -1, -1):
-            if frames_added >= MEM_WINDOW:
+            if frames_added >= self.MEM_WINDOW:
                 break
 
             # Skip conditioning frames (handled separately by SAM2)
@@ -433,7 +430,6 @@ class SAM2StreamingSegmentor:
                 "cond_frame_outputs": {},
                 "non_cond_frame_outputs": {},
             },
-            "cached_features": {},  # Cache for most recent frame's features
         }
 
         self.sessions[video_id] = session
@@ -486,9 +482,6 @@ class SAM2StreamingSegmentor:
 
         session = self.sessions[video_id]
 
-        # Clear cached features to free GPU memory
-        session["cached_features"].clear()
-
         # Clear output_dict memory
         session["output_dict"]["cond_frame_outputs"].clear()
         session["output_dict"]["non_cond_frame_outputs"].clear()
@@ -519,11 +512,6 @@ class SAM2StreamingSegmentor:
         output_dict["cond_frame_outputs"].pop(frame_idx, None)
         output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
 
-        # Clear from cached_features if it's cached for this frame
-        cached = session.get("cached_features", {})
-        if cached.get("frame_idx") == frame_idx:
-            session["cached_features"] = {}
-
     def reset_video(self, video_id: str) -> None:
         """Reset entire video: clear all masks and memory.
 
@@ -540,9 +528,6 @@ class SAM2StreamingSegmentor:
 
         # Clear cond_frame_indices
         cond_frame_indices.clear()
-
-        # Clear cached_features
-        session["cached_features"].clear()
 
     def add_point_prompt(
         self,
@@ -707,18 +692,33 @@ class SAM2StreamingSegmentor:
         frame_dims = session["frame_dims"]  # (height, width)
         output_dict = session["output_dict"]
 
-        # 2. Prepare memory for arbitrary frame access
+        # 2. Remove current frame from cond memory to avoid self-bias during refinement.
+        #    We don't want the OLD mask memory influencing the NEW refinement.
+        old_cond_output = output_dict["cond_frame_outputs"].pop(frame_idx, None)
+
+        # 3. Prepare memory for arbitrary frame access (loads non-cond frames)
         self._set_memory_frame(video_id, frame_idx, frames, masks)
 
-        # 3. Get frame from source
+        # 4. Determine is_init_cond_frame based on whether OTHER memory exists.
+        #    If no other frames have memory, we use is_init_cond_frame=True to avoid
+        #    the assertion in _prepare_memory_conditioned_features.
+        has_other_memory = (
+            len(output_dict["cond_frame_outputs"]) > 0
+            or len(output_dict["non_cond_frame_outputs"]) > 0
+        )
+        is_init_cond_frame = not has_other_memory
+
+        # 5. Get frame from source
         frame = frames[frame_idx]
 
-        # 4. Convert prev_logits to tensor: shape (1, 1, 256, 256), float32, on device
-        # SAM2 low-res logits are 256x256
+        # 6. Convert prev_logits to tensor: shape (1, 1, 256, 256), float32, on device
+        # SAM2 low-res logits are 256x256. Clamp to [-32, 32] to avoid numerical issues
+        # (matching SAM2's add_new_points_or_box behavior)
         prev_logits_tensor = torch.from_numpy(prev_logits.astype(np.float32))
         prev_logits_tensor = prev_logits_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
+        prev_logits_tensor = torch.clamp(prev_logits_tensor, -32.0, 32.0)
 
-        # 5. Normalize location/label to lists
+        # 7. Normalize location/label to lists
         if isinstance(location, tuple) and len(location) == 2 and not isinstance(location[0], tuple):
             # Single point: (x, y)
             locations = [location]
@@ -730,7 +730,7 @@ class SAM2StreamingSegmentor:
         else:
             labels = list(label)
 
-        # 6. Scale points to INPUT_SIZE (1024) space
+        # 8. Scale points to INPUT_SIZE (1024) space
         orig_h, orig_w = frame_dims
         scaled_points = []
         for x, y in locations:
@@ -738,7 +738,7 @@ class SAM2StreamingSegmentor:
             scaled_y = y * self.INPUT_SIZE / orig_h
             scaled_points.append([scaled_x, scaled_y])
 
-        # 7. Create point_inputs dict with tensors on device
+        # 9. Create point_inputs dict with tensors on device
         point_coords = torch.tensor(scaled_points, dtype=torch.float32, device=self.device)
         point_coords = point_coords.unsqueeze(0)  # (1, N, 2) - batch dim
         point_labels = torch.tensor(labels, dtype=torch.int32, device=self.device)
@@ -749,18 +749,17 @@ class SAM2StreamingSegmentor:
             "point_labels": point_labels,
         }
 
-        # 8. Get image features and prepare backbone features
+        # 10. Get image features and prepare backbone features
         _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
         current_vision_feats, current_vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 9. Call track_step with point_inputs and prev_sam_mask_logits
-        # is_init_cond_frame=False because we have existing context (the previous mask)
+        # 11. Call track_step with point_inputs and prev_sam_mask_logits
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
-                is_init_cond_frame=False,
+                is_init_cond_frame=is_init_cond_frame,
                 current_vision_feats=current_vision_feats,
                 current_vision_pos_embeds=current_vision_pos_embeds,
                 feat_sizes=feat_sizes,
@@ -771,7 +770,7 @@ class SAM2StreamingSegmentor:
                 prev_sam_mask_logits=prev_logits_tensor,
             )
 
-        # 10. Extract mask, threshold, resize to original dims
+        # 12. Extract mask, threshold, resize to original dims
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
         mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_resized = cv2.resize(
@@ -780,13 +779,13 @@ class SAM2StreamingSegmentor:
             interpolation=cv2.INTER_NEAREST,
         )
 
-        # 11. Get updated logits
+        # 13. Get updated logits
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
-        # 12. Update output_dict["cond_frame_outputs"][frame_idx]
+        # 14. Store new result in cond_frame_outputs
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 13. Return mask and logits (caller saves to storage)
+        # 15. Return mask and logits (caller saves to storage)
         return mask_resized, pred_masks_low_res
 
     def propagate(
@@ -855,9 +854,6 @@ class SAM2StreamingSegmentor:
             KeyError: If video_id is not open.
             RuntimeError: If no memory exists (need to add a prompt first).
         """
-        # Memory window size for eviction
-        MEM_WINDOW = 7
-
         # 1. Get session state
         session = self.sessions[video_id]
         cond_frame_indices = session["cond_frame_indices"]
@@ -938,8 +934,8 @@ class SAM2StreamingSegmentor:
                 current_out
             )
 
-            # Memory eviction: remove frames from non_cond_frame_outputs where key <= frame_idx - MEM_WINDOW
-            eviction_threshold = frame_idx - MEM_WINDOW
+            # Memory eviction: keep MEM_WINDOW + 1 frames (current + MEM_WINDOW previous)
+            eviction_threshold = frame_idx - (self.MEM_WINDOW + 1)
             keys_to_evict = [
                 k
                 for k in output_dict["non_cond_frame_outputs"]
@@ -1099,6 +1095,15 @@ class SAM2StreamingSegmentor:
             output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
         else:
             output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+            # Memory eviction: keep MEM_WINDOW + 1 frames (current + MEM_WINDOW previous)
+            eviction_threshold = frame_idx - (self.MEM_WINDOW + 1)
+            keys_to_evict = [
+                k for k in output_dict["non_cond_frame_outputs"]
+                if k <= eviction_threshold
+            ]
+            for k in keys_to_evict:
+                del output_dict["non_cond_frame_outputs"][k]
 
         return mask_resized, pred_masks_low_res
 

@@ -373,7 +373,7 @@ export async function createPropagation(
 }
 
 export interface FrameRangesResponse {
-    masked_ranges: [number, number][]
+    tracker_masked_ranges: [number, number][]
     training_ranges: [number, number][]
 }
 

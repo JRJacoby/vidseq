@@ -28,7 +28,6 @@ async def submit_prompt(
     request: PromptRequest,
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
-    project_path: Path = Depends(get_project_folder),
 ):
     """
     Submit point prompt(s) for segmentation.
@@ -41,8 +40,6 @@ async def submit_prompt(
     - 2+ points, existing mask: refines mask with all points
     - 2+ points, no existing mask: ERROR (can't refine without mask)
     """
-    video_path = Path(video.path)
-
     # Convert points to backend format
     points = [{"x": p.x, "y": p.y} for p in request.points]
     labels = [1 if p.type == "positive_point" else 0 for p in request.points]
@@ -52,8 +49,6 @@ async def submit_prompt(
             session=session,
             project_id=project_id,
             video_id=video.id,
-            video_path=video_path,
-            project_path=project_path,
             frame_idx=frame_idx,
             points=points,
             labels=labels,

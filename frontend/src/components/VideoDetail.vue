@@ -24,7 +24,7 @@ const { video, isLoading, error, refresh: refreshVideo } = useVideo(videoId, pro
 const showMask = ref(true)
 const showPrompts = ref(true)
 
-const showMaskedFrames = ref(true)
+const showTrackerMaskedFrames = ref(true)
 const showTrainingFrames = ref(true)
 const showConfidencePlot = ref(true)
 const isMarkingMode = ref(false)
@@ -115,7 +115,7 @@ const {
 } = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps, maskViewMode)
 
 const {
-  maskedRanges,
+  trackerMaskedRanges,
   trainingRanges,
   refresh: refreshFrameRanges,
   markTraining,
@@ -281,7 +281,7 @@ onMounted(async () => {
               />
             </div>
           </div>
-          <TimelineSystem>
+          <TimelineSystem v-if="video">
             <VideoTimeline
               :current-time="currentTime"
               :duration="duration"
@@ -299,9 +299,9 @@ onMounted(async () => {
               :current-time="currentTime"
               :view-start="viewStart"
               :view-end="viewEnd"
-              :masked-ranges="maskedRanges"
+              :tracker-masked-ranges="trackerMaskedRanges"
               :training-ranges="trainingRanges"
-              :show-masked-frames="showMaskedFrames"
+              :show-tracker-masked-frames="showTrackerMaskedFrames"
               :show-training-frames="showTrainingFrames"
               :show-confidence-plot="showConfidencePlot"
               :is-marking-mode="isMarkingMode"
@@ -429,11 +429,11 @@ onMounted(async () => {
         <div class="tool-buttons">
           <button
             class="tool-button toggle-button masked-toggle"
-            :class="{ active: showMaskedFrames }"
-            @click="showMaskedFrames = !showMaskedFrames"
+            :class="{ active: showTrackerMaskedFrames }"
+            @click="showTrackerMaskedFrames = !showTrackerMaskedFrames"
           >
             <span class="tool-icon">◼</span>
-            <span class="tool-label">{{ showMaskedFrames ? 'Masked Frames' : 'Masked Frames Off' }}</span>
+            <span class="tool-label">{{ showTrackerMaskedFrames ? 'Tracker Masks' : 'Tracker Masks Off' }}</span>
           </button>
           <button
             class="tool-button toggle-button training-toggle"

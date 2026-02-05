@@ -282,3 +282,9 @@ segmentation_tcp_client.py    ──TCP──>  segmentation_tcp_server.py
 - **Backend**: Python 3.12+, FastAPI, SQLAlchemy (async), SQLite, PyTorch, OpenCV, SAM2, H5PY
 - **Frontend**: Vue 3 (Composition API), TypeScript 5.9, Vite, Pinia, VueUse
 - **Package Managers**: uv (Python), npm (Node)
+
+---
+
+## TODO.md Management
+
+When completing items in TODO.md, **delete the line entirely** rather than checking it off. Keep the TODO list clean and actionable.

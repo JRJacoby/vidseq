@@ -162,6 +162,24 @@ async def stream_detection_training():
     )
 
 
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/detector-masks/exists",
+    response_model=DetectorMasksExistsResponse,
+)
+async def check_detector_masks_exist(
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """
+    Check if detector masks exist for a video.
+
+    Returns true if the detector h5 file exists.
+    """
+    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
+
+    return DetectorMasksExistsResponse(exists=h5_path.exists())
+
+
 @router.get("/projects/{project_id}/videos/{video_id}/detector-masks/{frame_idx}")
 async def get_detector_mask(
     frame_idx: int,
@@ -205,21 +223,3 @@ async def get_detector_masks(
             masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
 
     return {"masks": masks_list}
-
-
-@router.get(
-    "/projects/{project_id}/videos/{video_id}/detector-masks/exists",
-    response_model=DetectorMasksExistsResponse,
-)
-async def check_detector_masks_exist(
-    video: Video = Depends(get_video),
-    project_path: Path = Depends(get_project_folder),
-):
-    """
-    Check if detector masks exist for a video.
-
-    Returns true if the detector h5 file exists.
-    """
-    h5_path = project_path / "array_data" / str(video.id) / "detector_masks.h5"
-
-    return DetectorMasksExistsResponse(exists=h5_path.exists())

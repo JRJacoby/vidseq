@@ -18,8 +18,8 @@ import h5py
 import numpy as np
 
 
-# Module-level cache for H5 file handles
-_cache: dict[Path, h5py.File] = {}
+# Module-level cache for H5 file handles: path -> (handle, mtime_when_opened)
+_cache: dict[Path, tuple[h5py.File, float]] = {}
 
 
 def close_all_h5() -> None:
@@ -28,9 +28,9 @@ def close_all_h5() -> None:
     Call this during cleanup/shutdown or when you need to ensure
     all files are flushed and closed.
     """
-    for f in _cache.values():
+    for handle, _mtime in _cache.values():
         try:
-            f.close()
+            handle.close()
         except Exception:
             pass
     _cache.clear()
@@ -81,8 +81,9 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         h5_path.parent.mkdir(parents=True, exist_ok=True)
         if h5_path in _cache:
+            handle, _mtime = _cache[h5_path]
             try:
-                _cache[h5_path].close()
+                handle.close()
             except Exception:
                 pass
             del _cache[h5_path]
@@ -101,8 +102,9 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             raise RuntimeError(f"HDF5 file is locked by another process: {lock_path}")
         h5_path.parent.mkdir(parents=True, exist_ok=True)
         if h5_path in _cache:
+            handle, _mtime = _cache[h5_path]
             try:
-                _cache[h5_path].close()
+                handle.close()
             except Exception:
                 pass
             del _cache[h5_path]
@@ -115,12 +117,29 @@ def open_h5_with_lock(h5_path: Path, mode: str):
             lock_path.unlink(missing_ok=True)
         return
 
-    # mode='r' - use cache
-    if h5_path not in _cache:
-        if not h5_path.exists():
-            raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
-        _cache[h5_path] = h5py.File(h5_path, "r")
-    yield _cache[h5_path]
+    # mode='r' - use cache with mtime validation
+    if not h5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
+
+    current_mtime = h5_path.stat().st_mtime
+
+    if h5_path in _cache:
+        handle, cached_mtime = _cache[h5_path]
+        if current_mtime <= cached_mtime:
+            # Cache is still valid
+            yield handle
+            return
+        # File was modified since we cached it - invalidate
+        try:
+            handle.close()
+        except Exception:
+            pass
+        del _cache[h5_path]
+
+    # Open fresh and cache with current mtime
+    new_handle = h5py.File(h5_path, "r")
+    _cache[h5_path] = (new_handle, current_mtime)
+    yield new_handle
 
 
 @contextmanager

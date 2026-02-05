@@ -333,10 +333,15 @@ async def reset_video(
 
     # 5. Re-open SAM session if it was open before
     if session_was_open:
+        # After reset, there are no conditioning frames
         segmentation_tcp_client.init_session(
             project_id=project_id,
             video_id=video_id,
             video_path=Path(video.path),
             project_path=project_path,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+            cond_frame_indices=[],
         )
 

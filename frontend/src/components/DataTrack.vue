@@ -7,9 +7,9 @@ const props = withDefaults(defineProps<{
   currentTime: number
   viewStart: number
   viewEnd: number
-  maskedRanges: [number, number][]
+  trackerMaskedRanges: [number, number][]
   trainingRanges: [number, number][]
-  showMaskedFrames: boolean
+  showTrackerMaskedFrames: boolean
   showTrainingFrames: boolean
   showConfidencePlot: boolean
   isMarkingMode: boolean
@@ -116,9 +116,9 @@ const rangeToStyle = (range: [number, number]): { left: string; width: string } 
   }
 }
 
-const maskedRangeStyles = computed(() => {
-  if (!props.showMaskedFrames) return []
-  return props.maskedRanges
+const trackerMaskedRangeStyles = computed(() => {
+  if (!props.showTrackerMaskedFrames) return []
+  return props.trackerMaskedRanges
     .map(r => rangeToStyle(r))
     .filter((s): s is { left: string; width: string } => s !== null)
 })
@@ -393,9 +393,9 @@ onUnmounted(() => {
         @mouseleave="onMouseLeave"
         @wheel="onWheel"
       >
-        <div 
-          v-for="(style, idx) in maskedRangeStyles"
-          :key="'masked-' + idx"
+        <div
+          v-for="(style, idx) in trackerMaskedRangeStyles"
+          :key="'tracker-masked-' + idx"
           class="range-overlay masked"
           :style="style"
         />
