@@ -12,6 +12,10 @@ import {
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
+// ============================================================================
+// Types & Constants
+// ============================================================================
+
 export type ToolType = 'none' | 'positive_point' | 'negative_point'
 
 export interface UseSegmentationReturn {
@@ -42,6 +46,11 @@ export function useSegmentation(
     fps: Ref<number> = ref(30),
     maskViewMode: Ref<'tracker' | 'detector' | 'final'> = ref('tracker'),
 ): UseSegmentationReturn {
+
+    // ========================================================================
+    // State
+    // ========================================================================
+
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
     const isSegmenting = ref(false)
@@ -54,16 +63,22 @@ export function useSegmentation(
         return localPrompts.value.get(currentFrameIdx.value) || []
     })
 
-    let debounceTimeout: number | null = null
-
+    // Cache and prefetch state
     const maskCache = new LruCache<number, ImageBitmap>(
         MASK_CACHE_MAX_SIZE,
         (bitmap) => bitmap.close()
     )
     let isPrefetching = false
     let prefetchedUpTo = -1
+
+    // Playback sync state
     let animationFrameId: number | null = null
     let lastDisplayedFrame = -1
+    let debounceTimeout: number | null = null
+
+    // ========================================================================
+    // Cache Management
+    // ========================================================================
 
     const base64ToBlob = (base64: string): Blob => {
         const binary = atob(base64)
@@ -80,7 +95,6 @@ export function useSegmentation(
 
         isPrefetching = true
         try {
-            // Select batch function based on mask view mode
             const batchFn = maskViewMode.value === 'detector'
                 ? getDetectorMasks
                 : maskViewMode.value === 'final'
@@ -111,6 +125,36 @@ export function useSegmentation(
             isPrefetching = false
         }
     }
+
+    /**
+     * Clear masks from the cache. This is the ONLY way to clear the cache safely.
+     * Always use this instead of calling maskCache.delete() or maskCache.clear() directly.
+     *
+     * The cache's onEvict callback closes ImageBitmaps, so we must null currentMask
+     * first if it references a bitmap being cleared - otherwise Vue will try to
+     * render a detached bitmap.
+     *
+     * @param startFrame - Start of range to clear (inclusive). Omit for full clear.
+     * @param endFrame - End of range to clear (inclusive). Omit for full clear.
+     */
+    const clearMaskCache = (startFrame?: number, endFrame?: number) => {
+        if (startFrame !== undefined && endFrame !== undefined) {
+            if (currentFrameIdx.value >= startFrame && currentFrameIdx.value <= endFrame) {
+                currentMask.value = null
+            }
+            for (let i = startFrame; i <= endFrame; i++) {
+                maskCache.delete(i)
+            }
+        } else {
+            currentMask.value = null
+            maskCache.clear()
+        }
+        prefetchedUpTo = -1
+    }
+
+    // ========================================================================
+    // Mask Loading
+    // ========================================================================
 
     const fetchMaskForFrame = async (frameIdx: number): Promise<Blob | null> => {
         if (!projectId.value || !videoId.value) return null
@@ -143,9 +187,7 @@ export function useSegmentation(
         try {
             const maskBlob = await fetchMaskForFrame(frameIdx)
 
-            if (frameIdx !== intendedFrameIdx.value) {
-                return
-            }
+            if (frameIdx !== intendedFrameIdx.value) return
 
             if (maskBlob) {
                 const bitmap = await createImageBitmap(maskBlob)
@@ -159,6 +201,15 @@ export function useSegmentation(
         }
     }
 
+    const seekToFrame = (frameIdx: number) => {
+        intendedFrameIdx.value = frameIdx
+        loadFrameData(frameIdx)
+    }
+
+    // ========================================================================
+    // Tool State
+    // ========================================================================
+
     const togglePositivePointTool = () => {
         activeTool.value = activeTool.value === 'positive_point' ? 'none' : 'positive_point'
     }
@@ -167,10 +218,9 @@ export function useSegmentation(
         activeTool.value = activeTool.value === 'negative_point' ? 'none' : 'negative_point'
     }
 
-    const seekToFrame = (frameIdx: number) => {
-        intendedFrameIdx.value = frameIdx
-        loadFrameData(frameIdx)
-    }
+    // ========================================================================
+    // Segmentation Actions
+    // ========================================================================
 
     const handlePointComplete = async (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => {
         if (!projectId.value || !videoId.value) return
@@ -211,7 +261,7 @@ export function useSegmentation(
 
         try {
             await deleteSegmentation(projectId.value, videoId.value, currentFrameIdx.value)
-            maskCache.delete(currentFrameIdx.value)
+            clearMaskCache(currentFrameIdx.value, currentFrameIdx.value)
             localPrompts.value.delete(currentFrameIdx.value)
             await loadFrameData(currentFrameIdx.value)
         } catch (e) {
@@ -225,32 +275,15 @@ export function useSegmentation(
         try {
             await deleteVideoSegmentation(projectId.value, videoId.value)
             localPrompts.value.clear()
-            maskCache.clear()
-            prefetchedUpTo = -1
-            currentMask.value = null
+            clearMaskCache()
         } catch (e) {
             console.error('Failed to reset video:', e)
         }
     }
 
-    watch(currentFrameIdx, async (newFrameIdx) => {
-        if (newFrameIdx === intendedFrameIdx.value) {
-            return
-        }
-
-        intendedFrameIdx.value = newFrameIdx
-
-        if (isPlaying.value) {
-            return
-        }
-
-        if (debounceTimeout) {
-            clearTimeout(debounceTimeout)
-        }
-        debounceTimeout = window.setTimeout(() => {
-            loadFrameData(newFrameIdx)
-        }, 100)
-    })
+    // ========================================================================
+    // Playback Synchronization
+    // ========================================================================
 
     const syncMaskToVideo = () => {
         if (!isPlaying.value || !videoRef.value) return
@@ -273,6 +306,27 @@ export function useSegmentation(
         animationFrameId = requestAnimationFrame(syncMaskToVideo)
     }
 
+    // ========================================================================
+    // Watchers
+    // ========================================================================
+
+    // Debounced frame loading when scrubbing (not during playback)
+    watch(currentFrameIdx, async (newFrameIdx) => {
+        if (newFrameIdx === intendedFrameIdx.value) return
+
+        intendedFrameIdx.value = newFrameIdx
+
+        if (isPlaying.value) return
+
+        if (debounceTimeout) {
+            clearTimeout(debounceTimeout)
+        }
+        debounceTimeout = window.setTimeout(() => {
+            loadFrameData(newFrameIdx)
+        }, 100)
+    })
+
+    // Start/stop playback sync loop
     watch(isPlaying, async (playing) => {
         if (playing) {
             await prefetchMasks(currentFrameIdx.value)
@@ -287,25 +341,29 @@ export function useSegmentation(
         }
     })
 
+    // Clear state when video changes
     watch(videoId, () => {
         localPrompts.value.clear()
-        maskCache.clear()
-        prefetchedUpTo = -1
+        clearMaskCache()
     })
 
     // Clear cache and reload when mask view mode changes
     watch(maskViewMode, () => {
-        maskCache.clear()
-        prefetchedUpTo = -1
+        clearMaskCache()
         loadFrameData(currentFrameIdx.value)
     })
 
+    // Initial prefetch when video loads
     watch([projectId, videoId, currentFrameIdx], async ([pid, vid, frameIdx]) => {
         if (pid && vid !== null && frameIdx !== undefined && !isPlaying.value) {
             await prefetchMasks(frameIdx)
             prefetchMasks(frameIdx + PREFETCH_BATCH_SIZE)
         }
     }, { immediate: true })
+
+    // ========================================================================
+    // Cleanup & Return
+    // ========================================================================
 
     onUnmounted(() => {
         if (debounceTimeout) {
@@ -314,19 +372,8 @@ export function useSegmentation(
         if (animationFrameId !== null) {
             cancelAnimationFrame(animationFrameId)
         }
-        maskCache.clear()
+        clearMaskCache()
     })
-
-    const clearMaskCache = (startFrame?: number, endFrame?: number) => {
-        if (startFrame !== undefined && endFrame !== undefined) {
-            for (let i = startFrame; i <= endFrame; i++) {
-                maskCache.delete(i)
-            }
-        } else {
-            maskCache.clear()
-        }
-        prefetchedUpTo = -1
-    }
 
     return {
         activeTool,

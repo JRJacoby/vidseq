@@ -62,23 +62,8 @@ function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   if (props.mask && props.showMask !== false) {
+    // Mask PNG is already rendered as semi-transparent blue overlay by backend
     ctx.drawImage(props.mask, 0, 0, canvas.width, canvas.height)
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const data = imageData.data
-
-    for (let i = 0; i < data.length; i += 4) {
-      const maskValue = data[i]!
-      if (maskValue > 0) {
-        data[i] = 102       // R
-        data[i + 1] = 179   // G
-        data[i + 2] = 255   // B
-        data[i + 3] = 102   // A
-      } else {
-        data[i + 3] = 0
-      }
-    }
-
-    ctx.putImageData(imageData, 0, 0)
   }
 
   // Draw prompts (points only)

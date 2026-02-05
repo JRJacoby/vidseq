@@ -7,7 +7,7 @@ import {
 } from '@/services/api'
 
 export interface UseFrameRangesReturn {
-    maskedRanges: Ref<[number, number][]>
+    trackerMaskedRanges: Ref<[number, number][]>
     trainingRanges: Ref<[number, number][]>
     isLoading: Ref<boolean>
     refresh: () => Promise<void>
@@ -20,21 +20,21 @@ export function useFrameRanges(
     projectId: Ref<number | null>,
     videoId: Ref<number | null>
 ): UseFrameRangesReturn {
-    const maskedRanges = ref<[number, number][]>([])
+    const trackerMaskedRanges = ref<[number, number][]>([])
     const trainingRanges = ref<[number, number][]>([])
     const isLoading = ref(false)
 
     const refresh = async () => {
         if (!projectId.value || !videoId.value) return
-        
+
         isLoading.value = true
         try {
             const response = await getFrameRanges(projectId.value, videoId.value)
-            maskedRanges.value = response.masked_ranges
+            trackerMaskedRanges.value = response.tracker_masked_ranges
             trainingRanges.value = response.training_ranges
         } catch (e) {
             console.error('Failed to fetch frame ranges:', e)
-            maskedRanges.value = []
+            trackerMaskedRanges.value = []
             trainingRanges.value = []
         } finally {
             isLoading.value = false
@@ -100,13 +100,13 @@ export function useFrameRanges(
     }
 
     watch([projectId, videoId], () => {
-        maskedRanges.value = []
+        trackerMaskedRanges.value = []
         trainingRanges.value = []
         refresh()
     }, { immediate: true })
 
     return {
-        maskedRanges,
+        trackerMaskedRanges,
         trainingRanges,
         isLoading,
         refresh,
