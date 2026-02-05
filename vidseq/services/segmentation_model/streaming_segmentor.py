@@ -110,8 +110,6 @@ class SAM2StreamingSegmentor:
             # Compile image encoder (the main bottleneck - 55% of inference time)
             self.predictor.image_encoder = torch.compile(
                 self.predictor.image_encoder,
-                mode="max-autotune",
-                fullgraph=True,
             )
             # Run warmup inference to trigger actual compilation (torch.compile is lazy)
             print("Running warmup inference (this may take a minute)...")
