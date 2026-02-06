@@ -1023,6 +1023,98 @@ class SAM2StreamingSegmentor:
         x1, x2 = np.where(cols)[0][[0, -1]]
         return (int(x1), int(y1), int(x2 + 1), int(y2 + 1))
 
+    def _encode_crop(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> torch.Tensor:
+        """Encode a cropped region into a 256-dim L2-normalized feature vector.
+
+        Crops the frame to the bounding box, resizes to 1024x1024, runs through
+        SAM2's image encoder, and global-average-pools the stride-64 FPN features.
+
+        Args:
+            frame: BGR uint8 frame (H, W, 3).
+            bbox: (x1, y1, x2, y2) with exclusive x2/y2.
+
+        Returns:
+            L2-normalized feature vector of shape (256,) on self.device.
+        """
+        x1, y1, x2, y2 = bbox
+        crop = frame[y1:y2, x1:x2]
+
+        crop_gpu = torch.from_numpy(crop).to(self.device)
+        image_tensor = crop_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
+        image_tensor = torch.nn.functional.interpolate(
+            image_tensor.unsqueeze(0),
+            size=(self.INPUT_SIZE, self.INPUT_SIZE),
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
+            backbone_out = self.predictor.forward_image(image_tensor)
+
+        # Stride-64 FPN level: (1, 256, 16, 16) -> global avg pool -> (256,)
+        feat = backbone_out["backbone_fpn"][-1].mean(dim=[2, 3]).squeeze(0)
+        return torch.nn.functional.normalize(feat, dim=0)
+
+    def _build_training_embeddings(
+        self,
+        training_frame_indices: list[int],
+        frames,
+        masks,
+        max_samples: int = 50,
+    ) -> torch.Tensor | None:
+        """Build reference embeddings from training frame crops.
+
+        Samples up to max_samples frames, crops each to its mask bbox,
+        encodes with SAM2's image encoder, returns stacked L2-normalized vectors.
+
+        Args:
+            training_frame_indices: Frame indices marked as training data.
+            frames: Indexable frame source.
+            masks: Indexable mask source (for bbox extraction).
+            max_samples: Max training frames to encode.
+
+        Returns:
+            (N, 256) tensor of L2-normalized embeddings, or None if no valid crops.
+        """
+        import random
+
+        if not training_frame_indices:
+            return None
+
+        sampled = random.sample(training_frame_indices, min(max_samples, len(training_frame_indices)))
+
+        embeddings = []
+        for idx in sampled:
+            mask = np.asarray(masks[idx])
+            bbox = self._bbox_from_mask(mask)
+            if bbox is None:
+                continue
+            feat = self._encode_crop(frames[idx], bbox)
+            embeddings.append(feat)
+
+        if not embeddings:
+            return None
+
+        return torch.stack(embeddings, dim=0)
+
+    def _compare_to_training(
+        self,
+        crop_embedding: torch.Tensor,
+        training_embeddings: torch.Tensor,
+    ) -> float:
+        """Mean cosine similarity between a crop embedding and training embeddings.
+
+        Both inputs must be L2-normalized so dot product = cosine similarity.
+
+        Args:
+            crop_embedding: (256,) L2-normalized vector.
+            training_embeddings: (N, 256) L2-normalized matrix.
+
+        Returns:
+            Mean cosine similarity as float.
+        """
+        return (training_embeddings @ crop_embedding).mean().item()
+
     def _propagate_single_frame(
         self,
         video_id: str,
