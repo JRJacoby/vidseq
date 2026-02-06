@@ -657,6 +657,109 @@ async def get_detector_scores_downsampled(
 
 
 # =============================================================================
+# DETECTOR BBOX OPERATIONS
+# =============================================================================
+
+
+async def save_detector_bboxes_batch(
+    session: AsyncSession,
+    video_id: int,
+    bboxes: list[tuple[int, float, float, float, float]] | list[list],
+) -> None:
+    """Batch insert/update detector bounding boxes.
+
+    Args:
+        session: Async database session.
+        video_id: Video ID.
+        bboxes: List of (frame_idx, x1, y1, x2, y2) tuples or lists.
+    """
+    if not bboxes:
+        return
+    rows = [
+        {
+            "video_id": video_id,
+            "frame_idx": int(frame_idx),
+            "detector_bbox_x1": float(x1),
+            "detector_bbox_y1": float(y1),
+            "detector_bbox_x2": float(x2),
+            "detector_bbox_y2": float(y2),
+        }
+        for frame_idx, x1, y1, x2, y2 in bboxes
+    ]
+    stmt = sqlite_insert(FrameData).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={
+            "detector_bbox_x1": stmt.excluded.detector_bbox_x1,
+            "detector_bbox_y1": stmt.excluded.detector_bbox_y1,
+            "detector_bbox_x2": stmt.excluded.detector_bbox_x2,
+            "detector_bbox_y2": stmt.excluded.detector_bbox_y2,
+        },
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def get_detector_bbox(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> dict | None:
+    """Get detector bbox for a single frame.
+
+    Returns:
+        Dict with x1, y1, x2, y2 keys, or None if no detection.
+    """
+    result = await session.execute(
+        select(
+            FrameData.detector_bbox_x1,
+            FrameData.detector_bbox_y1,
+            FrameData.detector_bbox_x2,
+            FrameData.detector_bbox_y2,
+        ).where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx == frame_idx,
+            FrameData.detector_bbox_x1.isnot(None),
+        )
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return {"x1": row[0], "y1": row[1], "x2": row[2], "y2": row[3]}
+
+
+async def get_detector_bboxes_batch(
+    session: AsyncSession,
+    video_id: int,
+    start_frame: int,
+    count: int = 100,
+) -> list[dict]:
+    """Get detector bboxes for a range of frames.
+
+    Returns:
+        List of dicts with frame_idx, x1, y1, x2, y2 keys.
+    """
+    result = await session.execute(
+        select(
+            FrameData.frame_idx,
+            FrameData.detector_bbox_x1,
+            FrameData.detector_bbox_y1,
+            FrameData.detector_bbox_x2,
+            FrameData.detector_bbox_y2,
+        ).where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx >= start_frame,
+            FrameData.frame_idx < start_frame + count,
+            FrameData.detector_bbox_x1.isnot(None),
+        ).order_by(FrameData.frame_idx)
+    )
+    return [
+        {"frame_idx": row[0], "x1": row[1], "y1": row[2], "x2": row[3], "y2": row[4]}
+        for row in result.all()
+    ]
+
+
+# =============================================================================
 # TRACKER MASK PRESENCE OPERATIONS
 # =============================================================================
 
