@@ -1,29 +1,27 @@
-"""Detector Service for SegFormer-based segmentation training and inference."""
+"""Detector Service for RT-DETR-based object detection training and inference."""
 
 import logging
+import random
+import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
-
-from PIL import Image
-
-if TYPE_CHECKING:
-    from vidseq.services.detector_model import SegFormerDetector
+from typing import Optional
 
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.utils.data import Dataset
+import yaml
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from vidseq.models.video import Video
 from vidseq.models.frame_data import FrameData
+from vidseq.models.video import Video
 from vidseq.schemas.detector import DetectorTrainingProgress
+from vidseq.services.array_storage import tracker_masks
 from vidseq.services.database_manager import DatabaseManager
-from vidseq.services.array_storage import tracker_masks, detector_masks
 
 logger = logging.getLogger("vidseq.detector")
 logger.setLevel(logging.DEBUG)
@@ -41,66 +39,32 @@ if not logger.handlers:
 MIN_FRAMES_FOR_VALIDATION = 10
 
 
-class DetectorDataset(Dataset):
-    """Dataset for detector training from video frames and tracker masks."""
+def _mask_to_yolo_bbox(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
+    """Convert a binary mask to YOLO bbox format.
 
-    def __init__(
-        self,
-        frames: list[tuple[Path, int, int]],  # (video_path, video_id, frame_idx)
-        project_path: Path,
-    ):
-        """Initialize dataset.
+    Args:
+        mask: Binary mask (H, W) with values 0 or 255.
+        img_h: Image height in pixels.
+        img_w: Image width in pixels.
 
-        Args:
-            frames: List of (video_path, video_id, frame_idx) tuples.
-            project_path: Path to project folder (for HDF5 mask files).
-        """
-        self.frames = frames
-        self.project_path = project_path
-        self._video_cache: dict[str, cv2.VideoCapture] = {}
-
-    def __len__(self) -> int:
-        return len(self.frames)
-
-    def _get_video_capture(self, video_path: str) -> cv2.VideoCapture:
-        """Get or open VideoCapture for video."""
-        if video_path not in self._video_cache:
-            self._video_cache[video_path] = cv2.VideoCapture(video_path)
-        return self._video_cache[video_path]
-
-    def __getitem__(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
-        video_path, video_id, frame_idx = self.frames[idx]
-
-        # Load frame from video (cached VideoCapture)
-        cap = self._get_video_capture(str(video_path))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-
-        if not ret:
-            raise RuntimeError(f"Failed to read frame {frame_idx} from {video_path}")
-
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Load mask from HDF5 (values are 0 or 255, cached by array_storage)
-        with tracker_masks(self.project_path, video_id) as masks:
-            mask = np.array(masks[frame_idx], dtype=np.uint8)
-
-        # Convert 0/255 to 0/1 class labels
-        mask_labels = (mask > 127).astype(np.uint8)
-
-        # Return raw numpy arrays - preprocessing happens on GPU in training loop
-        return frame_rgb, mask_labels
-
-    def close(self):
-        """Close video files. H5 files are managed by array_storage module."""
-        for cap in self._video_cache.values():
-            cap.release()
-        self._video_cache.clear()
+    Returns:
+        YOLO format string "class cx cy w h" (normalized), or None if mask is empty.
+    """
+    rows = np.any(mask > 127, axis=1)
+    cols = np.any(mask > 127, axis=0)
+    if not rows.any() or not cols.any():
+        return None
+    y1, y2 = np.where(rows)[0][[0, -1]]
+    x1, x2 = np.where(cols)[0][[0, -1]]
+    cx = (x1 + x2 + 1) / 2 / img_w
+    cy = (y1 + y2 + 1) / 2 / img_h
+    w = (x2 - x1 + 1) / img_w
+    h = (y2 - y1 + 1) / img_h
+    return f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
 
 
 class DetectorService:
-    """Singleton service for detector training and inference."""
+    """Singleton service for RT-DETR detector training and inference."""
 
     _instance: Optional["DetectorService"] = None
     _lock = threading.Lock()
@@ -151,11 +115,9 @@ class DetectorService:
     def train(
         self,
         project_path: Path,
-        max_epochs: int = 1000,
+        max_epochs: int = 100,
         batch_size: int = 4,
         lr: float = 1e-4,
-        lr_patience: int = 10,
-        lr_factor: float = 0.25,
         early_stop_patience: int = 20,
     ) -> bool:
         """Start training in background thread.
@@ -175,8 +137,6 @@ class DetectorService:
                     max_epochs,
                     batch_size,
                     lr,
-                    lr_patience,
-                    lr_factor,
                     early_stop_patience,
                 )
             except Exception as e:
@@ -196,15 +156,15 @@ class DetectorService:
         max_epochs: int,
         batch_size: int,
         lr: float,
-        lr_patience: int,
-        lr_factor: float,
         early_stop_patience: int,
     ) -> None:
-        """Synchronous training implementation."""
-        from torch.utils.data import DataLoader
-        from vidseq.services.detector_model import SegFormerDetector
+        """Synchronous training implementation using Ultralytics RT-DETR."""
+        from ultralytics import RTDETR
 
-        logger.info(f"Starting detector training: max_epochs={max_epochs}, batch_size={batch_size}")
+        logger.info(
+            f"Starting RT-DETR training: max_epochs={max_epochs}, "
+            f"batch_size={batch_size}, lr={lr}"
+        )
 
         # Gather training data
         all_frames = self._gather_training_frames(project_path)
@@ -212,7 +172,6 @@ class DetectorService:
             raise RuntimeError("No training frames found. Mark training ranges first.")
 
         # Train/val split
-        import random
         random.shuffle(all_frames)
         use_validation = len(all_frames) >= MIN_FRAMES_FOR_VALIDATION
 
@@ -230,7 +189,6 @@ class DetectorService:
             current_epoch=0,
             max_epochs=max_epochs,
             current_lr=lr,
-            lr_patience=lr_patience,
             early_stop_patience=early_stop_patience,
             status="training",
             started_at=time.time(),
@@ -238,260 +196,159 @@ class DetectorService:
             num_val_frames=len(val_frames),
         )
 
-        # Create datasets and loaders (return raw numpy, preprocessing on GPU)
-        train_dataset = DetectorDataset(train_frames, project_path)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            persistent_workers=True,
-        )
+        # Write YOLO dataset to temp directory
+        tmp_dir = tempfile.mkdtemp(prefix="vidseq_detector_")
+        tmp_path = Path(tmp_dir)
 
-        val_loader = None
-        val_dataset = None
-        if use_validation:
-            val_dataset = DetectorDataset(val_frames, project_path)
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=4,
-                pin_memory=True,
-                persistent_workers=True,
+        try:
+            # Create directory structure
+            for split in ("train", "val"):
+                (tmp_path / "images" / split).mkdir(parents=True, exist_ok=True)
+                (tmp_path / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+            # Write frames and labels
+            self._write_yolo_dataset(
+                train_frames, "train", tmp_path, project_path
             )
-
-        # ImageNet normalization constants for GPU preprocessing
-        img_mean = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
-        img_std = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
-
-        def preprocess_batch(
-            images: torch.Tensor, masks: torch.Tensor
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            """Preprocess batch on GPU: resize, normalize.
-
-            Args:
-                images: (B, H, W, 3) uint8 tensor on GPU
-                masks: (B, H, W) uint8 tensor on GPU
-
-            Returns:
-                pixel_values: (B, 3, 640, 640) normalized float tensor
-                labels: (B, 640, 640) long tensor
-            """
-            # BHWC -> BCHW, uint8 -> float, scale to [0,1]
-            pixel_values = images.permute(0, 3, 1, 2).float() / 255.0
-
-            # Resize to 640x640
-            pixel_values = F.interpolate(
-                pixel_values, size=(640, 640), mode="bilinear", align_corners=False
-            )
-            labels = F.interpolate(
-                masks.unsqueeze(1).float(), size=(640, 640), mode="nearest"
-            ).long().squeeze(1)
-
-            # Normalize with ImageNet stats
-            pixel_values = (pixel_values - img_mean) / img_std
-
-            return pixel_values, labels
-
-        # Initialize model
-        model = SegFormerDetector(device="cuda")
-        model.train()
-
-        # Compile model for faster training (first epoch will be slower due to compilation)
-        model = torch.compile(model, mode="reduce-overhead")
-
-        # Optimizer (only decoder parameters)
-        optimizer = torch.optim.AdamW(
-            model.decoder.parameters(), lr=lr, weight_decay=1e-4
-        )
-
-        def dice_loss(probs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-            """Dice loss for binary segmentation.
-
-            Args:
-                probs: Foreground probabilities, shape (B, H, W), values in [0, 1]
-                targets: Binary targets, shape (B, H, W), values 0 or 1
-            """
-            probs_flat = probs.contiguous().view(-1)
-            targets_flat = targets.contiguous().view(-1).float()
-            intersection = (probs_flat * targets_flat).sum()
-            union = probs_flat.sum() + targets_flat.sum()
-            dice = (2.0 * intersection + 1.0) / (union + 1.0)
-            return 1.0 - dice
-
-        # Training state
-        best_val_loss = float("inf")
-        best_epoch = 0
-        epochs_without_improvement = 0
-        current_lr = lr
-        lr_reduced_this_plateau = False
-        min_lr = 1e-7
-
-        # Use bfloat16 autocast for faster training on Ampere+ GPUs
-        use_amp = True
-        amp_dtype = torch.bfloat16
-
-        # Ensure model save directory exists
-        (project_path / "models").mkdir(parents=True, exist_ok=True)
-        model_path = project_path / "models" / "detector.pt"
-
-        # Training loop
-        for epoch in range(max_epochs):
-            if self._stop_requested:
-                logger.info("Training stopped by user")
-                self._training_progress.status = "stopped"
-                break
-
-            # Training phase
-            model.train()
-            train_losses = []
-            total_batches = len(train_loader)
-            self._training_progress.total_batches = total_batches
-            self._training_progress.current_batch = 0
-
-            from tqdm import tqdm
-            pbar = tqdm(
-                train_loader,
-                desc=f"Epoch {epoch + 1}/{max_epochs}",
-                leave=False,
-                ncols=100,
-            )
-            for batch_idx, (images, masks) in enumerate(pbar):
-                # GPU preprocessing: resize, normalize
-                images = images.cuda()
-                masks = masks.cuda()
-                pixel_values, labels = preprocess_batch(images, masks)
-
-                optimizer.zero_grad()
-
-                with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    logits = model(pixel_values)  # (B, 2, H/4, W/4)
-
-                    # Upsample logits to match label size
-                    logits_upsampled = F.interpolate(
-                        logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
-                    )
-
-                    # Cross-entropy loss
-                    ce_loss = F.cross_entropy(logits_upsampled, labels)
-
-                    # Dice loss on foreground probabilities
-                    probs = F.softmax(logits_upsampled, dim=1)[:, 1]  # (B, H, W)
-                    d_loss = dice_loss(probs, labels.float())
-
-                    loss = 0.5 * ce_loss + 0.5 * d_loss
-
-                # Backward pass
-                loss.backward()
-                optimizer.step()
-
-                batch_loss = loss.item()
-                train_losses.append(batch_loss)
-
-                # Update batch progress
-                self._training_progress.current_batch = batch_idx + 1
-                self._training_progress.batch_loss = batch_loss
-                pbar.set_postfix(loss=f"{batch_loss:.4f}")
-
-            pbar.close()
-            avg_train_loss = sum(train_losses) / len(train_losses)
-
-            # Validation phase
-            avg_val_loss = avg_train_loss  # Default if no validation
-            if val_loader is not None:
-                model.eval()
-                val_losses = []
-                val_pbar = tqdm(
-                    val_loader,
-                    desc=f"Epoch {epoch + 1} Val",
-                    leave=False,
-                    ncols=100,
+            if val_frames:
+                self._write_yolo_dataset(
+                    val_frames, "val", tmp_path, project_path
                 )
-                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
-                    for images, masks in val_pbar:
-                        # GPU preprocessing: resize, normalize
-                        images = images.cuda()
-                        masks = masks.cuda()
-                        pixel_values, labels = preprocess_batch(images, masks)
 
-                        logits = model(pixel_values)
-                        logits_upsampled = F.interpolate(
-                            logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
-                        )
+            # Write dataset.yaml
+            yaml_path = tmp_path / "dataset.yaml"
+            dataset_config = {
+                "path": str(tmp_path),
+                "train": "images/train",
+                "val": "images/val" if val_frames else "images/train",
+                "nc": 1,
+                "names": ["animal"],
+            }
+            with open(yaml_path, "w") as f:
+                yaml.dump(dataset_config, f, default_flow_style=False)
 
-                        ce_loss = F.cross_entropy(logits_upsampled, labels)
-                        probs = F.softmax(logits_upsampled, dim=1)[:, 1]
-                        d_loss = dice_loss(probs, labels.float())
+            logger.info(
+                f"YOLO dataset written: {len(train_frames)} train, "
+                f"{len(val_frames)} val frames in {tmp_dir}"
+            )
 
-                        loss = 0.5 * ce_loss + 0.5 * d_loss
-                        val_losses.append(loss.item())
-                val_pbar.close()
-                avg_val_loss = sum(val_losses) / len(val_losses)
+            # Create and train model
+            model = RTDETR("rtdetr-x.pt")
 
-            # Update progress
-            self._training_progress.current_epoch = epoch + 1
-            self._training_progress.current_train_loss = avg_train_loss
-            self._training_progress.current_val_loss = avg_val_loss
-            self._training_progress.train_loss_history.append(avg_train_loss)
-            self._training_progress.val_loss_history.append(avg_val_loss)
+            # Graceful stop callback
+            def check_stop(trainer):
+                if self._stop_requested:
+                    raise KeyboardInterrupt("Training stopped by user")
 
-            # Check for improvement
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_epoch = epoch + 1
-                epochs_without_improvement = 0
-                lr_reduced_this_plateau = False
-                model.save_decoder(str(model_path))
-                logger.info(
-                    f"Epoch {epoch + 1}/{max_epochs}: train={avg_train_loss:.6f}, "
-                    f"val={avg_val_loss:.6f} (new best)"
+            # Progress callback
+            def on_epoch_end(trainer):
+                epoch = trainer.epoch
+                total_loss = (
+                    float(trainer.tloss.sum())
+                    if trainer.tloss is not None
+                    else 0.0
                 )
+                metrics = trainer.metrics or {}
+                self._training_progress.current_epoch = epoch
+                self._training_progress.current_train_loss = total_loss
+                val_loss = metrics.get("fitness", 0.0)
+                self._training_progress.current_val_loss = val_loss
+                self._training_progress.train_loss_history.append(total_loss)
+                self._training_progress.val_loss_history.append(val_loss)
+
+            model.add_callback("on_fit_epoch_end", on_epoch_end)
+            model.add_callback("on_train_epoch_start", check_stop)
+
+            model_save_dir = project_path / "models"
+            model_save_dir.mkdir(exist_ok=True)
+
+            model.train(
+                data=str(yaml_path),
+                epochs=max_epochs,
+                imgsz=640,
+                batch=batch_size,
+                lr0=lr,
+                optimizer="AdamW",
+                patience=early_stop_patience,
+                single_cls=True,
+                device=0,
+                project=str(model_save_dir),
+                name="rtdetr_train",
+                exist_ok=True,
+                verbose=False,
+            )
+
+            # Copy best weights to standard location
+            best_pt = model_save_dir / "rtdetr_train" / "weights" / "best.pt"
+            if best_pt.exists():
+                shutil.copy2(best_pt, model_save_dir / "detector.pt")
+                logger.info(f"Best weights saved to {model_save_dir / 'detector.pt'}")
             else:
-                epochs_without_improvement += 1
-                logger.info(
-                    f"Epoch {epoch + 1}/{max_epochs}: train={avg_train_loss:.6f}, "
-                    f"val={avg_val_loss:.6f}, no improvement x{epochs_without_improvement}"
-                )
+                logger.warning("best.pt not found after training")
 
-            self._training_progress.best_val_loss = best_val_loss
-            self._training_progress.best_epoch = best_epoch
-            self._training_progress.epochs_without_improvement = epochs_without_improvement
+            # Mark completed and apply to training data
+            if self._stop_requested:
+                self._training_progress.status = "stopped"
+                logger.info("Training stopped by user")
+            else:
+                self._training_progress.status = "applying"
+                self._apply_to_training_data(project_path)
+                self._training_progress.status = "completed"
 
-            # Early stopping
-            if epochs_without_improvement >= early_stop_patience:
-                logger.info(f"Early stopping after {epoch + 1} epochs")
-                break
-
-            # LR reduction
-            if (
-                epochs_without_improvement >= lr_patience
-                and not lr_reduced_this_plateau
-                and current_lr > min_lr
-            ):
-                current_lr *= lr_factor
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = current_lr
-                lr_reduced_this_plateau = True
-                logger.info(f"Reduced learning rate to {current_lr:.2e}")
-
-            self._training_progress.current_lr = current_lr
-            self._training_progress.lr_reduced_this_plateau = lr_reduced_this_plateau
-
-        # Cleanup
-        train_dataset.close()
-        if val_dataset:
-            val_dataset.close()
-
-        # Mark completed and apply to training data
-        if self._training_progress.status == "training":
-            self._training_progress.status = "applying"
-            self._apply_to_training_data(project_path, model)
-            self._training_progress.status = "completed"
+        finally:
+            # Clean up temp directory
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
         self._training_progress.is_training = False
-        logger.info(f"Training completed. Best epoch: {best_epoch}, best val loss: {best_val_loss:.6f}")
+        logger.info("Training completed")
+
+    def _write_yolo_dataset(
+        self,
+        frames: list[tuple[Path, int, int]],
+        split: str,
+        tmp_path: Path,
+        project_path: Path,
+    ) -> None:
+        """Write frames and YOLO labels to the dataset directory.
+
+        Args:
+            frames: List of (video_path, video_id, frame_idx) tuples.
+            split: "train" or "val".
+            tmp_path: Root of the temporary dataset directory.
+            project_path: Project folder path for accessing mask files.
+        """
+        images_dir = tmp_path / "images" / split
+        labels_dir = tmp_path / "labels" / split
+
+        for i, (video_path, video_id, frame_idx) in enumerate(frames):
+            # Read frame from video
+            cap = cv2.VideoCapture(str(video_path))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            cap.release()
+
+            if not ret:
+                logger.warning(
+                    f"Failed to read frame {frame_idx} from {video_path}, skipping"
+                )
+                continue
+
+            img_h, img_w = frame.shape[:2]
+
+            # Read mask from tracker masks
+            with tracker_masks(project_path, video_id) as masks:
+                mask = np.asarray(masks[frame_idx])
+
+            # Convert mask to YOLO bbox
+            yolo_line = _mask_to_yolo_bbox(mask, img_h, img_w)
+            if yolo_line is None:
+                continue
+
+            # Write image and label with unique name
+            name = f"v{video_id}_f{frame_idx}_{i:06d}"
+            cv2.imwrite(str(images_dir / f"{name}.jpg"), frame)
+            with open(labels_dir / f"{name}.txt", "w") as f:
+                f.write(yolo_line + "\n")
 
     def _gather_training_frames(
         self,
@@ -532,10 +389,9 @@ class DetectorService:
     def _apply_to_training_data(
         self,
         project_path: Path,
-        model: "SegFormerDetector",
     ) -> None:
-        """Apply trained detector to all training frames and save masks."""
-        from vidseq.services.detector_model import get_processor
+        """Apply trained detector to all training frames and save bboxes/scores to DB."""
+        from vidseq.services.detector_model import detect, load_finetuned
 
         logger.info("Applying detector to training data...")
 
@@ -543,59 +399,104 @@ class DetectorService:
         self._training_progress.apply_total = len(all_frames)
         self._training_progress.apply_current = 0
 
-        model.eval()
-        processor = get_processor()
+        weights_path = project_path / "models" / "detector.pt"
+        detector = load_finetuned(weights_path)
 
-        # Group frames by video for efficient HDF5 access
+        # Group frames by video for efficient batch processing
         frames_by_video: dict[int, list[tuple[Path, int]]] = {}
         for video_path, video_id, frame_idx in all_frames:
             if video_id not in frames_by_video:
                 frames_by_video[video_id] = []
             frames_by_video[video_id].append((video_path, frame_idx))
 
-        # Use bfloat16 for faster inference
-        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            for video_id, frame_list in frames_by_video.items():
-                # Read original mask shape from tracker masks
-                with tracker_masks(project_path, video_id) as masks_array:
-                    mask_shape = masks_array.shape  # (N, H, W)
-                    _, orig_h, orig_w = mask_shape
+        # Collect bboxes and scores to batch-insert
+        bboxes_to_save: dict[int, list[tuple[int, float, float, float, float]]] = {}
+        scores_to_save: dict[int, list[tuple[int, float]]] = {}
 
-                with detector_masks(project_path, video_id, mode="a") as det_masks:
+        for video_id, frame_list in frames_by_video.items():
+            bboxes_to_save[video_id] = []
+            scores_to_save[video_id] = []
 
-                    for video_path, frame_idx in frame_list:
-                        # Load frame
-                        cap = cv2.VideoCapture(str(video_path))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                        ret, frame = cap.read()
-                        cap.release()
+            for video_path, frame_idx in frame_list:
+                # Load frame
+                cap = cv2.VideoCapture(str(video_path))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                cap.release()
 
-                        if not ret:
-                            self._training_progress.apply_current += 1
-                            continue
+                if not ret:
+                    self._training_progress.apply_current += 1
+                    continue
 
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                # Run detection
+                detections = detect(detector, frame)
 
-                        # Preprocess with processor
-                        inputs = processor(
-                            images=Image.fromarray(frame_rgb),
-                            return_tensors="pt",
-                        )
-                        pixel_values = inputs["pixel_values"].to("cuda")
+                if detections:
+                    best = detections[0]  # Highest confidence
+                    x1, y1, x2, y2 = best["bbox"]
+                    conf = best["conf"]
+                    bboxes_to_save[video_id].append(
+                        (frame_idx, x1, y1, x2, y2)
+                    )
+                    scores_to_save[video_id].append((frame_idx, conf))
+                else:
+                    scores_to_save[video_id].append((frame_idx, 0.0))
 
-                        # Inference
-                        logits = model(pixel_values)  # (1, 2, H/4, W/4)
+                self._training_progress.apply_current += 1
 
-                        # Upsample to original size and get binary mask
-                        logits_upsampled = F.interpolate(
-                            logits, size=(orig_h, orig_w), mode="bilinear", align_corners=False
-                        )
-                        mask_pred = logits_upsampled.argmax(dim=1)  # (1, H, W)
-                        mask_np = (mask_pred[0].cpu().numpy() * 255).astype(np.uint8)
+        # Batch insert to database
+        db_manager = DatabaseManager.get_instance()
+        engine = db_manager.get_project_engine(project_path)
 
-                        # Save to HDF5
-                        det_masks[frame_idx] = mask_np
+        with Session(engine) as session:
+            for video_id, bbox_list in bboxes_to_save.items():
+                if not bbox_list:
+                    continue
+                rows = [
+                    {
+                        "video_id": video_id,
+                        "frame_idx": int(fi),
+                        "detector_bbox_x1": float(x1),
+                        "detector_bbox_y1": float(y1),
+                        "detector_bbox_x2": float(x2),
+                        "detector_bbox_y2": float(y2),
+                    }
+                    for fi, x1, y1, x2, y2 in bbox_list
+                ]
+                stmt = sqlite_insert(FrameData).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["video_id", "frame_idx"],
+                    set_={
+                        "detector_bbox_x1": stmt.excluded.detector_bbox_x1,
+                        "detector_bbox_y1": stmt.excluded.detector_bbox_y1,
+                        "detector_bbox_x2": stmt.excluded.detector_bbox_x2,
+                        "detector_bbox_y2": stmt.excluded.detector_bbox_y2,
+                    },
+                )
+                session.execute(stmt)
 
-                        self._training_progress.apply_current += 1
+            for video_id, score_list in scores_to_save.items():
+                if not score_list:
+                    continue
+                rows = [
+                    {
+                        "video_id": video_id,
+                        "frame_idx": int(fi),
+                        "detector_score": float(score),
+                    }
+                    for fi, score in score_list
+                ]
+                stmt = sqlite_insert(FrameData).values(rows)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["video_id", "frame_idx"],
+                    set_={"detector_score": stmt.excluded.detector_score},
+                )
+                session.execute(stmt)
+
+            session.commit()
+
+        # Cleanup
+        del detector
+        torch.cuda.empty_cache()
 
         logger.info(f"Applied detector to {len(all_frames)} training frames")

@@ -28,11 +28,11 @@ class DetectorStatusResponse(BaseModel):
 class TrainRequest(BaseModel):
     """Request body for training endpoint."""
 
-    max_epochs: int = 1000
+    model_config = {"extra": "ignore"}
+
+    max_epochs: int = 100
     batch_size: int = 4
     lr: float = 1e-4
-    lr_patience: int = 10
-    lr_factor: float = 0.25
     early_stop_patience: int = 20
 
 
@@ -83,8 +83,6 @@ async def create_detection_training(
             max_epochs=request.max_epochs,
             batch_size=request.batch_size,
             lr=request.lr,
-            lr_patience=request.lr_patience,
-            lr_factor=request.lr_factor,
             early_stop_patience=request.early_stop_patience,
         )
     except RuntimeError as e:
