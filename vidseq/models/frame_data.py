@@ -29,6 +29,9 @@ class FrameData(Base):
     # Segmentation confidence score (-1.0 = not computed)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
 
+    # Detector median foreground logit (-1.0 = not computed)
+    detector_score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
+
     # Mask presence flags: 1 = has mask, 0 = no mask, NULL = unknown
     # Using Integer for SQLite compatibility (no native boolean type)
     has_tracker_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
