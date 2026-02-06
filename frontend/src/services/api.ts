@@ -242,6 +242,29 @@ export async function getScoresDownsampled(
     return response.json()
 }
 
+export async function getDetectorScoresDownsampled(
+    projectId: number,
+    videoId: number,
+    maxSamples: number = 800,
+    startFrame?: number,
+    endFrame?: number
+): Promise<ScoresDownsampledResponse> {
+    const params = new URLSearchParams({ max_samples: maxSamples.toString() })
+    if (startFrame !== undefined) {
+        params.set('start_frame', startFrame.toString())
+    }
+    if (endFrame !== undefined) {
+        params.set('end_frame', endFrame.toString())
+    }
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/detector-scores-downsampled?${params}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch detector scores'))
+    }
+    return response.json()
+}
+
 export async function getConditioningFrames(
     projectId: number,
     videoId: number

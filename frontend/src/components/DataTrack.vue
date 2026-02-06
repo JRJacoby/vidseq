@@ -14,6 +14,8 @@ const props = withDefaults(defineProps<{
   showConfidencePlot: boolean
   isMarkingMode: boolean
   confidenceScores: { frame_idx: number; score: number }[]
+  showDetectorConfidence?: boolean
+  detectorScores?: { frame_idx: number; score: number }[]
   // Alignment label frames (individual frame indices)
   alignmentLabelFrames?: number[]
   showAlignmentLabels?: boolean
@@ -27,6 +29,8 @@ const props = withDefaults(defineProps<{
   pcaScores: () => ({}),
   visiblePCs: () => [],
   showPCAPlot: false,
+  showDetectorConfidence: false,
+  detectorScores: () => [],
 })
 
 const emit = defineEmits<{
@@ -337,6 +341,15 @@ const drawPlot = () => {
     }
   }
 
+  // Draw detector confidence scores (tomato line)
+  if (props.showDetectorConfidence && props.detectorScores.length > 0) {
+    const validScores = props.detectorScores.filter(s => s.score >= 0)
+    if (validScores.length > 0) {
+      const range = drawScoreLine(ctx, validScores, 'rgba(255, 99, 71, 0.8)', width, height)
+      if (range && !activeRange) activeRange = range
+    }
+  }
+
   // Draw PCA scores (multiple colored lines)
   if (props.showPCAPlot && props.pcaScores && props.visiblePCs.length > 0) {
     for (const pcIdx of props.visiblePCs) {
@@ -367,6 +380,8 @@ const resizeCanvas = () => {
 watch(() => props.confidenceScores, drawPlot, { deep: true })
 watch([() => props.viewStart, () => props.viewEnd], drawPlot)
 watch(() => props.showConfidencePlot, drawPlot)
+watch(() => props.detectorScores, drawPlot, { deep: true })
+watch(() => props.showDetectorConfidence, drawPlot)
 watch(() => props.pcaScores, drawPlot, { deep: true })
 watch(() => props.visiblePCs, drawPlot, { deep: true })
 watch(() => props.showPCAPlot, drawPlot)

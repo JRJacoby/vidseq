@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, getScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -30,6 +30,8 @@ const showConfidencePlot = ref(true)
 const isMarkingMode = ref(false)
 const maxFrames = ref(1000)
 const confidenceScores = ref<MaskScore[]>([])
+const showDetectorConfidence = ref(true)
+const detectorScores = ref<MaskScore[]>([])
 
 // Mask view mode
 type MaskViewMode = 'tracker' | 'detector' | 'final'
@@ -148,9 +150,30 @@ const fetchScoresForView = async () => {
 // Debounced version for view changes (150ms delay)
 const fetchScores = useDebounceFn(fetchScoresForView, 150)
 
+const fetchDetectorScoresForView = async () => {
+  if (!projectId.value || !videoId.value || !video.value) return
+  try {
+    const startFrame = Math.floor(viewStart.value * video.value.fps)
+    const endFrame = Math.ceil(viewEnd.value * video.value.fps)
+    const response = await getDetectorScoresDownsampled(
+      projectId.value,
+      videoId.value,
+      800,
+      startFrame,
+      endFrame
+    )
+    detectorScores.value = response.scores
+  } catch (e) {
+    console.error('Failed to fetch detector scores:', e)
+  }
+}
+
+const fetchDetectorScores = useDebounceFn(fetchDetectorScoresForView, 150)
+
 // Re-fetch scores when view range changes
 watch([viewStart, viewEnd], () => {
   fetchScores()
+  fetchDetectorScores()
 }, { flush: 'post' })
 
 const isPropagating = ref(false)
@@ -171,6 +194,7 @@ const handlePropagateMask = async () => {
     await refreshFrameRanges()
     // Refresh scores immediately (no debounce)
     await fetchScoresForView()
+    await fetchDetectorScoresForView()
   } catch (e) {
     console.error('Failed to propagate mask:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate mask')
@@ -236,6 +260,7 @@ onMounted(async () => {
   await checkFinalMasks()
   // Initial fetch without debounce
   await fetchScoresForView()
+  await fetchDetectorScoresForView()
 })
 </script>
 
@@ -306,6 +331,8 @@ onMounted(async () => {
               :show-confidence-plot="showConfidencePlot"
               :is-marking-mode="isMarkingMode"
               :confidence-scores="confidenceScores"
+              :show-detector-confidence="showDetectorConfidence"
+              :detector-scores="detectorScores"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @view-change="handleViewChange"
@@ -451,8 +478,16 @@ onMounted(async () => {
             <span class="tool-icon">📈</span>
             <span class="tool-label">{{ showConfidencePlot ? 'Confidence Plot' : 'Confidence Plot Off' }}</span>
           </button>
+          <button
+            class="tool-button toggle-button detector-confidence-toggle"
+            :class="{ active: showDetectorConfidence }"
+            @click="showDetectorConfidence = !showDetectorConfidence"
+          >
+            <span class="tool-icon">🔍</span>
+            <span class="tool-label">{{ showDetectorConfidence ? 'Detector Confidence' : 'Detector Confidence Off' }}</span>
+          </button>
         </div>
-        
+
         <div v-if="isSegmenting" class="segmenting-indicator">
           Segmenting...
         </div>
@@ -828,6 +863,12 @@ onMounted(async () => {
   background-color: #fef9c3;
   border-color: #f59e0b;
   color: #b45309;
+}
+
+.tool-button.detector-confidence-toggle.active {
+  background-color: #fee2e2;
+  border-color: #ef4444;
+  color: #b91c1c;
 }
 
 .action-bar-title {
