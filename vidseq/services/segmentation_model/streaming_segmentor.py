@@ -1358,8 +1358,9 @@ class SAM2StreamingSegmentor:
         final_masks,  # MutableSequence - write final output
         on_progress: Callable[[int], None] | None = None,
         check_interval: int = 10,
-        iou_threshold: float = 0.5,
+        iou_threshold: float = 0.7,
         scores: dict | None = None,
+        training_frame_indices: list[int] | None = None,
     ) -> None:
         """Propagate tracking with on-the-fly detector-guided correction.
 
@@ -1378,7 +1379,8 @@ class SAM2StreamingSegmentor:
             final_masks: MutableSequence to write final (corrected) output masks.
             on_progress: Optional callback(frame_idx) for progress reporting.
             check_interval: Run detector every N frames (default 10).
-            iou_threshold: Re-prompt when bbox IoU drops below this (default 0.5).
+            iou_threshold: Re-prompt when bbox IoU drops below this (default 0.7).
+            training_frame_indices: Frame indices with training data for feature comparison.
 
         Returns:
             None. Results are written to the provided MutableSequences.
@@ -1425,6 +1427,16 @@ class SAM2StreamingSegmentor:
 
         last_successful_check = start_frame
         searching = False
+
+        # Build training crop embeddings for feature-space comparison
+        training_embeddings = None
+        if training_frame_indices:
+            print(f"  Building training embeddings from {len(training_frame_indices)} frames...")
+            training_embeddings = self._build_training_embeddings(
+                training_frame_indices, frames, tracker_masks
+            )
+            if training_embeddings is not None:
+                print(f"  Cached {training_embeddings.shape[0]} training embeddings")
 
         if on_progress:
             on_progress(start_frame)
@@ -1475,28 +1487,52 @@ class SAM2StreamingSegmentor:
                     detector_mask = get_detector_mask(frame_idx, frame)
                     detector_masks[frame_idx] = detector_mask
 
-                    iou = self._compute_iou(tracker_mask, detector_mask)
+                    iou = self._compute_bbox_iou(tracker_mask, detector_mask)
 
                     if iou >= iou_threshold:
                         # Tracker is good
                         last_successful_check = frame_idx
                     elif (detector_mask > 127).any():
-                        # Drift detected, detector has mask - correct
-                        mask, _, score = self._propagate_single_frame(
-                            video_id, frame_idx, frame, mask_prompt=detector_mask
-                        )
-                        final_masks[frame_idx] = mask
-                        if scores is not None:
-                            scores[frame_idx] = score
+                        # Drift detected — use feature comparison to decide
+                        use_detector = True  # default: trust detector
 
-                        # Backtrack and re-propagate
-                        self._backtrack_reprop(
-                            video_id, frames, final_masks,
-                            last_successful_check + 1, frame_idx - 1,
-                            scores=scores,
-                        )
+                        if training_embeddings is not None:
+                            tracker_bbox = self._bbox_from_mask(tracker_mask)
+                            detector_bbox = self._bbox_from_mask(detector_mask)
 
-                        last_successful_check = frame_idx
+                            if tracker_bbox is not None and detector_bbox is not None:
+                                tracker_feat = self._encode_crop(frame, tracker_bbox)
+                                detector_feat = self._encode_crop(frame, detector_bbox)
+
+                                tracker_sim = self._compare_to_training(
+                                    tracker_feat, training_embeddings
+                                )
+                                detector_sim = self._compare_to_training(
+                                    detector_feat, training_embeddings
+                                )
+
+                                use_detector = detector_sim > tracker_sim
+
+                        if use_detector:
+                            # Detector wins — correct with detector mask
+                            mask, _, score = self._propagate_single_frame(
+                                video_id, frame_idx, frame, mask_prompt=detector_mask
+                            )
+                            final_masks[frame_idx] = mask
+                            if scores is not None:
+                                scores[frame_idx] = score
+
+                            # Backtrack and re-propagate
+                            self._backtrack_reprop(
+                                video_id, frames, final_masks,
+                                last_successful_check + 1, frame_idx - 1,
+                                scores=scores,
+                            )
+
+                            last_successful_check = frame_idx
+                        else:
+                            # Tracker wins — no correction needed
+                            last_successful_check = frame_idx
                     else:
                         # Detector empty - object disappeared
                         h, w = frame.shape[:2]
