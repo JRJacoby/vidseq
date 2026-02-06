@@ -1121,23 +1121,33 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         frame: np.ndarray,
         mask_prompt: np.ndarray | None = None,
+        box_prompt: tuple[float, float, float, float] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        """Propagate to a single frame, optionally with a mask prompt.
+        """Propagate to a single frame, optionally with a mask or box prompt.
 
         Args:
             video_id: The video identifier.
             frame_idx: Frame index to propagate to.
             frame: BGR uint8 frame data (H, W, 3).
             mask_prompt: Optional mask to use as prompt (for detector re-prompting).
+                Mutually exclusive with box_prompt.
+            box_prompt: Optional bounding box (x1, y1, x2, y2) in original image
+                pixel coordinates. Encoded as two special points with SAM2 labels
+                [2, 3] (top-left, bottom-right). Mutually exclusive with mask_prompt.
 
         Returns:
             (mask, logits, score) where mask is (H, W) uint8, logits is (256, 256) float32,
             and score is the predicted IoU confidence in [0, 1].
         """
+        if mask_prompt is not None and box_prompt is not None:
+            raise ValueError("mask_prompt and box_prompt are mutually exclusive")
+
         session = self.sessions[video_id]
         frame_dims = session["frame_dims"]
         output_dict = session["output_dict"]
         orig_h, orig_w = frame_dims
+
+        is_prompted = mask_prompt is not None or box_prompt is not None
 
         # Get image features and prepare backbone features
         try:
@@ -1152,8 +1162,10 @@ class SAM2StreamingSegmentor:
         except Exception as e:
             raise RuntimeError(f"Failed to prepare backbone features for frame {frame_idx}: {e}") from e
 
-        # Prepare mask_inputs if mask_prompt provided
+        # Prepare prompt inputs (mask_prompt and box_prompt are mutually exclusive)
         mask_inputs = None
+        point_inputs = None
+
         if mask_prompt is not None:
             # Resize mask to model input size and convert to tensor
             mask_resized = cv2.resize(
@@ -1165,16 +1177,39 @@ class SAM2StreamingSegmentor:
             mask_tensor = torch.from_numpy((mask_resized > 127).astype(np.float32))
             mask_inputs = mask_tensor.unsqueeze(0).unsqueeze(0).to(self.device)
 
+        elif box_prompt is not None:
+            # Scale box coordinates from original image space to model input space (1024x1024)
+            x1, y1, x2, y2 = box_prompt
+            scaled_x1 = x1 * self.INPUT_SIZE / orig_w
+            scaled_y1 = y1 * self.INPUT_SIZE / orig_h
+            scaled_x2 = x2 * self.INPUT_SIZE / orig_w
+            scaled_y2 = y2 * self.INPUT_SIZE / orig_h
+
+            # SAM2 box convention: two points with labels [2, 3] (top-left, bottom-right)
+            point_coords = torch.tensor(
+                [[[scaled_x1, scaled_y1], [scaled_x2, scaled_y2]]],
+                dtype=torch.float32,
+                device=self.device,
+            )  # (1, 2, 2)
+            point_labels = torch.tensor(
+                [[2, 3]], dtype=torch.int32, device=self.device
+            )  # (1, 2)
+
+            point_inputs = {
+                "point_coords": point_coords,
+                "point_labels": point_labels,
+            }
+
         # Call track_step
         try:
             with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
-                    is_init_cond_frame=(mask_prompt is not None),  # Treat mask prompts as conditioning
+                    is_init_cond_frame=is_prompted,
                     current_vision_feats=current_vision_feats,
                     current_vision_pos_embeds=current_vision_pos_embeds,
                     feat_sizes=feat_sizes,
-                    point_inputs=None,
+                    point_inputs=point_inputs,
                     mask_inputs=mask_inputs,
                     output_dict=output_dict,
                     num_frames=session["num_frames"],
@@ -1198,7 +1233,7 @@ class SAM2StreamingSegmentor:
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
         # Store in output_dict (memory for future frames)
-        if mask_prompt is not None:
+        if is_prompted:
             output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
         else:
             output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
