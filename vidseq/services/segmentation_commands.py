@@ -467,12 +467,9 @@ def handle_propagate_with_detector(
     segmentor: StreamingSegmentor,
     response_callback: Callable[[dict], None],
 ) -> dict:
-    """Propagate tracking with on-the-fly detection.
-
-    Loads detector model and runs detection every check_interval frames.
-    """
+    """Propagate tracking with on-the-fly RT-DETR bbox detection."""
     import torch
-    from vidseq.services.detector_model import SegFormerDetector
+    from vidseq.services.detector_model import load_finetuned, detect, pick_best_detection
 
     video_id = params["video_id"]
     num_frames = params["num_frames"]
@@ -489,52 +486,26 @@ def handle_propagate_with_detector(
 
     resources = _video_resources[video_id]
 
-    # Check detector model exists
     model_path = project_path / "models" / "detector.pt"
     if not model_path.exists():
         raise RuntimeError("No trained detector model found. Train first.")
 
-    # Load detector model with cleanup on exit
     detector = None
     try:
-        print(f"[Segmentation Worker] Loading detector model from {model_path}")
-        detector = SegFormerDetector(device="cuda")
-        detector.load_decoder(str(model_path))
-        detector.eval()
-        detector = torch.compile(detector, mode="max-autotune", fullgraph=True)
-
-        # GPU preprocessing constants
-        IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
-        IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
+        print(f"[Segmentation Worker] Loading RT-DETR detector from {model_path}")
+        detector = load_finetuned(model_path, device="cuda")
 
         detector_scores: dict[int, float] = {}
+        detector_bboxes: dict[int, tuple[float, float, float, float]] = {}
 
-        def get_detector_mask(frame_idx: int, frame: np.ndarray) -> np.ndarray:
-            """Run detector on a single frame."""
-            # GPU preprocessing
-            frame_gpu = torch.from_numpy(frame).to("cuda")
-            pixel_values = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div(255.0)
-            pixel_values = pixel_values.unsqueeze(0)
-            pixel_values = (pixel_values - IMG_MEAN) / IMG_STD
-
-            # Inference
-            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
-                logits = detector(pixel_values)
-
-            # Median foreground logit at native resolution (H/4, W/4)
-            pred = logits.argmax(dim=1)[0]  # (H/4, W/4)
-            fg_pixels = logits[0, 1][pred > 0]
-            if fg_pixels.numel() > 0:
-                detector_scores[frame_idx] = fg_pixels.median().item()
-
-            # Post-process: resize to full resolution, to numpy
-            pred = torch.nn.functional.interpolate(
-                pred.unsqueeze(0).unsqueeze(0).float(),
-                size=(frame.shape[0], frame.shape[1]),
-                mode="nearest"
-            )[0, 0]
-            mask = (pred * 255).to(torch.uint8).cpu().numpy()
-            return mask
+        def get_detector_bbox(
+            frame_idx: int, frame: np.ndarray,
+            tracker_bbox_hint: tuple | None = None,
+        ) -> tuple[tuple[float, float, float, float] | None, float]:
+            """Run RT-DETR on a single frame, return (bbox, conf) or (None, 0.0)."""
+            detections = detect(detector, frame)
+            bbox, conf = pick_best_detection(detections, tracker_bbox_hint)
+            return bbox, conf
 
         def on_progress(frame_idx: int) -> None:
             if frame_idx % 50 == 0 or frame_idx == num_frames - 1:
@@ -544,9 +515,7 @@ def handle_propagate_with_detector(
                     "total": num_frames,
                 })
 
-        # Open arrays with locking using array_storage context managers
         with tracker_masks(project_path, video_id, "a") as trk_mask_data, \
-             detector_masks(project_path, video_id, "a") as det_mask_data, \
              final_masks(project_path, video_id, "a") as fin_mask_data:
 
             scores: dict[int, float] = {}
@@ -554,14 +523,15 @@ def handle_propagate_with_detector(
                 video_id=str(video_id),
                 num_frames=num_frames,
                 frames=resources.frame_source,
-                get_detector_mask=get_detector_mask,
+                get_detector_bbox=get_detector_bbox,
                 tracker_masks=trk_mask_data,
-                detector_masks=det_mask_data,
                 final_masks=fin_mask_data,
                 on_progress=on_progress,
                 check_interval=check_interval,
                 iou_threshold=iou_threshold,
                 scores=scores,
+                detector_bboxes=detector_bboxes,
+                detector_scores=detector_scores,
                 training_frame_indices=training_frame_indices,
             )
 
@@ -570,10 +540,12 @@ def handle_propagate_with_detector(
             "status": "ok",
             "scores": [[idx, s] for idx, s in scores.items()],
             "detector_scores": [[idx, s] for idx, s in detector_scores.items()],
+            "detector_bboxes": [
+                [idx, *bbox] for idx, bbox in detector_bboxes.items()
+            ],
         }
 
     finally:
-        # Clean up detector model to free GPU memory
         if detector is not None:
             del detector
             torch.cuda.empty_cache()
