@@ -42,6 +42,8 @@ const dragStartFrame = ref<number | null>(null)
 const dragEndFrame = ref<number | null>(null)
 const selectedRange = ref<[number, number] | null>(null)
 const isHovering = ref(false)
+const plotMinScore = ref<number | null>(null)
+const plotMaxScore = ref<number | null>(null)
 
 const visibleDuration = computed(() => props.viewEnd - props.viewStart)
 
@@ -244,15 +246,15 @@ const getPCColor = (pcIdx: number): string => {
   return PC_COLORS[pcIdx % PC_COLORS.length] ?? '#888888'
 }
 
-// Draw a single score line on the canvas
+// Draw a single score line on the canvas. Returns {min, max} if drawn.
 const drawScoreLine = (
   ctx: CanvasRenderingContext2D,
   scores: { frame_idx: number; score: number }[],
   color: string,
   width: number,
   height: number,
-) => {
-  if (scores.length === 0) return
+): { min: number; max: number } | null => {
+  if (scores.length === 0) return null
 
   // Calculate min/max for auto-scaling
   let minScore = Infinity
@@ -264,7 +266,7 @@ const drawScoreLine = (
   }
 
   // Handle edge cases
-  if (!isFinite(minScore) || !isFinite(maxScore)) return
+  if (!isFinite(minScore) || !isFinite(maxScore)) return null
   if (Math.abs(maxScore - minScore) < 0.0001) {
     // Flat line, expand range
     minScore = minScore - 1
@@ -273,7 +275,7 @@ const drawScoreLine = (
 
   const scoreRange = maxScore - minScore
   const duration = visibleDuration.value
-  if (duration <= 0) return
+  if (duration <= 0) return null
 
   ctx.beginPath()
   ctx.strokeStyle = color
@@ -309,6 +311,7 @@ const drawScoreLine = (
   }
 
   ctx.stroke()
+  return { min: minScore, max: maxScore }
 }
 
 const drawPlot = () => {
@@ -323,12 +326,14 @@ const drawPlot = () => {
 
   ctx.clearRect(0, 0, width, height)
 
+  let activeRange: { min: number; max: number } | null = null
+
   // Draw confidence scores (yellow line)
   if (props.showConfidencePlot && props.confidenceScores.length > 0) {
     // Filter out invalid scores (score < 0)
     const validScores = props.confidenceScores.filter(s => s.score >= 0)
     if (validScores.length > 0) {
-      drawScoreLine(ctx, validScores, 'rgba(255, 235, 59, 0.8)', width, height)
+      activeRange = drawScoreLine(ctx, validScores, 'rgba(255, 235, 59, 0.8)', width, height)
     }
   }
 
@@ -338,10 +343,15 @@ const drawPlot = () => {
       const scores = props.pcaScores[pcIdx.toString()]
       if (scores && scores.length > 0) {
         const color = getPCColor(pcIdx)
-        drawScoreLine(ctx, scores, color, width, height)
+        const range = drawScoreLine(ctx, scores, color, width, height)
+        if (range && !activeRange) activeRange = range
       }
     }
   }
+
+  // Update y-axis labels
+  plotMinScore.value = activeRange?.min ?? null
+  plotMaxScore.value = activeRange?.max ?? null
 }
 
 const resizeCanvas = () => {
@@ -381,7 +391,11 @@ onUnmounted(() => {
 <template>
   <div class="timeline-row">
     <div class="timeline-col-left">
-      <div class="data-track-label">Data</div>
+      <div class="data-track-label-col">
+        <span v-if="plotMaxScore !== null" class="y-axis-label top">{{ plotMaxScore.toFixed(2) }}</span>
+        <span class="data-track-label">Data</span>
+        <span v-if="plotMinScore !== null" class="y-axis-label bottom">{{ plotMinScore.toFixed(2) }}</span>
+      </div>
     </div>
     <div class="timeline-col-center">
       <div 
@@ -450,10 +464,27 @@ onUnmounted(() => {
   justify-content: center;
 }
 
+.data-track-label-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  padding: 4px 0;
+  box-sizing: border-box;
+}
+
 .data-track-label {
   font-size: 10px;
   color: #888;
   text-transform: uppercase;
+}
+
+.y-axis-label {
+  font-size: 9px;
+  color: #aaa;
+  font-family: monospace;
+  line-height: 1;
 }
 
 .data-track {
