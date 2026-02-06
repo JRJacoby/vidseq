@@ -507,7 +507,9 @@ def handle_propagate_with_detector(
         IMG_MEAN = torch.tensor([0.485, 0.456, 0.406], device="cuda").view(1, 3, 1, 1)
         IMG_STD = torch.tensor([0.229, 0.224, 0.225], device="cuda").view(1, 3, 1, 1)
 
-        def get_detector_mask(_frame_idx: int, frame: np.ndarray) -> np.ndarray:
+        detector_scores: dict[int, float] = {}
+
+        def get_detector_mask(frame_idx: int, frame: np.ndarray) -> np.ndarray:
             """Run detector on a single frame."""
             # GPU preprocessing
             frame_gpu = torch.from_numpy(frame).to("cuda")
@@ -519,8 +521,13 @@ def handle_propagate_with_detector(
             with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 logits = detector(pixel_values)
 
-            # Post-process: argmax, resize, to numpy
+            # Median foreground logit at native resolution (H/4, W/4)
             pred = logits.argmax(dim=1)[0]  # (H/4, W/4)
+            fg_pixels = logits[0, 1][pred > 0]
+            if fg_pixels.numel() > 0:
+                detector_scores[frame_idx] = fg_pixels.median().item()
+
+            # Post-process: resize to full resolution, to numpy
             pred = torch.nn.functional.interpolate(
                 pred.unsqueeze(0).unsqueeze(0).float(),
                 size=(frame.shape[0], frame.shape[1]),
@@ -562,6 +569,7 @@ def handle_propagate_with_detector(
             "type": "propagate_with_detector_result",
             "status": "ok",
             "scores": [[idx, s] for idx, s in scores.items()],
+            "detector_scores": [[idx, s] for idx, s in detector_scores.items()],
         }
 
     finally:
