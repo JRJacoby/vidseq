@@ -507,9 +507,9 @@ class SegmentationService:
         x: float,
         y: float,
         label: int,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, float]:
         """
-        Add a point prompt and return the mask.
+        Add a point prompt and return the mask and confidence score.
 
         Requires an active session (call init_session first).
 
@@ -522,7 +522,8 @@ class SegmentationService:
             label: Label (1=positive, 0=negative)
 
         Returns:
-            Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+            Tuple of (mask, score) where mask is numpy array (height, width)
+            and score is the predicted IoU confidence.
 
         Raises:
             RuntimeError: If no session exists for this video
@@ -549,8 +550,9 @@ class SegmentationService:
         mask_shape = tuple(result["mask_shape"])
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+        score = result.get("score", -1.0)
 
-        return mask
+        return mask, score
 
     def refine_mask(
         self,
@@ -559,7 +561,7 @@ class SegmentationService:
         frame_idx: int,
         points: list[dict],
         labels: list[int],
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, float]:
         """
         Refine an existing mask with point prompt(s).
 
@@ -571,7 +573,8 @@ class SegmentationService:
             labels: List of labels (1=positive, 0=negative), one per point
 
         Returns:
-            Refined binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+            Tuple of (mask, score) where mask is numpy array (height, width)
+            and score is the predicted IoU confidence.
         """
         session = self.get_session(project_id, video_id)
         if session is None:
@@ -592,17 +595,18 @@ class SegmentationService:
         mask_shape = tuple(result["mask_shape"])
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+        score = result.get("score", -1.0)
 
-        return mask
+        return mask, score
 
     def propagate(
         self,
         project_id: int,
         video_id: int,
         frame_idx: int,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, float]:
         """
-        Propagate tracking to a single frame and return the mask.
+        Propagate tracking to a single frame and return the mask and score.
 
         Args:
             project_id: ID of the project
@@ -610,7 +614,8 @@ class SegmentationService:
             frame_idx: Frame index to propagate to
 
         Returns:
-            Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
+            Tuple of (mask, score) where mask is numpy array (height, width)
+            and score is the predicted IoU confidence.
         """
         session = self.get_session(project_id, video_id)
         if session is None:
@@ -629,8 +634,9 @@ class SegmentationService:
         mask_shape = tuple(result["mask_shape"])
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+        score = result.get("score", -1.0)
 
-        return mask
+        return mask, score
 
     def reset_frame(
         self,
@@ -713,7 +719,7 @@ class SegmentationService:
         num_frames: int,
         height: int,
         width: int,
-    ) -> list[int]:
+    ) -> tuple[list[int], list[list]]:
         """
         Generate training masks by propagating tracking forward and save to H5.
 
@@ -728,7 +734,8 @@ class SegmentationService:
             width: Video width in pixels
 
         Returns:
-            List of frame indices that were propagated
+            Tuple of (frame_indices, scores) where frame_indices is a list of
+            propagated frame indices and scores is a list of [frame_idx, score].
 
         Raises:
             RuntimeError: If no object has been tracked
@@ -754,7 +761,9 @@ class SegmentationService:
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to generate training masks"))
 
-        return result.get("frame_indices", [])
+        frame_indices = result.get("frame_indices", [])
+        scores = result.get("scores", [])
+        return frame_indices, scores
 
     async def segment_all_videos(
         self,
@@ -762,7 +771,7 @@ class SegmentationService:
         project_path: Path,
         videos: list,
         cond_frames_by_video: dict[int, list[int]] | None = None,
-    ) -> list[int]:
+    ) -> tuple[list[int], dict[int, list[list]]]:
         """
         Start batch segmentation for all videos in a project using detector-tracker approach.
 
@@ -778,12 +787,15 @@ class SegmentationService:
             cond_frames_by_video: Dict mapping video_id to list of conditioning frame indices
 
         Returns:
-            List of job IDs created (empty for now - synchronous execution)
+            Tuple of (job_ids, scores_by_video) where scores_by_video maps
+            video_id to list of [frame_idx, score].
         """
         if cond_frames_by_video is None:
             cond_frames_by_video = {}
         if not videos:
-            return []
+            return [], {}
+
+        scores_by_video: dict[int, list[list]] = {}
 
         # Ensure model is loaded
         if self._status == SegmentationStatus.NOT_LOADED:
@@ -831,6 +843,7 @@ class SegmentationService:
                 }, timeout=3600.0)  # 1 hour timeout for long videos
 
                 if result.get("status") == "ok":
+                    scores_by_video[video.id] = result.get("scores", [])
                     frames_corrected = result.get("frames_corrected", 0)
                     print(f"[Segmentation Service] Video {video.id} complete: "
                           f"{video.num_frames} frames, {frames_corrected} corrected by detector")
@@ -854,7 +867,7 @@ class SegmentationService:
                 except Exception:
                     pass
 
-        return []  # No job IDs - synchronous execution
+        return [], scores_by_video  # No job IDs - synchronous execution
 
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -918,23 +931,8 @@ def add_point_prompt(
     x: float,
     y: float,
     label: int,
-) -> np.ndarray:
-    """
-    Add a point prompt and return the mask.
-
-    Requires an active session (call init_session first).
-
-    Args:
-        project_id: ID of the project
-        video_id: ID of the video
-        frame_idx: Frame index to segment
-        x: X coordinate in normalized [0, 1] coords
-        y: Y coordinate in normalized [0, 1] coords
-        label: Label (1=positive, 0=negative)
-
-    Returns:
-        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-    """
+) -> tuple[np.ndarray, float]:
+    """Add a point prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_point_prompt(
         project_id, video_id, frame_idx, x, y, label
     )
@@ -946,20 +944,8 @@ def refine_mask(
     frame_idx: int,
     points: list[dict],
     labels: list[int],
-) -> np.ndarray:
-    """
-    Refine an existing mask with point prompt(s).
-
-    Args:
-        project_id: ID of the project
-        video_id: ID of the video
-        frame_idx: Frame index to refine (must have existing mask)
-        points: List of points, each {x: float, y: float} in normalized [0, 1] coords
-        labels: List of labels (1=positive, 0=negative), one per point
-
-    Returns:
-        Refined binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-    """
+) -> tuple[np.ndarray, float]:
+    """Refine an existing mask with point prompt(s) and return mask and score."""
     return SegmentationService.get_instance().refine_mask(
         project_id, video_id, frame_idx, points, labels
     )
@@ -969,18 +955,8 @@ def propagate(
     project_id: int,
     video_id: int,
     frame_idx: int,
-) -> np.ndarray:
-    """
-    Propagate tracking to a single frame and return the mask.
-
-    Args:
-        project_id: ID of the project
-        video_id: ID of the video
-        frame_idx: Frame index to propagate to
-
-    Returns:
-        Binary mask as numpy array (height, width), dtype=uint8, values 0 or 255
-    """
+) -> tuple[np.ndarray, float]:
+    """Propagate tracking to a single frame and return mask and score."""
     return SegmentationService.get_instance().propagate(project_id, video_id, frame_idx)
 
 
@@ -1047,8 +1023,8 @@ def generate_training_masks(
     num_frames: int,
     height: int,
     width: int,
-) -> list[int]:
-    """Generate training masks by propagating tracking forward and save to H5."""
+) -> tuple[list[int], list[list]]:
+    """Generate training masks and return frame indices and scores."""
     return SegmentationService.get_instance().generate_training_masks(
         project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
     )
@@ -1064,7 +1040,7 @@ async def segment_all_videos(
     project_path: Path,
     videos: list,
     cond_frames_by_video: dict[int, list[int]] | None = None,
-) -> list[int]:
+) -> tuple[list[int], dict[int, list[list]]]:
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
         project_id, project_path, videos, cond_frames_by_video

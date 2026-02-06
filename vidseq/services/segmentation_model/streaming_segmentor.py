@@ -253,6 +253,17 @@ class SAM2StreamingSegmentor:
             "object_score_logits": current_out.get("object_score_logits"),
         }
 
+    def _extract_score(self, current_out: dict) -> float:
+        """Extract predicted IoU score from track_step output.
+
+        Args:
+            current_out: Output dict from track_step containing 'ious'.
+
+        Returns:
+            Float confidence score in [0, 1].
+        """
+        return current_out["ious"][0, 0].item()
+
     def _encode_stored_mask(
         self, video_id: str, frame_idx: int, frame: np.ndarray, mask: np.ndarray,
         store_as_cond: bool = True,
@@ -535,7 +546,7 @@ class SAM2StreamingSegmentor:
         label: int | list[int],
         frames,  # Indexable frame source
         masks,  # Indexable mask source
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
         This method is for adding prompts to frames that don't have existing masks.
@@ -550,9 +561,10 @@ class SAM2StreamingSegmentor:
             masks: Indexable mask source returning uint8 (H, W).
 
         Returns:
-            Tuple of (mask, logits) where:
+            Tuple of (mask, logits, score) where:
             - mask: Binary mask array (height, width) with dtype uint8, values 0 or 255.
             - logits: Low-res logits array (256, 256) for potential refinement.
+            - score: Predicted IoU confidence in [0, 1].
 
         Raises:
             KeyError: If video_id is not open.
@@ -651,8 +663,9 @@ class SAM2StreamingSegmentor:
         # 14. Store compact output in output_dict["cond_frame_outputs"]
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 15. Return mask and logits (caller saves to storage)
-        return mask_resized, pred_masks_low_res
+        # 15. Return mask, logits, and score (caller saves to storage)
+        score = self._extract_score(current_out)
+        return mask_resized, pred_masks_low_res, score
 
     def refine_mask(
         self,
@@ -663,7 +676,7 @@ class SAM2StreamingSegmentor:
         frames,  # Indexable frame source
         masks,  # Indexable mask source
         prev_logits: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """Refine an existing mask with point prompt(s).
 
         Uses the previous mask logits as context for refinement.
@@ -678,9 +691,10 @@ class SAM2StreamingSegmentor:
             prev_logits: Previous low-res logits (256, 256) from prior call.
 
         Returns:
-            Tuple of (mask, logits) where:
+            Tuple of (mask, logits, score) where:
             - mask: Refined binary mask array (height, width) with dtype uint8.
             - logits: Updated low-res logits array (256, 256).
+            - score: Predicted IoU confidence in [0, 1].
 
         Raises:
             KeyError: If video_id is not open.
@@ -783,8 +797,9 @@ class SAM2StreamingSegmentor:
         # 14. Store new result in cond_frame_outputs
         output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-        # 15. Return mask and logits (caller saves to storage)
-        return mask_resized, pred_masks_low_res
+        # 15. Return mask, logits, and score (caller saves to storage)
+        score = self._extract_score(current_out)
+        return mask_resized, pred_masks_low_res, score
 
     def propagate(
         self,
@@ -792,7 +807,7 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         frames,  # Indexable frame source
         masks,  # Indexable mask source
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """Propagate tracking to a single frame.
 
         This is a convenience wrapper that propagates to exactly one frame.
@@ -805,9 +820,10 @@ class SAM2StreamingSegmentor:
             masks: Indexable mask source returning uint8 (H, W).
 
         Returns:
-            Tuple of (mask, logits) where:
+            Tuple of (mask, logits, score) where:
             - mask: Binary mask array (height, width) with dtype uint8, values 0 or 255.
             - logits: Low-res logits array (256, 256).
+            - score: Predicted IoU confidence in [0, 1].
 
         Raises:
             KeyError: If video_id is not open.
@@ -826,7 +842,7 @@ class SAM2StreamingSegmentor:
         num_frames: int,
         frames,  # Indexable frame source
         masks,  # Indexable mask source
-        on_result: Callable[[int, np.ndarray, np.ndarray], None],  # callback(frame_idx, mask, logits)
+        on_result: Callable[[int, np.ndarray, np.ndarray, float], None],  # callback(frame_idx, mask, logits, score)
         progress_interval: int = 10,
     ) -> list[int]:
         """Propagate tracking forward from start_frame.
@@ -925,7 +941,8 @@ class SAM2StreamingSegmentor:
             pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
             # Call callback to save results
-            on_result(frame_idx, mask_resized, pred_masks_low_res)
+            score = self._extract_score(current_out)
+            on_result(frame_idx, mask_resized, pred_masks_low_res, score)
 
             # Store in output_dict["non_cond_frame_outputs"]
             output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(
@@ -1013,7 +1030,7 @@ class SAM2StreamingSegmentor:
         frame_idx: int,
         frame: np.ndarray,
         mask_prompt: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """Propagate to a single frame, optionally with a mask prompt.
 
         Args:
@@ -1023,7 +1040,8 @@ class SAM2StreamingSegmentor:
             mask_prompt: Optional mask to use as prompt (for detector re-prompting).
 
         Returns:
-            (mask, logits) where mask is (H, W) uint8 and logits is (256, 256) float32.
+            (mask, logits, score) where mask is (H, W) uint8, logits is (256, 256) float32,
+            and score is the predicted IoU confidence in [0, 1].
         """
         session = self.sessions[video_id]
         frame_dims = session["frame_dims"]
@@ -1103,7 +1121,8 @@ class SAM2StreamingSegmentor:
             for k in keys_to_evict:
                 del output_dict["non_cond_frame_outputs"][k]
 
-        return mask_resized, pred_masks_low_res
+        score = self._extract_score(current_out)
+        return mask_resized, pred_masks_low_res, score
 
     def _propagate_single_frame_no_store(
         self,
@@ -1209,6 +1228,7 @@ class SAM2StreamingSegmentor:
         final_masks,
         start_idx: int,
         end_idx: int,
+        scores: dict | None = None,
     ) -> None:
         """Re-propagate frames after a correction, writing only to final_masks.
 
@@ -1231,8 +1251,10 @@ class SAM2StreamingSegmentor:
             self._set_memory_frame(video_id, idx, frames, final_masks)
 
             frame = frames[idx]
-            mask, _ = self._propagate_single_frame(video_id, idx, frame)
+            mask, _, score = self._propagate_single_frame(video_id, idx, frame)
             final_masks[idx] = mask
+            if scores is not None:
+                scores[idx] = score
 
     def propagate_with_detector(
         self,
@@ -1246,6 +1268,7 @@ class SAM2StreamingSegmentor:
         on_progress: Callable[[int], None] | None = None,
         check_interval: int = 10,
         iou_threshold: float = 0.5,
+        scores: dict | None = None,
     ) -> None:
         """Propagate tracking with on-the-fly detector-guided correction.
 
@@ -1301,11 +1324,13 @@ class SAM2StreamingSegmentor:
         # Initialize tracker from first detected frame
         frame = frames[start_frame]
         detector_mask = np.asarray(detector_masks[start_frame])
-        mask, _ = self._propagate_single_frame(
+        mask, _, score = self._propagate_single_frame(
             video_id, start_frame, frame, mask_prompt=detector_mask
         )
         tracker_masks[start_frame] = mask
         final_masks[start_frame] = mask
+        if scores is not None:
+            scores[start_frame] = score
 
         last_successful_check = start_frame
         searching = False
@@ -1330,24 +1355,29 @@ class SAM2StreamingSegmentor:
 
                 if (detector_mask > 127).any():
                     # Object reappeared - add as conditioning frame
-                    mask, _ = self._propagate_single_frame(
+                    mask, _, score = self._propagate_single_frame(
                         video_id, frame_idx, frame, mask_prompt=detector_mask
                     )
                     final_masks[frame_idx] = mask
+                    if scores is not None:
+                        scores[frame_idx] = score
 
                     # Backtrack and re-propagate
                     self._backtrack_reprop(
                         video_id, frames, final_masks,
-                        last_successful_check + 1, frame_idx - 1
+                        last_successful_check + 1, frame_idx - 1,
+                        scores=scores,
                     )
 
                     last_successful_check = frame_idx
                     searching = False
             else:
                 # Normal mode: propagate tracker
-                tracker_mask, _ = self._propagate_single_frame(video_id, frame_idx, frame)
+                tracker_mask, _, score = self._propagate_single_frame(video_id, frame_idx, frame)
                 tracker_masks[frame_idx] = tracker_mask
                 final_masks[frame_idx] = tracker_mask
+                if scores is not None:
+                    scores[frame_idx] = score
 
                 # Check frame?
                 if frame_idx % check_interval == 0:
@@ -1361,15 +1391,18 @@ class SAM2StreamingSegmentor:
                         last_successful_check = frame_idx
                     elif (detector_mask > 127).any():
                         # Drift detected, detector has mask - correct
-                        mask, _ = self._propagate_single_frame(
+                        mask, _, score = self._propagate_single_frame(
                             video_id, frame_idx, frame, mask_prompt=detector_mask
                         )
                         final_masks[frame_idx] = mask
+                        if scores is not None:
+                            scores[frame_idx] = score
 
                         # Backtrack and re-propagate
                         self._backtrack_reprop(
                             video_id, frames, final_masks,
-                            last_successful_check + 1, frame_idx - 1
+                            last_successful_check + 1, frame_idx - 1,
+                            scores=scores,
                         )
 
                         last_successful_check = frame_idx
@@ -1381,11 +1414,14 @@ class SAM2StreamingSegmentor:
                             video_id, frame_idx, frame, mask_prompt=empty_mask
                         )
                         final_masks[frame_idx] = empty_mask
+                        if scores is not None:
+                            scores[frame_idx] = 0.0
 
                         # Backtrack and re-propagate
                         self._backtrack_reprop(
                             video_id, frames, final_masks,
-                            last_successful_check + 1, frame_idx - 1
+                            last_successful_check + 1, frame_idx - 1,
+                            scores=scores,
                         )
 
                         last_successful_check = frame_idx

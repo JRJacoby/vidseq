@@ -254,7 +254,7 @@ def handle_add_prompt(
         before_sum = int(mask_before.sum())
 
         # Run segmentation - returns mask and logits
-        mask, logits = segmentor.add_point_prompt(
+        mask, logits, score = segmentor.add_point_prompt(
             video_id=str(video_id),
             frame_idx=frame_idx,
             location=(px, py),
@@ -277,6 +277,7 @@ def handle_add_prompt(
         "mask_rle": encode_mask_rle(mask),
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
+        "score": score,
     }
 
 
@@ -331,7 +332,7 @@ def handle_refine_mask(
         prev_logits = logits_data[frame_idx]
 
         # Run refinement with all points - returns mask and logits
-        mask, logits = segmentor.refine_mask(
+        mask, logits, score = segmentor.refine_mask(
             video_id=str(video_id),
             frame_idx=frame_idx,
             location=locations,
@@ -355,6 +356,7 @@ def handle_refine_mask(
         "mask_rle": encode_mask_rle(mask),
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
+        "score": score,
     }
 
 
@@ -385,7 +387,7 @@ def handle_propagate(
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Propagate - returns mask and logits
-        mask, logits = segmentor.propagate(
+        mask, logits, score = segmentor.propagate(
             video_id=str(video_id),
             frame_idx=frame_idx,
             frames=resources.frame_source,
@@ -402,6 +404,7 @@ def handle_propagate(
         "mask_rle": encode_mask_rle(mask),
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
+        "score": score,
     }
 
 
@@ -430,12 +433,15 @@ def handle_generate_training_masks(
 
     resources = _video_resources[video_id]
 
+    scores: list[list] = []
+
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Callback to write each result to HDF5
-        def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray) -> None:
+        def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray, score: float) -> None:
             mask_data[frame_idx] = mask
             logits_data[frame_idx] = logits
+            scores.append([frame_idx, score])
 
         frame_indices = segmentor.propagate_sequential(
             video_id=str(video_id),
@@ -452,6 +458,7 @@ def handle_generate_training_masks(
         "status": "ok",
         "frames_processed": len(frame_indices),
         "frame_indices": frame_indices,
+        "scores": scores,
     }
 
 
@@ -534,6 +541,7 @@ def handle_propagate_with_detector(
              detector_masks(project_path, video_id, "a") as det_mask_data, \
              final_masks(project_path, video_id, "a") as fin_mask_data:
 
+            scores: dict[int, float] = {}
             segmentor.propagate_with_detector(
                 video_id=str(video_id),
                 num_frames=num_frames,
@@ -545,11 +553,13 @@ def handle_propagate_with_detector(
                 on_progress=on_progress,
                 check_interval=check_interval,
                 iou_threshold=iou_threshold,
+                scores=scores,
             )
 
         return {
             "type": "propagate_with_detector_result",
             "status": "ok",
+            "scores": [[idx, s] for idx, s in scores.items()],
         }
 
     finally:

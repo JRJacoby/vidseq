@@ -245,7 +245,7 @@ async def submit_prompt(
 
     if has_existing_mask:
         # Refine existing mask using previous logits as dense prompt
-        mask = segmentation_tcp_client.refine_mask(
+        mask, score = segmentation_tcp_client.refine_mask(
             project_id=project_id,
             video_id=video_id,
             frame_idx=frame_idx,
@@ -269,7 +269,7 @@ async def submit_prompt(
 
         p = points[0]
         label = labels[0]
-        mask = segmentation_tcp_client.add_point_prompt(
+        mask, score = segmentation_tcp_client.add_point_prompt(
             project_id=project_id,
             video_id=video_id,
             frame_idx=frame_idx,
@@ -278,11 +278,12 @@ async def submit_prompt(
             label=label,
         )
 
-    # Update mask presence index
+    # Update mask presence index and save confidence score
     has_content = bool(np.any(mask > 0))
     await frame_data_service.set_has_tracker_mask(
         session, video_id, frame_idx, has_content
     )
+    await frame_data_service.save_score(session, video_id, frame_idx, score)
 
     # If refinement resulted in an empty mask, reset the frame's SAM state
     if has_existing_mask and not has_content:
@@ -339,7 +340,7 @@ async def propagate(
     Raises:
         RuntimeError: If propagation fails (no active session, etc.)
     """
-    frame_indices = segmentation_tcp_client.generate_training_masks(
+    frame_indices, scores = segmentation_tcp_client.generate_training_masks(
         project_id=project_id,
         video_id=video_id,
         start_frame_idx=start_frame_idx,
@@ -352,6 +353,9 @@ async def propagate(
 
     # Update has_tracker_mask for all propagated frames
     await frame_data_service.set_has_tracker_mask(session, video_id, frame_indices, True)
+
+    # Save confidence scores
+    await frame_data_service.save_scores_batch(session, video_id, scores)
 
     return len(frame_indices)
 
@@ -387,7 +391,7 @@ async def segment_all_videos(
         )
         cond_frames_by_video[video.id] = list(result.scalars().all())
 
-    job_ids = await segmentation_tcp_client.segment_all_videos(
+    job_ids, scores_by_video = await segmentation_tcp_client.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
@@ -399,6 +403,11 @@ async def segment_all_videos(
         all_frames = list(range(video.num_frames))
         await frame_data_service.set_has_tracker_mask(session, video.id, all_frames, True)
         await frame_data_service.set_has_final_mask(session, video.id, all_frames, True)
+
+        # Save confidence scores
+        video_scores = scores_by_video.get(video.id, [])
+        if video_scores:
+            await frame_data_service.save_scores_batch(session, video.id, video_scores)
 
     return job_ids
 

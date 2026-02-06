@@ -450,6 +450,35 @@ async def save_score(
     await session.commit()
 
 
+async def save_scores_batch(
+    session: AsyncSession,
+    video_id: int,
+    scores: list[tuple[int, float]] | list[list],
+) -> None:
+    """Batch insert/update scores (async version).
+
+    Args:
+        session: Async database session
+        video_id: ID of the video
+        scores: List of (frame_idx, score) tuples or [frame_idx, score] lists
+    """
+    if not scores:
+        return
+
+    values = [
+        {"video_id": video_id, "frame_idx": int(frame_idx), "score": float(score)}
+        for frame_idx, score in scores
+    ]
+
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"score": stmt.excluded.score}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
 def save_scores_batch_sync(
     session: Session,
     video_id: int,
