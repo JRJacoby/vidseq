@@ -1237,6 +1237,52 @@ export async function getDetectorMasks(
     return response.json()
 }
 
+export interface DetectorBbox {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+export interface DetectorBboxResponse {
+  bbox: DetectorBbox | null
+}
+
+export interface DetectorBboxesBatchResponse {
+  bboxes: Array<{
+    frame_idx: number
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+  }>
+}
+
+export async function getDetectorBbox(
+  projectId: number,
+  videoId: number,
+  frameIdx: number,
+): Promise<DetectorBboxResponse> {
+  const response = await fetch(
+    `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-bboxes/${frameIdx}`,
+  )
+  if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to get detector bbox'))
+  return response.json()
+}
+
+export async function getDetectorBboxes(
+  projectId: number,
+  videoId: number,
+  startFrame: number,
+  count: number = 100,
+): Promise<DetectorBboxesBatchResponse> {
+  const response = await fetch(
+    `${API_BASE}/projects/${projectId}/videos/${videoId}/detector-bboxes?start_frame=${startFrame}&count=${count}`,
+  )
+  if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to get detector bboxes'))
+  return response.json()
+}
+
 export async function detectorMasksExist(
     projectId: number,
     videoId: number,

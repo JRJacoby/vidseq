@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideos, getFrameImage, getDetectorMask, type Video } from '@/services/api'
+import { getVideos, getFrameImage, getDetectorBbox, type Video, type DetectorBbox } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,14 +32,14 @@ const pageVideos = computed(() => {
 
 // Per-cell state (Map keyed by video ID)
 const frameImages = ref<Map<number, ImageBitmap>>(new Map())
-const detectorMasks = ref<Map<number, ImageBitmap>>(new Map())
+const detectorBboxes = ref<Map<number, DetectorBbox>>(new Map())
 const cellCanvases = ref<Map<number, HTMLCanvasElement>>(new Map())
 
-// Track which videos have valid (non-empty) detector masks
+// Track which videos have valid (non-empty) detector bboxes
 const videosWithMasks = computed(() => {
   return new Set(
     pageVideos.value
-      .filter(v => detectorMasks.value.has(v.id))
+      .filter(v => detectorBboxes.value.has(v.id))
       .map(v => v.id)
   )
 })
@@ -113,40 +113,23 @@ const loadPageData = async () => {
   // Cleanup old bitmaps
   frameImages.value.forEach(img => img.close())
   frameImages.value.clear()
-  detectorMasks.value.forEach(img => img.close())
-  detectorMasks.value.clear()
+  detectorBboxes.value.clear()
 
   try {
     // Load all frame images and detector masks for current page in parallel
     const loadPromises = pageVideos.value.map(async (video) => {
       try {
-        // Fetch frame and detector mask in parallel
-        const [frameBlob, maskBlob] = await Promise.all([
+        // Fetch frame and detector bbox in parallel
+        const [frameBlob, bboxResult] = await Promise.all([
           getFrameImage(projectId.value, video.id, 0),
-          getDetectorMask(projectId.value, video.id, 0).catch(() => null),
+          getDetectorBbox(projectId.value, video.id, 0).catch(() => null),
         ])
 
         const imageBitmap = await createImageBitmap(frameBlob)
         frameImages.value.set(video.id, imageBitmap)
 
-        // Check if mask is non-empty before storing
-        if (maskBlob) {
-          const maskBitmap = await createImageBitmap(maskBlob)
-          // Check if mask has any non-transparent pixels
-          const tempCanvas = document.createElement('canvas')
-          tempCanvas.width = maskBitmap.width
-          tempCanvas.height = maskBitmap.height
-          const tempCtx = tempCanvas.getContext('2d')
-          if (tempCtx) {
-            tempCtx.drawImage(maskBitmap, 0, 0)
-            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height)
-            const hasContent = imageData.data.some((v, i) => i % 4 === 3 && v > 0) // Check alpha channel
-            if (hasContent) {
-              detectorMasks.value.set(video.id, maskBitmap)
-            } else {
-              maskBitmap.close()
-            }
-          }
+        if (bboxResult?.bbox) {
+          detectorBboxes.value.set(video.id, bboxResult.bbox)
         }
 
         // Draw canvas for this video
@@ -198,12 +181,17 @@ const drawCell = (videoId: number) => {
   // Draw the frame image
   ctx.drawImage(image, 0, 0)
 
-  // Draw detector mask overlay if available
-  const mask = detectorMasks.value.get(videoId)
-  if (mask) {
-    ctx.globalAlpha = 0.4
-    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height)
-    ctx.globalAlpha = 1.0
+  // Draw detector bbox if available
+  // canvas dimensions match image dimensions (original video pixels),
+  // and bbox coords are in original video pixel space, so scale is 1:1
+  const bbox = detectorBboxes.value.get(videoId)
+  if (bbox) {
+    ctx.strokeStyle = 'rgba(255, 99, 71, 0.8)'
+    ctx.lineWidth = 2
+    ctx.strokeRect(
+      bbox.x1, bbox.y1,
+      bbox.x2 - bbox.x1, bbox.y2 - bbox.y1,
+    )
   }
 }
 
@@ -257,8 +245,7 @@ onUnmounted(() => {
   // Cleanup all ImageBitmaps
   frameImages.value.forEach(img => img.close())
   frameImages.value.clear()
-  detectorMasks.value.forEach(img => img.close())
-  detectorMasks.value.clear()
+  detectorBboxes.value.clear()
 })
 </script>
 

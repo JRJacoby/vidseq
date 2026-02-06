@@ -7,8 +7,10 @@ import {
     deleteSegmentation,
     deleteVideoSegmentation,
     getDetectorMask,
+    getDetectorBbox,
     getFinalMask,
     getFinalMasks,
+    type DetectorBbox,
 } from '@/services/api'
 import { LruCache } from '@/utils/LruCache'
 
@@ -21,6 +23,7 @@ export type ToolType = 'none' | 'positive_point' | 'negative_point'
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
     currentMask: Ref<ImageBitmap | null>
+    detectorBbox: Ref<DetectorBbox | null>
     currentPrompts: Ref<Array<{ x: number; y: number; type: 'positive_point' | 'negative_point' }>>
     isSegmenting: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
@@ -53,6 +56,7 @@ export function useSegmentation(
 
     const activeTool = ref<ToolType>('none')
     const currentMask = ref<ImageBitmap | null>(null)
+    const detectorBbox = ref<DetectorBbox | null>(null)
     const isSegmenting = ref(false)
     const intendedFrameIdx = ref(0)
 
@@ -161,7 +165,10 @@ export function useSegmentation(
 
         try {
             if (maskViewMode.value === 'detector') {
-                return await getDetectorMask(projectId.value, videoId.value, frameIdx)
+                // Fetch bbox instead of mask
+                const result = await getDetectorBbox(projectId.value, videoId.value, frameIdx)
+                detectorBbox.value = result.bbox
+                return null  // No mask to render
             } else if (maskViewMode.value === 'final') {
                 return await getFinalMask(projectId.value, videoId.value, frameIdx)
             } else {
@@ -350,6 +357,7 @@ export function useSegmentation(
     // Clear cache and reload when mask view mode changes
     watch(maskViewMode, () => {
         clearMaskCache()
+        detectorBbox.value = null
         loadFrameData(currentFrameIdx.value)
     })
 
@@ -378,6 +386,7 @@ export function useSegmentation(
     return {
         activeTool,
         currentMask,
+        detectorBbox,
         currentPrompts,
         isSegmenting,
         loadFrameData,

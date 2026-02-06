@@ -104,6 +104,7 @@ const fps = computed(() => video.value?.fps ?? 30)
 const {
   activeTool,
   currentMask,
+  detectorBbox,
   currentPrompts,
   isSegmenting,
   loadFrameData,
@@ -302,6 +303,7 @@ onMounted(async () => {
                 :prompts="currentPrompts"
                 :show-mask="showMask"
                 :show-prompts="showPrompts"
+                :detector-bbox="detectorBbox"
                 @point-complete="handlePointCompleteWithRefresh"
               />
             </div>

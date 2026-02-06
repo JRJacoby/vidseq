@@ -17,6 +17,7 @@ const props = defineProps<{
   prompts: LocalPrompt[]
   showMask?: boolean
   showPrompts?: boolean
+  detectorBbox?: { x1: number; y1: number; x2: number; y2: number } | null
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +65,20 @@ function render() {
   if (props.mask && props.showMask !== false) {
     // Mask PNG is already rendered as semi-transparent blue overlay by backend
     ctx.drawImage(props.mask, 0, 0, canvas.width, canvas.height)
+  }
+
+  // Draw detector bbox if provided
+  if (props.detectorBbox) {
+    ctx.strokeStyle = 'rgba(255, 99, 71, 0.8)'
+    ctx.lineWidth = 3
+    const bbox = props.detectorBbox
+    // bbox coords are in original video coordinates, canvas size matches video size
+    const scaleX = canvas.width / props.videoWidth
+    const scaleY = canvas.height / props.videoHeight
+    ctx.strokeRect(
+      bbox.x1 * scaleX, bbox.y1 * scaleY,
+      (bbox.x2 - bbox.x1) * scaleX, (bbox.y2 - bbox.y1) * scaleY,
+    )
   }
 
   // Draw prompts (points only)
@@ -129,7 +144,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts, props.showMask, props.showPrompts], () => {
+watch(() => [props.mask, props.prompts, props.detectorBbox, props.showMask, props.showPrompts], () => {
   pendingPoint.value = null
   render()
 }, { deep: true })
