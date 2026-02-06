@@ -149,36 +149,23 @@ async def get_scores_downsampled(
     video: Video = Depends(get_video),
     session: AsyncSession = Depends(get_project_session),
 ):
-    """
-    Get LTTB-downsampled confidence scores for visualization.
-
-    Filters at SQL level to only load scores in the requested frame range,
-    then applies LTTB (Largest-Triangle-Three-Buckets) downsampling to reduce
-    the number of points while preserving visual shape.
-
-    Args:
-        max_samples: Maximum number of points to return (default 800)
-        start_frame: Start frame index (inclusive, default 0)
-        end_frame: End frame index (inclusive, default None = last frame)
-
-    Returns:
-        JSON with downsampled scores array and total count of valid scores.
-    """
-    from vidseq.services import lttb
-
-    # Default end_frame to last frame
-    if end_frame is None:
-        end_frame = video.num_frames - 1
-
-    # Load only valid scores (> -1) in the requested range from SQLite
-    scores = await frame_data_service.load_scores_in_range(
-        session, video.id, start_frame, end_frame
+    """Get LTTB-downsampled confidence scores for visualization."""
+    return await frame_data_service.get_scores_downsampled(
+        session, video.id, video.num_frames, max_samples, start_frame, end_frame
     )
 
-    # Apply LTTB downsampling
-    downsampled = lttb.downsample_scores(scores, max_samples)
 
-    return {
-        "scores": downsampled,
-        "total_count": len(scores),
-    }
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/segmentation/detector-scores-downsampled",
+)
+async def get_detector_scores_downsampled(
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get LTTB-downsampled detector confidence scores for visualization."""
+    return await frame_data_service.get_detector_scores_downsampled(
+        session, video.id, video.num_frames, max_samples, start_frame, end_frame
+    )
