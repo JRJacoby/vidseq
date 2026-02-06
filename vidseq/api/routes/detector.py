@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from vidseq.api.dependencies import get_project_folder, get_video
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService
-from vidseq.services import segmentation_service
+from vidseq.services import frame_data_service, segmentation_service
 from vidseq.services.array_storage import detector_masks
 
 router = APIRouter()
@@ -221,3 +223,28 @@ async def get_detector_masks(
             masks_list.append({"frame_idx": start_frame + i, "png_base64": png_base64})
 
     return {"masks": masks_list}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/detector-bboxes/{frame_idx}")
+async def get_detector_bbox_endpoint(
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get detector bbox for a single frame."""
+    bbox = await frame_data_service.get_detector_bbox(session, video.id, frame_idx)
+    return {"bbox": bbox}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/detector-bboxes")
+async def get_detector_bboxes_endpoint(
+    start_frame: int,
+    count: int = 100,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get detector bboxes for a range of frames."""
+    bboxes = await frame_data_service.get_detector_bboxes_batch(
+        session, video.id, start_frame, count
+    )
+    return {"bboxes": bboxes}
