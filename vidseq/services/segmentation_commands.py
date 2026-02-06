@@ -478,7 +478,8 @@ def handle_propagate_with_detector(
     num_frames = params["num_frames"]
     project_path = Path(params["project_path"])
     check_interval = params.get("check_interval", 10)
-    iou_threshold = params.get("iou_threshold", 0.5)
+    iou_threshold = params.get("iou_threshold", 0.7)
+    training_frame_indices = params.get("training_frame_indices", [])
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -554,6 +555,7 @@ def handle_propagate_with_detector(
                 check_interval=check_interval,
                 iou_threshold=iou_threshold,
                 scores=scores,
+                training_frame_indices=training_frame_indices,
             )
 
         return {

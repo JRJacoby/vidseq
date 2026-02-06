@@ -382,20 +382,25 @@ async def segment_all_videos(
     from sqlalchemy import select
     from vidseq.models.conditioning_frame import ConditioningFrame
 
-    # Query conditioning frames for all videos
+    # Query conditioning frames and training frames for all videos
     cond_frames_by_video: dict[int, list[int]] = {}
+    training_frames_by_video: dict[int, list[int]] = {}
     for video in videos:
         result = await session.execute(
             select(ConditioningFrame.frame_idx)
             .where(ConditioningFrame.video_id == video.id)
         )
         cond_frames_by_video[video.id] = list(result.scalars().all())
+        training_frames_by_video[video.id] = await frame_data_service.get_training_frames(
+            session, video.id
+        )
 
     job_ids, scores_by_video = await segmentation_tcp_client.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
         cond_frames_by_video=cond_frames_by_video,
+        training_frames_by_video=training_frames_by_video,
     )
 
     # Update database flags for all frames in all videos

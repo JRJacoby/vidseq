@@ -771,6 +771,7 @@ class SegmentationService:
         project_path: Path,
         videos: list,
         cond_frames_by_video: dict[int, list[int]] | None = None,
+        training_frames_by_video: dict[int, list[int]] | None = None,
     ) -> tuple[list[int], dict[int, list[list]]]:
         """
         Start batch segmentation for all videos in a project using detector-tracker approach.
@@ -839,7 +840,8 @@ class SegmentationService:
                     "video_id": video.id,
                     "project_path": str(project_path),
                     "num_frames": video.num_frames,
-                    "iou_threshold": 0.5,
+                    "iou_threshold": 0.7,
+                    "training_frame_indices": (training_frames_by_video or {}).get(video.id, []),
                 }, timeout=3600.0)  # 1 hour timeout for long videos
 
                 if result.get("status") == "ok":
@@ -1040,8 +1042,9 @@ async def segment_all_videos(
     project_path: Path,
     videos: list,
     cond_frames_by_video: dict[int, list[int]] | None = None,
+    training_frames_by_video: dict[int, list[int]] | None = None,
 ) -> tuple[list[int], dict[int, list[list]]]:
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
-        project_id, project_path, videos, cond_frames_by_video
+        project_id, project_path, videos, cond_frames_by_video, training_frames_by_video
     )
