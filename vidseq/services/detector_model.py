@@ -1,94 +1,102 @@
-"""SegFormer-based detector model for binary segmentation.
+"""RT-DETR detector model for bounding box detection."""
 
-Uses SegFormer-b5 pretrained on ADE20K with frozen encoder and trainable decoder.
-The classifier head is replaced from 150 classes to 2 (background/foreground).
-"""
+from pathlib import Path
 
+import numpy as np
 import torch
-import torch.nn as nn
-from transformers import (
-    SegformerForSemanticSegmentation,
-    SegformerImageProcessor,
-)
-
-# Enable cuDNN benchmark for faster convolutions with fixed input sizes
-torch.backends.cudnn.benchmark = True
+from ultralytics import RTDETR
 
 
-def get_processor() -> SegformerImageProcessor:
-    """Get the SegFormer image processor.
+# Confidence threshold for detections
+DETECTION_CONF_THRESHOLD = 0.5
+
+
+def load_pretrained(device: str = "cuda") -> RTDETR:
+    """Load COCO-pretrained RT-DETR-X model."""
+    model = RTDETR("rtdetr-x.pt")
+    model.to(device)
+    return model
+
+
+def load_finetuned(weights_path: str | Path, device: str = "cuda") -> RTDETR:
+    """Load fine-tuned RT-DETR model from checkpoint."""
+    model = RTDETR(str(weights_path))
+    model.to(device)
+    return model
+
+
+def detect(
+    model: RTDETR,
+    frame: np.ndarray,
+    conf: float = DETECTION_CONF_THRESHOLD,
+) -> list[dict]:
+    """Run detection on a single BGR frame.
+
+    Args:
+        model: RT-DETR model instance.
+        frame: BGR uint8 numpy array (H, W, 3).
+        conf: Confidence threshold.
 
     Returns:
-        Configured SegformerImageProcessor instance.
+        List of detections sorted by confidence (descending).
+        Each detection: {"bbox": (x1, y1, x2, y2), "conf": float, "cls": int}
+        bbox coordinates are in pixel space of the original frame.
     """
-    return SegformerImageProcessor.from_pretrained(
-        "nvidia/segformer-b5-finetuned-ade-640-640"
-    )
+    results = model(frame, conf=conf, verbose=False)
+    detections = []
+    if len(results) > 0 and results[0].boxes is not None:
+        boxes = results[0].boxes
+        for i in range(len(boxes)):
+            x1, y1, x2, y2 = boxes.xyxy[i].cpu().tolist()
+            detections.append({
+                "bbox": (x1, y1, x2, y2),
+                "conf": boxes.conf[i].item(),
+                "cls": int(boxes.cls[i].item()),
+            })
+    # Sort by confidence descending
+    detections.sort(key=lambda d: d["conf"], reverse=True)
+    return detections
 
 
-class SegFormerDetector(nn.Module):
-    """SegFormer-b5 with frozen encoder, trainable decoder for binary segmentation."""
+def pick_best_detection(
+    detections: list[dict],
+    tracker_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[tuple[float, float, float, float], float] | tuple[None, float]:
+    """Pick the best detection, preferring highest IoU with tracker bbox.
 
-    MODEL_NAME = "nvidia/segformer-b5-finetuned-ade-640-640"
+    Args:
+        detections: List of detection dicts from detect().
+        tracker_bbox: (x1, y1, x2, y2) of tracker's current mask bbox, or None.
 
-    def __init__(self, device: str = "cuda"):
-        """Initialize model.
+    Returns:
+        (bbox, confidence) or (None, 0.0) if no detections.
+    """
+    if not detections:
+        return None, 0.0
 
-        Args:
-            device: Device to load model on.
-        """
-        super().__init__()
-        self.device = device
+    if tracker_bbox is None:
+        # No tracker reference — take highest confidence
+        best = detections[0]
+        return best["bbox"], best["conf"]
 
-        # Load pretrained SegFormer-b5
-        self.model = SegformerForSemanticSegmentation.from_pretrained(self.MODEL_NAME)
+    # Pick detection with highest IoU to tracker bbox
+    best_iou = -1.0
+    best_det = detections[0]  # fallback to highest conf
+    tx1, ty1, tx2, ty2 = tracker_bbox
 
-        # Replace classifier head: 150 classes -> 2 classes (background/foreground)
-        decoder_hidden_size = self.model.config.decoder_hidden_size
-        self.model.decode_head.classifier = nn.Conv2d(
-            in_channels=decoder_hidden_size,
-            out_channels=2,
-            kernel_size=1,
-        )
+    for det in detections:
+        dx1, dy1, dx2, dy2 = det["bbox"]
+        inter_x1 = max(tx1, dx1)
+        inter_y1 = max(ty1, dy1)
+        inter_x2 = min(tx2, dx2)
+        inter_y2 = min(ty2, dy2)
+        inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+        tracker_area = (tx2 - tx1) * (ty2 - ty1)
+        det_area = (dx2 - dx1) * (dy2 - dy1)
+        union_area = tracker_area + det_area - inter_area
+        iou = inter_area / union_area if union_area > 0 else 0.0
+        if iou > best_iou:
+            best_iou = iou
+            best_det = det
 
-        # Update config
-        self.model.config.num_labels = 2
-        self.model.config.id2label = {0: "background", 1: "foreground"}
-        self.model.config.label2id = {"background": 0, "foreground": 1}
-
-        # Freeze encoder
-        for param in self.model.segformer.parameters():
-            param.requires_grad = False
-
-        self.to(device)
-
-    @property
-    def decoder(self) -> nn.Module:
-        """Return the decode_head for optimizer parameter access.
-
-        Maintains compatibility with service code that uses model.decoder.parameters().
-        """
-        return self.model.decode_head
-
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            pixel_values: Preprocessed images from SegformerImageProcessor,
-                shape (B, C, H, W), already normalized.
-
-        Returns:
-            Logits tensor of shape (B, 2, H/4, W/4).
-        """
-        outputs = self.model(pixel_values=pixel_values)
-        return outputs.logits
-
-    def save_decoder(self, path: str) -> None:
-        """Save only the decoder weights."""
-        torch.save(self.model.decode_head.state_dict(), path)
-
-    def load_decoder(self, path: str) -> None:
-        """Load decoder weights."""
-        self.model.decode_head.load_state_dict(
-            torch.load(path, map_location=self.device, weights_only=True)
-        )
+    return best_det["bbox"], best_det["conf"]
