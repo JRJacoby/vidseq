@@ -29,7 +29,13 @@ class FrameData(Base):
     # Segmentation confidence score (-1.0 = not computed)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
 
-    # Detector median foreground logit (-1.0 = not computed)
+    # Detector bounding box (NULL = no detection)
+    detector_bbox_x1: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    detector_bbox_y1: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    detector_bbox_x2: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    detector_bbox_y2: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+    # Detector confidence score (-1.0 = not computed)
     detector_score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
 
     # Mask presence flags: 1 = has mask, 0 = no mask, NULL = unknown
