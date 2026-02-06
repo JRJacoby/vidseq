@@ -983,30 +983,14 @@ class SAM2StreamingSegmentor:
         Returns:
             IoU value in [0, 1]. Returns 0 if either mask is empty.
         """
-        # Get bounding box from mask1
-        rows1 = np.any(mask1 > 127, axis=1)
-        cols1 = np.any(mask1 > 127, axis=0)
-        if not rows1.any() or not cols1.any():
+        bbox1 = self._bbox_from_mask(mask1)
+        bbox2 = self._bbox_from_mask(mask2)
+        if bbox1 is None or bbox2 is None:
             return 0.0
 
-        y1_1, y2_1 = np.where(rows1)[0][[0, -1]]
-        x1_1, x2_1 = np.where(cols1)[0][[0, -1]]
-        # Add 1 to max indices to get proper bbox dimensions
-        y2_1 += 1
-        x2_1 += 1
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
 
-        # Get bounding box from mask2
-        rows2 = np.any(mask2 > 127, axis=1)
-        cols2 = np.any(mask2 > 127, axis=0)
-        if not rows2.any() or not cols2.any():
-            return 0.0
-
-        y1_2, y2_2 = np.where(rows2)[0][[0, -1]]
-        x1_2, x2_2 = np.where(cols2)[0][[0, -1]]
-        y2_2 += 1
-        x2_2 += 1
-
-        # Compute intersection box
         inter_x1 = max(x1_1, x1_2)
         inter_y1 = max(y1_1, y1_2)
         inter_x2 = min(x2_1, x2_2)
@@ -1016,13 +1000,28 @@ class SAM2StreamingSegmentor:
             return 0.0
 
         inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-
-        # Compute union
         area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
         area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
         union_area = area1 + area2 - inter_area
 
         return inter_area / union_area if union_area > 0 else 0.0
+
+    def _bbox_from_mask(self, mask: np.ndarray) -> tuple[int, int, int, int] | None:
+        """Extract bounding box (x1, y1, x2, y2) from a binary mask.
+
+        Args:
+            mask: Binary mask (H, W) uint8.
+
+        Returns:
+            (x1, y1, x2, y2) where x2/y2 are exclusive, or None if empty.
+        """
+        rows = np.any(mask > 127, axis=1)
+        cols = np.any(mask > 127, axis=0)
+        if not rows.any() or not cols.any():
+            return None
+        y1, y2 = np.where(rows)[0][[0, -1]]
+        x1, x2 = np.where(cols)[0][[0, -1]]
+        return (int(x1), int(y1), int(x2 + 1), int(y2 + 1))
 
     def _propagate_single_frame(
         self,
