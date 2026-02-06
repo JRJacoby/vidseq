@@ -395,7 +395,7 @@ async def segment_all_videos(
             session, video.id
         )
 
-    job_ids, scores_by_video = await segmentation_tcp_client.segment_all_videos(
+    job_ids, scores_by_video, detector_scores_by_video = await segmentation_tcp_client.segment_all_videos(
         project_id=project_id,
         project_path=project_path,
         videos=videos,
@@ -413,6 +413,11 @@ async def segment_all_videos(
         video_scores = scores_by_video.get(video.id, [])
         if video_scores:
             await frame_data_service.save_scores_batch(session, video.id, video_scores)
+
+        # Save detector confidence scores
+        video_detector_scores = detector_scores_by_video.get(video.id, [])
+        if video_detector_scores:
+            await frame_data_service.save_detector_scores_batch(session, video.id, video_detector_scores)
 
     return job_ids
 

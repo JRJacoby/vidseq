@@ -575,6 +575,87 @@ async def load_scores_in_range(
     return [{"frame_idx": r[0], "score": r[1]} for r in result.all()]
 
 
+async def save_detector_scores_batch(
+    session: AsyncSession,
+    video_id: int,
+    scores: list[tuple[int, float]] | list[list],
+) -> None:
+    """Batch insert/update detector confidence scores."""
+    if not scores:
+        return
+    values = [
+        {"video_id": video_id, "frame_idx": int(frame_idx), "detector_score": float(score)}
+        for frame_idx, score in scores
+    ]
+    stmt = sqlite_insert(FrameData).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["video_id", "frame_idx"],
+        set_={"detector_score": stmt.excluded.detector_score}
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def load_detector_scores_in_range(
+    session: AsyncSession,
+    video_id: int,
+    start_frame: int,
+    end_frame: Optional[int] = None,
+) -> list[dict]:
+    """Load valid detector scores (> -1.0) in a frame range for LTTB downsampling."""
+    conditions = [
+        FrameData.video_id == video_id,
+        FrameData.frame_idx >= start_frame,
+        FrameData.detector_score > -1.0,
+    ]
+    if end_frame is not None:
+        conditions.append(FrameData.frame_idx <= end_frame)
+    result = await session.execute(
+        select(FrameData.frame_idx, FrameData.detector_score)
+        .where(and_(*conditions))
+        .order_by(FrameData.frame_idx)
+    )
+    return [{"frame_idx": r[0], "score": r[1]} for r in result.all()]
+
+
+async def get_scores_downsampled(
+    session: AsyncSession,
+    video_id: int,
+    num_frames: int,
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> dict:
+    """Get LTTB-downsampled tracker confidence scores for visualization."""
+    from vidseq.services import lttb
+
+    if end_frame is None:
+        end_frame = num_frames - 1
+
+    scores = await load_scores_in_range(session, video_id, start_frame, end_frame)
+    downsampled = lttb.downsample_scores(scores, max_samples)
+    return {"scores": downsampled, "total_count": len(scores)}
+
+
+async def get_detector_scores_downsampled(
+    session: AsyncSession,
+    video_id: int,
+    num_frames: int,
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> dict:
+    """Get LTTB-downsampled detector confidence scores for visualization."""
+    from vidseq.services import lttb
+
+    if end_frame is None:
+        end_frame = num_frames - 1
+
+    scores = await load_detector_scores_in_range(session, video_id, start_frame, end_frame)
+    downsampled = lttb.downsample_scores(scores, max_samples)
+    return {"scores": downsampled, "total_count": len(scores)}
+
+
 # =============================================================================
 # TRACKER MASK PRESENCE OPERATIONS
 # =============================================================================

@@ -772,7 +772,7 @@ class SegmentationService:
         videos: list,
         cond_frames_by_video: dict[int, list[int]] | None = None,
         training_frames_by_video: dict[int, list[int]] | None = None,
-    ) -> tuple[list[int], dict[int, list[list]]]:
+    ) -> tuple[list[int], dict[int, list[list]], dict[int, list[list]]]:
         """
         Start batch segmentation for all videos in a project using detector-tracker approach.
 
@@ -794,9 +794,10 @@ class SegmentationService:
         if cond_frames_by_video is None:
             cond_frames_by_video = {}
         if not videos:
-            return [], {}
+            return [], {}, {}
 
         scores_by_video: dict[int, list[list]] = {}
+        detector_scores_by_video: dict[int, list[list]] = {}
 
         # Ensure model is loaded
         if self._status == SegmentationStatus.NOT_LOADED:
@@ -846,6 +847,7 @@ class SegmentationService:
 
                 if result.get("status") == "ok":
                     scores_by_video[video.id] = result.get("scores", [])
+                    detector_scores_by_video[video.id] = result.get("detector_scores", [])
                     frames_corrected = result.get("frames_corrected", 0)
                     print(f"[Segmentation Service] Video {video.id} complete: "
                           f"{video.num_frames} frames, {frames_corrected} corrected by detector")
@@ -869,7 +871,7 @@ class SegmentationService:
                 except Exception:
                     pass
 
-        return [], scores_by_video  # No job IDs - synchronous execution
+        return [], scores_by_video, detector_scores_by_video
 
     def shutdown(self) -> None:
         """Shutdown the worker process gracefully."""
@@ -1043,7 +1045,7 @@ async def segment_all_videos(
     videos: list,
     cond_frames_by_video: dict[int, list[int]] | None = None,
     training_frames_by_video: dict[int, list[int]] | None = None,
-) -> tuple[list[int], dict[int, list[list]]]:
+) -> tuple[list[int], dict[int, list[list]], dict[int, list[list]]]:
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
         project_id, project_path, videos, cond_frames_by_video, training_frames_by_video
