@@ -350,7 +350,14 @@ class SegmentationService:
         threading.Thread(target=self._load_model_in_background, daemon=True).start()
 
     def start_loading_in_background(self) -> None:
-        """Start loading segmentation model in background (via worker process)."""
+        """Start loading segmentation model in background (via worker process).
+
+        Raises:
+            RuntimeError: If detector training is in progress.
+        """
+        from vidseq.services.detector_service import DetectorService
+        if DetectorService.get_instance().is_training():
+            raise RuntimeError("Cannot load SAM2 while detector training is in progress")
         if self._status == SegmentationStatus.NOT_LOADED:
             self._start_worker()
 
@@ -870,7 +877,16 @@ class SegmentationService:
         return [], scores_by_video, detector_scores_by_video, detector_bboxes_by_video
 
     def shutdown(self) -> None:
-        """Shutdown the worker process gracefully."""
+        """Shutdown the worker process gracefully.
+
+        Raises:
+            RuntimeError: If any video sessions are currently active.
+        """
+        if self._sessions:
+            raise RuntimeError(
+                "Cannot shutdown SAM2 while sessions are active. "
+                "Wait for segmentation to finish first."
+            )
         if self._tcp_client is not None and self._tcp_client.is_connected():
             try:
                 self._tcp_client.send_command({"type": "shutdown"}, timeout=5.0)

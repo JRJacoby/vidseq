@@ -160,6 +160,11 @@ class DetectorService:
     ) -> None:
         """Synchronous training implementation using Ultralytics RT-DETR."""
         from ultralytics import RTDETR
+        from vidseq.services import segmentation_service
+
+        # Free GPU memory by shutting down SAM2 worker
+        # Raises RuntimeError if SAM2 has active sessions
+        segmentation_service.shutdown()
 
         logger.info(
             f"Starting RT-DETR training: max_epochs={max_epochs}, "

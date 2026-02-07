@@ -428,3 +428,11 @@ async def segment_all_videos(
 
     return job_ids
 
+
+def shutdown() -> None:
+    """Shutdown the SAM2 worker, freeing GPU memory.
+
+    Raises RuntimeError if sessions are active.
+    """
+    segmentation_tcp_client.shutdown_worker()
+
