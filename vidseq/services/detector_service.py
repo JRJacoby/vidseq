@@ -272,6 +272,7 @@ class DetectorService:
                 patience=early_stop_patience,
                 single_cls=True,
                 device=0,
+                workers=0,  # RT-DETR transforms contain unpicklable lambdas
                 project=str(model_save_dir),
                 name="rtdetr_train",
                 exist_ok=True,
