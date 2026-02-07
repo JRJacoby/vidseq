@@ -116,7 +116,7 @@ class DetectorService:
         self,
         project_path: Path,
         max_epochs: int = 100,
-        batch_size: int = 4,
+        batch_size: int = 2,
         lr: float = 1e-4,
         early_stop_patience: int = 20,
     ) -> bool:
@@ -273,6 +273,7 @@ class DetectorService:
                 single_cls=True,
                 device=0,
                 workers=0,  # RT-DETR transforms contain unpicklable lambdas
+                plots=False,  # avoid accumulating plot data across epochs
                 project=str(model_save_dir),
                 name="rtdetr_train",
                 exist_ok=True,
