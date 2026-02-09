@@ -32,7 +32,6 @@ from vidseq.services.array_storage import (
 
 import cv2
 import numpy as np
-import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 from scipy.signal import savgol_filter
