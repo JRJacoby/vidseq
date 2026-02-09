@@ -2252,11 +2252,23 @@ class AlignmentService:
                 self._alignment_progress.current_frame = 0
                 self._fps_timestamps.clear()
 
-                # Create OneEuro filter for temporal smoothing of angle
-                angle_filter = OneEuroFilter(freq=fps)
-                # For angle unwrapping (handle -180/180 discontinuity)
-                prev_raw_angle: Optional[float] = None
-                unwrapped_angle: float = 0.0
+                # --- Pass 1: Extract features with averaging, decode, collect raw keypoints ---
+                logger.info(f"apply_alignment_sync: pass 1 - extracting keypoints ({frame_count} frames)")
+
+                # Load models once for the video
+                decoder = self._load_model(project_path)
+                device = self._device
+                dinov2 = _load_dinov2(device)
+
+                # Sliding window buffer for DINOv2 feature averaging
+                half_win = FEATURE_AVG_WINDOW // 2  # e.g., 2 for window=5
+                feature_buffer: collections.deque[torch.Tensor] = collections.deque(maxlen=FEATURE_AVG_WINDOW)
+
+                # Store raw keypoint coords from pass 1
+                raw_front_x = np.zeros(frame_count, dtype=np.float64)
+                raw_front_y = np.zeros(frame_count, dtype=np.float64)
+                raw_rear_x = np.zeros(frame_count, dtype=np.float64)
+                raw_rear_y = np.zeros(frame_count, dtype=np.float64)
 
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
@@ -2284,53 +2296,118 @@ class AlignmentService:
                      aligned_masks(project_path, video.id, "a") as aligned_mask_data, \
                      alignment_keypoints(project_path, video.id, "a") as keypoints_data:
 
-                    # Process each frame
                     for frame_idx in range(frame_count):
                         ret, frame = cap.read()
                         if not ret:
-                            logger.warning(f"apply_alignment_sync: failed to read frame {frame_idx}")
+                            logger.warning(f"apply_alignment_sync: pass 1 failed to read frame {frame_idx}")
                             break
 
-                        # Run prediction to get heatmap
-                        heatmap = self.predict_sync(project_path, frame)
+                        # Extract DINOv2 features for this frame
+                        patch_tokens = self._extract_features(frame, dinov2, device)
+                        feature_buffer.append(patch_tokens)
 
-                        # Save prediction for debugging
-                        keypoints_data[frame_idx] = heatmap
+                        # Decode the frame at the center of the window
+                        # decode_idx is the frame whose features are now centered in the buffer
+                        decode_idx = frame_idx - half_win
 
-                        # Find keypoints using DARK post-processing for sub-pixel accuracy
-                        front_heatmap = heatmap[:, :, 0]
-                        rear_heatmap = heatmap[:, :, 1]
-                        front_x_px, front_y_px = dark_postprocess(front_heatmap)
-                        rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
+                        if decode_idx >= 0:
+                            # Average all features in the buffer
+                            avg_features = torch.stack(list(feature_buffer)).mean(dim=0)
 
-                        # Normalize to 0-1
-                        h, w = front_heatmap.shape
-                        front_x, front_y = front_x_px / w, front_y_px / h
-                        rear_x, rear_y = rear_x_px / w, rear_y_px / h
+                            # Decode averaged features
+                            heatmap = self._decode_features(avg_features, decoder, height, width)
+                            keypoints_data[decode_idx] = heatmap
 
-                        # Calculate raw rotation angle
-                        raw_angle = calculate_rotation_angle(front_x, front_y, rear_x, rear_y, width, height)
+                            # Extract keypoints via DARK
+                            front_heatmap = heatmap[:, :, 0]
+                            rear_heatmap = heatmap[:, :, 1]
+                            front_x_px, front_y_px = dark_postprocess(front_heatmap)
+                            rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
 
-                        # Unwrap angle to handle -180/180 discontinuity
-                        if prev_raw_angle is None:
-                            unwrapped_angle = raw_angle
-                        else:
-                            delta = raw_angle - prev_raw_angle
-                            # Take the shortest path across the boundary
-                            if delta > 180:
-                                delta -= 360
-                            elif delta < -180:
-                                delta += 360
-                            unwrapped_angle += delta
-                        prev_raw_angle = raw_angle
+                            h, w = front_heatmap.shape
+                            raw_front_x[decode_idx] = front_x_px / w
+                            raw_front_y[decode_idx] = front_y_px / h
+                            raw_rear_x[decode_idx] = rear_x_px / w
+                            raw_rear_y[decode_idx] = rear_y_px / h
 
-                        # Apply temporal smoothing to the unwrapped angle
-                        angle = angle_filter(unwrapped_angle)
+                        # Update progress (pass 1)
+                        now = time.time()
+                        if now - last_progress_update >= 1.0:
+                            self._alignment_progress.current_frame = frame_idx + 1
+                            self._alignment_progress.total_frames = frame_count * 2
+                            self._fps_timestamps.append(now)
+                            self._alignment_progress.fps = self._calculate_rolling_fps()
+                            if self._alignment_progress.fps > 0:
+                                remaining = (frame_count - frame_idx - 1) + frame_count
+                                self._alignment_progress.eta_seconds = remaining / self._alignment_progress.fps
+                            last_progress_update = now
+
+                    # Drain remaining frames from buffer (last half_win frames)
+                    for i in range(1, half_win + 1):
+                        decode_idx = frame_count - half_win + i - 1
+                        if decode_idx >= frame_count:
+                            break
+                        feature_buffer.popleft()
+                        if len(feature_buffer) > 0:
+                            avg_features = torch.stack(list(feature_buffer)).mean(dim=0)
+                            heatmap = self._decode_features(avg_features, decoder, height, width)
+                            keypoints_data[decode_idx] = heatmap
+
+                            front_heatmap = heatmap[:, :, 0]
+                            rear_heatmap = heatmap[:, :, 1]
+                            front_x_px, front_y_px = dark_postprocess(front_heatmap)
+                            rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
+
+                            h, w = front_heatmap.shape
+                            raw_front_x[decode_idx] = front_x_px / w
+                            raw_front_y[decode_idx] = front_y_px / h
+                            raw_rear_x[decode_idx] = rear_x_px / w
+                            raw_rear_y[decode_idx] = rear_y_px / h
+
+                    # --- Apply Savitzky-Golay smoothing to keypoint coordinates ---
+                    logger.info(f"apply_alignment_sync: smoothing keypoints (window={SAVGOL_WINDOW_LENGTH}, polyorder={SAVGOL_POLYORDER})")
+
+                    win = min(SAVGOL_WINDOW_LENGTH, frame_count)
+                    if win % 2 == 0:
+                        win -= 1
+                    if win < SAVGOL_POLYORDER + 2:
+                        logger.warning(f"apply_alignment_sync: too few frames ({frame_count}) for SavGol, using raw keypoints")
+                        smooth_front_x = raw_front_x
+                        smooth_front_y = raw_front_y
+                        smooth_rear_x = raw_rear_x
+                        smooth_rear_y = raw_rear_y
+                    else:
+                        smooth_front_x = savgol_filter(raw_front_x, win, SAVGOL_POLYORDER)
+                        smooth_front_y = savgol_filter(raw_front_y, win, SAVGOL_POLYORDER)
+                        smooth_rear_x = savgol_filter(raw_rear_x, win, SAVGOL_POLYORDER)
+                        smooth_rear_y = savgol_filter(raw_rear_y, win, SAVGOL_POLYORDER)
+
+                    # Compute angles from smoothed keypoints
+                    angles = np.array([
+                        calculate_rotation_angle(
+                            smooth_front_x[i], smooth_front_y[i],
+                            smooth_rear_x[i], smooth_rear_y[i],
+                            width, height,
+                        )
+                        for i in range(frame_count)
+                    ])
+
+                    # --- Pass 2: Re-read frames, rotate using smoothed angles, write output ---
+                    logger.info(f"apply_alignment_sync: pass 2 - rotating frames ({frame_count} frames)")
+
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self._fps_timestamps.clear()
+
+                    for frame_idx in range(frame_count):
+                        ret, frame = cap.read()
+                        if not ret:
+                            logger.warning(f"apply_alignment_sync: pass 2 failed to read frame {frame_idx}")
+                            break
+
+                        angle = float(angles[frame_idx])
 
                         # Rotate frame
                         rotated = rotate_frame(frame, angle)
-
-                        # Write rotated frame
                         writer.write(rotated)
 
                         # Load cropped mask, rotate, threshold, and save
@@ -2341,21 +2418,19 @@ class AlignmentService:
                         # Track frame timestamp for FPS calculation
                         self._fps_timestamps.append(time.time())
 
-                        # Update progress every second
+                        # Update progress (pass 2)
                         now = time.time()
                         if now - last_progress_update >= 1.0:
-                            self._alignment_progress.current_frame = frame_idx + 1
+                            self._alignment_progress.current_frame = frame_count + frame_idx + 1
+                            self._alignment_progress.total_frames = frame_count * 2
                             self._alignment_progress.fps = self._calculate_rolling_fps()
-
-                            # Calculate ETA based on remaining frames and current FPS
                             if self._alignment_progress.fps > 0:
-                                remaining_frames = frame_count - (frame_idx + 1)
-                                self._alignment_progress.eta_seconds = remaining_frames / self._alignment_progress.fps
-
+                                remaining = frame_count - frame_idx - 1
+                                self._alignment_progress.eta_seconds = remaining / self._alignment_progress.fps
                             last_progress_update = now
 
                     # Final progress update for this video
-                    self._alignment_progress.current_frame = frame_count
+                    self._alignment_progress.current_frame = frame_count * 2
 
                 # Release video resources outside the H5 context managers
                 cap.release()
