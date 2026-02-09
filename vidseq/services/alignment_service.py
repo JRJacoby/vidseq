@@ -1577,7 +1577,7 @@ class AlignmentService:
         logger.info(f"_load_model: using device={device}")
 
         # Create decoder architecture
-        decoder = AlignmentDecoder(in_channels=1536, num_keypoints=2)
+        decoder = HeadingVectorDecoder(in_channels=1536)
 
         # Load weights
         state_dict = torch.load(model_path, map_location=device)
@@ -1626,118 +1626,45 @@ class AlignmentService:
         self,
         patch_tokens: torch.Tensor,
         decoder: nn.Module,
-        orig_h: int,
-        orig_w: int,
-    ) -> np.ndarray:
-        """Decode averaged DINOv2 features into a heatmap.
+    ) -> tuple[float, float]:
+        """Decode averaged DINOv2 features into a heading vector.
 
         Args:
             patch_tokens: Features of shape (1, 1536, 16, 16)
-            decoder: Loaded decoder model
-            orig_h: Original frame height (for resizing output)
-            orig_w: Original frame width (for resizing output)
+            decoder: Loaded HeadingVectorDecoder
 
         Returns:
-            Heatmap array of shape (H, W, 2) with values in [0, 1]
+            (cos_theta, sin_theta) tuple
         """
         device = patch_tokens.device
         use_amp = device.type == 'cuda'
 
         with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
-            output = decoder(patch_tokens)
-            output = torch.sigmoid(output)
+            output = decoder(patch_tokens)  # (1, 2)
 
-        heatmap = output[0].float().cpu().numpy()  # (2, 64, 64)
-        heatmap = np.transpose(heatmap, (1, 2, 0))  # (64, 64, 2)
-
-        heatmap_resized = cv2.resize(
-            heatmap, (orig_w, orig_h),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        return heatmap_resized
+        vec = output[0].float().cpu().numpy()  # (2,)
+        return float(vec[0]), float(vec[1])
 
     def predict_sync(
         self,
         project_path: Path,
         frame: np.ndarray,
-    ) -> np.ndarray:
-        """Run inference on a frame to predict front/rear keypoint heatmaps.
-
-        Uses frozen DINOv2 for feature extraction and trainable decoder for
-        heatmap prediction.
+    ) -> tuple[float, float]:
+        """Run inference on a frame to predict heading direction.
 
         Args:
             project_path: Path to project folder
             frame: Input frame as (H, W, 3) uint8 BGR array
 
         Returns:
-            Heatmap array of shape (H, W, 2) with values in [0, 1]
-            Channel 0 = front probability, Channel 1 = rear probability
+            (cos_theta, sin_theta) unit vector
         """
-        orig_h, orig_w = frame.shape[:2]
-
-        # Load decoder (uses cache)
         decoder = self._load_model(project_path)
         device = self._device
-
-        # Load DINOv2 (uses global cache)
         dinov2 = _load_dinov2(device)
 
-        # Convert BGR to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Preprocess for DINOv2 (rescale, pad, normalize)
-        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame_rgb)
-        frame_tensor = frame_tensor.unsqueeze(0)  # Add batch dimension
-        frame_tensor = frame_tensor.to(device)
-
-        # Run inference with bfloat16 autocast for speed
-        use_amp = device.type == 'cuda'
-        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
-            # Extract DINOv2 features
-            features = dinov2.forward_features(frame_tensor)
-            patch_tokens = features["x_norm_patchtokens"]  # (1, 256, 1536)
-            patch_tokens = patch_tokens.permute(0, 2, 1)  # (1, 1536, 256)
-            patch_tokens = patch_tokens.reshape(1, 1536, 16, 16)  # (1, 1536, 16, 16)
-
-            # Pass through decoder
-            output = decoder(patch_tokens)
-            output = torch.sigmoid(output)  # Ensure [0, 1] range
-
-        # Convert to numpy: (1, 2, 64, 64) -> (64, 64, 2)
-        # Cast to float32 first since numpy doesn't support bfloat16
-        heatmap = output[0].float().cpu().numpy()  # (2, 64, 64)
-        heatmap = np.transpose(heatmap, (1, 2, 0))  # (64, 64, 2)
-
-        # Resize back to original dimensions
-        heatmap_resized = cv2.resize(
-            heatmap, (orig_w, orig_h),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        return heatmap_resized
-
-    def predict_to_png(
-        self,
-        project_path: Path,
-        frame: np.ndarray,
-    ) -> bytes:
-        """Run inference and return prediction as PNG bytes.
-
-        Args:
-            project_path: Path to project folder
-            frame: Input frame as (H, W, 3) uint8 BGR array
-
-        Returns:
-            PNG image bytes (R = front, G = rear)
-        """
-        height, width = frame.shape[:2]
-        logger.info(f"predict_to_png: project={project_path.name}, frame size={width}x{height}")
-        heatmap = self.predict_sync(project_path, frame)
-        png_bytes = heatmap_to_png(heatmap)
-        logger.info(f"predict_to_png: returning {len(png_bytes)} bytes")
-        return png_bytes
+        patch_tokens = self._extract_features(frame, dinov2, device)
+        return self._decode_features(patch_tokens, decoder)
 
     def _reencode_to_h264(self, input_path: Path, output_path: Path) -> bool:
         """Re-encode video to H.264 for browser compatibility.
