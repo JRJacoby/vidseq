@@ -7,7 +7,7 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,12 +15,7 @@ from vidseq.api.dependencies import get_project_folder, get_project_session, get
 from vidseq.api.schemas import AlignmentTrainingRequest, VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.services import alignment_service
-from vidseq.services.alignment_service import (
-    AlignmentService,
-    heatmap_to_png,
-    load_prediction,
-    predictions_exist,
-)
+from vidseq.services.alignment_service import AlignmentService
 
 
 def get_aligned_video_path(project_path: Path, video_name: str) -> Path:
@@ -450,43 +445,6 @@ async def stream_aligned_video(
                 "Accept-Ranges": "bytes",
             },
         )
-
-
-@router.get("/projects/{project_id}/videos/{video_id}/alignment-predictions/exists")
-async def get_alignment_predictions_exist(
-    video: Video = Depends(get_video),
-    project_path: Path = Depends(get_project_folder),
-):
-    """Check if stored alignment predictions exist for a video."""
-    exists = predictions_exist(project_path, video.id)
-    logger.info(f"GET /alignment-predictions/exists: video_id={video.id}, exists={exists}")
-    return {"exists": exists}
-
-
-@router.get("/projects/{project_id}/videos/{video_id}/alignment-prediction/{frame_idx}")
-async def get_alignment_prediction_frame(
-    frame_idx: int,
-    video: Video = Depends(get_video),
-    project_path: Path = Depends(get_project_folder),
-):
-    """Get stored prediction heatmap for a specific frame.
-
-    Returns PNG image with R=front, G=rear (same format as /predict endpoint).
-    """
-    logger.info(f"GET /alignment-prediction/{frame_idx}: video_id={video.id}")
-
-    heatmap = load_prediction(project_path, video.id, frame_idx)
-    if heatmap is None:
-        logger.warning(f"GET /alignment-prediction/{frame_idx}: prediction not found")
-        raise HTTPException(
-            status_code=404,
-            detail=f"Prediction not found for video {video.id} frame {frame_idx}"
-        )
-
-    png_bytes = heatmap_to_png(heatmap)
-    logger.info(f"GET /alignment-prediction/{frame_idx}: returning PNG, size={len(png_bytes)} bytes")
-
-    return Response(content=png_bytes, media_type="image/png")
 
 
 @router.get("/projects/{project_id}/videos/{video_id}/alignment-labels")
