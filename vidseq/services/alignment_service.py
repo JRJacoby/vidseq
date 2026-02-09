@@ -7,7 +7,6 @@ using a U-Net model with ResNet18 encoder.
 import asyncio
 import collections
 import copy
-import io
 import logging
 import os
 import random
@@ -36,8 +35,6 @@ import numpy as np
 import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
-from PIL import Image
-from scipy.optimize import curve_fit
 from scipy.signal import savgol_filter
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,8 +49,6 @@ from vidseq.services.exceptions import AlignmentTrainingError
 
 # Constants
 DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
-HEATMAP_OUTPUT_SIZE = 64  # Decoder output resolution (4x upscale from 16x16)
-HEATMAP_STRIDE = DINOV2_INPUT_SIZE / HEATMAP_OUTPUT_SIZE  # 3.5
 
 # ImageNet normalization for DINOv2
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -284,149 +279,6 @@ def preprocess_for_dinov2(
     return tensor, scale, pad_left, pad_top, orig_w, orig_h
 
 
-def heatmap_coords_to_original(
-    hm_x: float,
-    hm_y: float,
-    scale: float,
-    pad_left: int,
-    pad_top: int,
-    orig_w: int,
-    orig_h: int,
-) -> tuple[float, float]:
-    """Convert coordinates from heatmap space to original image space.
-
-    Args:
-        hm_x, hm_y: Coordinates in 64×64 heatmap space (0-63)
-        scale: Scale factor used in preprocessing
-        pad_left, pad_top: Padding offsets used in preprocessing
-        orig_w, orig_h: Original image dimensions
-
-    Returns:
-        (x, y) normalized coordinates in original image (0-1)
-    """
-    # Convert from heatmap to 224×224 padded space
-    x_224 = hm_x * HEATMAP_STRIDE
-    y_224 = hm_y * HEATMAP_STRIDE
-
-    # Remove padding offset
-    x_scaled = x_224 - pad_left
-    y_scaled = y_224 - pad_top
-
-    # Undo scaling to get original pixel coords
-    x_orig = x_scaled / scale
-    y_orig = y_scaled / scale
-
-    # Normalize to 0-1
-    x_norm = x_orig / orig_w
-    y_norm = y_orig / orig_h
-
-    # Clamp to valid range
-    x_norm = float(np.clip(x_norm, 0.0, 1.0))
-    y_norm = float(np.clip(y_norm, 0.0, 1.0))
-
-    return x_norm, y_norm
-
-
-def dark_postprocess(heatmap: np.ndarray) -> tuple[float, float]:
-    """DARK (Distribution-Aware Keypoint Regression) sub-pixel refinement.
-
-    Uses Taylor expansion around the argmax to refine keypoint location.
-
-    Args:
-        heatmap: (H, W) heatmap array
-
-    Returns:
-        (x, y) sub-pixel coordinates in heatmap space
-    """
-    h, w = heatmap.shape
-
-    # Find initial argmax
-    max_idx = np.argmax(heatmap)
-    max_y, max_x = np.unravel_index(max_idx, heatmap.shape)
-
-    # If on boundary, can't compute gradient - return argmax
-    if max_x <= 0 or max_x >= w - 1 or max_y <= 0 or max_y >= h - 1:
-        return float(max_x), float(max_y)
-
-    # Get local 3×3 patch (in log space for numerical stability)
-    # Add small epsilon to avoid log(0)
-    eps = 1e-10
-    patch = np.log(heatmap[max_y-1:max_y+2, max_x-1:max_x+2] + eps)
-
-    # Compute gradient
-    dx = (patch[1, 2] - patch[1, 0]) / 2
-    dy = (patch[2, 1] - patch[0, 1]) / 2
-
-    # Compute Hessian
-    dxx = patch[1, 2] - 2 * patch[1, 1] + patch[1, 0]
-    dyy = patch[2, 1] - 2 * patch[1, 1] + patch[0, 1]
-    dxy = (patch[2, 2] - patch[2, 0] - patch[0, 2] + patch[0, 0]) / 4
-
-    # Solve for offset: offset = -H^(-1) @ gradient
-    det = dxx * dyy - dxy * dxy
-    if abs(det) < 1e-6:
-        # Singular Hessian - return argmax
-        return float(max_x), float(max_y)
-
-    offset_x = -(dyy * dx - dxy * dy) / det
-    offset_y = -(dxx * dy - dxy * dx) / det
-
-    # Clamp offset to [-0.5, 0.5] (shouldn't move more than half a pixel)
-    offset_x = np.clip(offset_x, -0.5, 0.5)
-    offset_y = np.clip(offset_y, -0.5, 0.5)
-
-    refined_x = max_x + offset_x
-    refined_y = max_y + offset_y
-
-    return float(refined_x), float(refined_y)
-
-
-def original_coords_to_heatmap(
-    x_norm: float,
-    y_norm: float,
-    orig_w: int,
-    orig_h: int,
-) -> tuple[float, float, float, int, int]:
-    """Convert normalized coordinates to 64×64 heatmap space.
-
-    This applies the same preprocessing as DINOv2 (rescale, pad) and
-    returns the coordinate in heatmap space.
-
-    Args:
-        x_norm, y_norm: Normalized coordinates (0-1) in original image
-        orig_w, orig_h: Original image dimensions
-
-    Returns:
-        (hm_x, hm_y, scale, pad_left, pad_top)
-        - hm_x, hm_y: Coordinates in 64×64 heatmap space (0-63)
-        - scale, pad_left, pad_top: Preprocessing params for reference
-    """
-    # Calculate preprocessing params (same as preprocess_for_dinov2)
-    scale = DINOV2_INPUT_SIZE / max(orig_w, orig_h)
-    new_w = int(orig_w * scale)
-    new_h = int(orig_h * scale)
-    pad_left = (DINOV2_INPUT_SIZE - new_w) // 2
-    pad_top = (DINOV2_INPUT_SIZE - new_h) // 2
-
-    # Convert normalized coords to original pixel coords
-    x_orig = x_norm * orig_w
-    y_orig = y_norm * orig_h
-
-    # Apply scaling
-    x_scaled = x_orig * scale
-    y_scaled = y_orig * scale
-
-    # Add padding offset
-    x_224 = x_scaled + pad_left
-    y_224 = y_scaled + pad_top
-
-    # Convert to heatmap space
-    hm_x = x_224 / HEATMAP_STRIDE
-    hm_y = y_224 / HEATMAP_STRIDE
-
-    return hm_x, hm_y, scale, pad_left, pad_top
-
-
 # Add console handler if not already present
 if not logger.handlers:
     handler = logging.StreamHandler()
@@ -437,37 +289,6 @@ if not logger.handlers:
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-
-
-def generate_gaussian_heatmap(
-    x: float,
-    y: float,
-    height: int,
-    width: int,
-    sigma: float = 0.10,
-) -> np.ndarray:
-    """Generate a gaussian heatmap centered at (x, y).
-
-    Args:
-        x: Normalized x coordinate (0-1)
-        y: Normalized y coordinate (0-1)
-        height: Height of output heatmap
-        width: Width of output heatmap
-        sigma: Standard deviation of gaussian (normalized, default 0.10 = 10% of image)
-
-    Returns:
-        Heatmap array of shape (height, width) with values in [0, 1]
-    """
-    # Create coordinate grids (normalized 0-1)
-    yy, xx = np.mgrid[0:height, 0:width]
-    xx = xx / width
-    yy = yy / height
-
-    # Compute gaussian
-    dist_sq = (xx - x) ** 2 + (yy - y) ** 2
-    heatmap = np.exp(-dist_sq / (2 * sigma ** 2))
-
-    return heatmap.astype(np.float32)
 
 
 # --- Augmentation Configuration ---
@@ -738,176 +559,6 @@ def _apply_scaling_augmentation(
     rear_y = float(np.clip(rear_y, 0, 1))
 
     return frame, front_x, front_y, rear_x, rear_y
-
-
-def heatmap_to_png(heatmap: np.ndarray) -> bytes:
-    """Convert (H, W, 2) heatmap to PNG bytes.
-
-    Encodes front probability as R channel, rear probability as G channel.
-
-    Args:
-        heatmap: Array of shape (H, W, 2) with values in [0, 1]
-
-    Returns:
-        PNG image bytes
-    """
-    h, w, c = heatmap.shape
-    logger.debug(f"heatmap_to_png: input_shape=({h}, {w}, {c})")
-
-    # Scale to 0-255 range
-    r_channel = (heatmap[:, :, 0] * 255).astype(np.uint8)  # Front
-    g_channel = (heatmap[:, :, 1] * 255).astype(np.uint8)  # Rear
-    b_channel = np.zeros((h, w), dtype=np.uint8)
-
-    # Stack into RGB image
-    rgb = np.stack([r_channel, g_channel, b_channel], axis=2)
-
-    # Convert to PNG
-    img = Image.fromarray(rgb, mode="RGB")
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    png_bytes = buffer.getvalue()
-
-    logger.debug(f"heatmap_to_png: output_size={len(png_bytes)} bytes, R_max={r_channel.max()}, G_max={g_channel.max()}")
-
-    return png_bytes
-
-
-# --- Prediction Storage (HDF5) ---
-
-
-def save_prediction(
-    project_path: Path,
-    video_id: int,
-    frame_idx: int,
-    heatmap: np.ndarray,
-) -> None:
-    """Save prediction heatmap to HDF5.
-
-    Args:
-        project_path: Path to project folder
-        video_id: Video ID
-        frame_idx: Frame index
-        heatmap: (H, W, 2) float32 array with front/rear probabilities
-    """
-    with alignment_keypoints(project_path, video_id, "a") as keypoints:
-        keypoints[frame_idx] = heatmap.astype(np.float32)
-
-
-def load_prediction(
-    project_path: Path,
-    video_id: int,
-    frame_idx: int,
-) -> Optional[np.ndarray]:
-    """Load prediction heatmap from HDF5.
-
-    Args:
-        project_path: Path to project folder
-        video_id: Video ID
-        frame_idx: Frame index
-
-    Returns:
-        (H, W, 2) float32 array or None if not found
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
-    if not h5_path.exists():
-        return None
-
-    try:
-        with alignment_keypoints(project_path, video_id) as keypoints:
-            return keypoints[frame_idx]
-    except Exception as e:
-        logger.warning(f"load_prediction: failed to load frame {frame_idx} for video {video_id}: {e}")
-        return None
-
-
-def predictions_exist(project_path: Path, video_id: int) -> bool:
-    """Check if predictions exist for a video.
-
-    Args:
-        project_path: Path to project folder
-        video_id: Video ID
-
-    Returns:
-        True if predictions HDF5 file exists and has data
-    """
-    h5_path = project_path / "array_data" / str(video_id) / "alignment_keypoints.h5"
-    if not h5_path.exists():
-        return False
-
-    try:
-        with alignment_keypoints(project_path, video_id) as keypoints:
-            # Check if any data is non-zero (array is pre-allocated with zeros)
-            return keypoints.shape[0] > 0
-    except Exception:
-        return False
-
-
-def _gaussian_2d(coords: tuple, amplitude: float, x0: float, y0: float, sigma: float) -> np.ndarray:
-    """2D Gaussian function for curve fitting.
-
-    Args:
-        coords: Tuple of (x, y) coordinate arrays
-        amplitude: Peak amplitude
-        x0, y0: Center coordinates (normalized 0-1)
-        sigma: Standard deviation (normalized)
-
-    Returns:
-        Flattened gaussian values
-    """
-    x, y = coords
-    return amplitude * np.exp(-((x - x0)**2 + (y - y0)**2) / (2 * sigma**2))
-
-
-def fit_gaussian_to_heatmap(heatmap: np.ndarray) -> tuple[float, float]:
-    """Fit 2D Gaussian to heatmap and return (x, y) of peak.
-
-    Args:
-        heatmap: (H, W) array with values in [0, 1]
-
-    Returns:
-        (x, y) normalized coordinates (0-1) of gaussian center
-    """
-    h, w = heatmap.shape
-
-    # Create normalized coordinate grids
-    yy, xx = np.mgrid[0:h, 0:w]
-    xx_norm = xx / w
-    yy_norm = yy / h
-
-    # Initial guess from argmax
-    max_idx = np.argmax(heatmap)
-    max_y, max_x = np.unravel_index(max_idx, heatmap.shape)
-    x0_init = max_x / w
-    y0_init = max_y / h
-    amp_init = heatmap[max_y, max_x]
-
-    # Flatten arrays for curve_fit
-    x_flat = xx_norm.ravel()
-    y_flat = yy_norm.ravel()
-    z_flat = heatmap.ravel()
-
-    try:
-        # Fit gaussian with bounds
-        popt, _ = curve_fit(
-            _gaussian_2d,
-            (x_flat, y_flat),
-            z_flat,
-            p0=[amp_init, x0_init, y0_init, 0.05],  # Initial: amp, x0, y0, sigma
-            bounds=(
-                [0, 0, 0, 0.01],      # Lower bounds
-                [2, 1, 1, 0.5]        # Upper bounds
-            ),
-            maxfev=1000,
-        )
-        _, x0, y0, _ = popt
-        logger.debug(f"fit_gaussian_to_heatmap: fitted center=({x0:.3f}, {y0:.3f})")
-        return x0, y0
-
-    except (RuntimeError, ValueError) as e:
-        # Fall back to argmax if fitting fails
-        logger.warning(f"fit_gaussian_to_heatmap: fitting failed ({e}), falling back to argmax")
-        return x0_init, y0_init
 
 
 def calculate_rotation_angle(
