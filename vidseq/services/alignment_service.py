@@ -38,6 +38,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from scipy.optimize import curve_fit
+from scipy.signal import savgol_filter
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -61,10 +62,12 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 # For backward compatibility
 ALIGNMENT_INPUT_SIZE = DINOV2_INPUT_SIZE
 
-# OneEuro filter defaults for temporal smoothing
-ONE_EURO_MIN_CUTOFF = 1.0  # Minimum cutoff frequency (Hz) - lower = more smoothing
-ONE_EURO_BETA = 0.0        # Speed coefficient - 0 = simple low-pass filter (no adaptive behavior)
-ONE_EURO_D_CUTOFF = 1.0    # Derivative cutoff frequency (Hz)
+# Savitzky-Golay smoothing for keypoint coordinates (bidirectional polynomial filter)
+SAVGOL_WINDOW_LENGTH = 11  # ~367ms at 30fps — fits cubic polynomial over this window
+SAVGOL_POLYORDER = 3       # Cubic polynomial — preserves acceleration in real movements
+
+# DINOv2 feature averaging window (centered sliding window before decoder)
+FEATURE_AVG_WINDOW = 5     # ~167ms at 30fps — average 5 DINOv2 feature tensors before decoding
 
 
 @dataclass
