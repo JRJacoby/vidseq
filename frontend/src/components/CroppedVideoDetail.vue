@@ -3,8 +3,6 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getCroppedVideoStreamUrl,
-  hasAlignmentPredictions,
-  getStoredAlignmentPredictionUrl,
   getVideoAlignmentLabels,
   saveAlignmentLabel,
   deleteAlignmentLabel,
@@ -27,13 +25,7 @@ const { video, isLoading, error, refresh: refreshVideo } = useVideo(videoId, pro
 const viewStart = ref(0)
 const viewEnd = ref(0)
 
-// Heatmap overlay state
-const hasStoredPredictions = ref(false)
-const showHeatmap = ref(false)
-const heatmapImage = ref<HTMLImageElement | null>(null)
 const overlayCanvasRef = ref<HTMLCanvasElement | null>(null)
-const lastLoadedFrameIdx = ref<number | null>(null)
-const isLoadingHeatmap = ref(false)
 
 // Training mode state
 const isTrainingMode = ref(false)
@@ -56,11 +48,6 @@ const currentFrameIdx = computed(() => {
 const loadExtraData = async () => {
   if (!video.value) return
   try {
-    // Check if stored predictions exist
-    hasStoredPredictions.value = await hasAlignmentPredictions(
-      projectId.value,
-      videoId.value
-    )
     // Load alignment labels for this video
     const labelsResponse = await getVideoAlignmentLabels(
       projectId.value,
@@ -109,31 +96,7 @@ const handleViewChange = (start: number, end: number) => {
   viewEnd.value = end
 }
 
-// Load heatmap for current frame
-async function loadHeatmap(frameIdx: number) {
-  if (!projectId.value || !videoId.value) return
-  if (isLoadingHeatmap.value) return
-  if (lastLoadedFrameIdx.value === frameIdx) return
-
-  isLoadingHeatmap.value = true
-  lastLoadedFrameIdx.value = frameIdx
-
-  const url = getStoredAlignmentPredictionUrl(projectId.value, videoId.value, frameIdx)
-  const img = new Image()
-  img.crossOrigin = 'anonymous'
-  img.onload = () => {
-    heatmapImage.value = img
-    isLoadingHeatmap.value = false
-    renderOverlay()
-  }
-  img.onerror = () => {
-    heatmapImage.value = null
-    isLoadingHeatmap.value = false
-  }
-  img.src = url
-}
-
-// Render heatmap overlay and training points
+// Render training points overlay
 function renderOverlay() {
   const canvas = overlayCanvasRef.value
   const videoEl = videoRef.value
@@ -148,44 +111,6 @@ function renderOverlay() {
   if (!ctx) return
 
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-  // Draw heatmap if enabled
-  if (heatmapImage.value && showHeatmap.value) {
-    // Create a temporary canvas to read heatmap pixels
-    const tempCanvas = document.createElement('canvas')
-    tempCanvas.width = heatmapImage.value.width
-    tempCanvas.height = heatmapImage.value.height
-    const tempCtx = tempCanvas.getContext('2d')
-    if (tempCtx) {
-      tempCtx.drawImage(heatmapImage.value, 0, 0)
-      const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height)
-      const data = imageData.data
-
-      // Create overlay image data
-      const overlayData = ctx.createImageData(canvas.width, canvas.height)
-      const scaleX = tempCanvas.width / canvas.width
-      const scaleY = tempCanvas.height / canvas.height
-
-      for (let y = 0; y < canvas.height; y++) {
-        for (let x = 0; x < canvas.width; x++) {
-          const srcX = Math.floor(x * scaleX)
-          const srcY = Math.floor(y * scaleY)
-          const srcIdx = (srcY * tempCanvas.width + srcX) * 4
-          const dstIdx = (y * canvas.width + x) * 4
-
-          const frontProb = (data[srcIdx] ?? 0) / 255     // R channel = front
-          const rearProb = (data[srcIdx + 1] ?? 0) / 255  // G channel = rear
-
-          // Blend: green for front, red for rear
-          overlayData.data[dstIdx] = Math.floor(rearProb * 255)      // R
-          overlayData.data[dstIdx + 1] = Math.floor(frontProb * 255) // G
-          overlayData.data[dstIdx + 2] = 0                            // B
-          overlayData.data[dstIdx + 3] = Math.floor(Math.max(frontProb, rearProb) * 150) // A
-        }
-      }
-      ctx.putImageData(overlayData, 0, 0)
-    }
-  }
 
   // Draw training points if in training mode
   if (isTrainingMode.value) {
@@ -217,25 +142,11 @@ function renderOverlay() {
   }
 }
 
-// Toggle heatmap display
-function toggleHeatmap() {
-  showHeatmap.value = !showHeatmap.value
-  if (showHeatmap.value) {
-    loadHeatmap(currentFrameIdx.value)
-  } else {
-    renderOverlay() // Clear overlay
-  }
-}
-
 // Toggle training mode
 async function toggleTrainingMode() {
   isTrainingMode.value = !isTrainingMode.value
   frontPoint.value = null
   rearPoint.value = null
-  // Disable heatmap when training
-  if (isTrainingMode.value && showHeatmap.value) {
-    showHeatmap.value = false
-  }
   // Wait for canvas to be rendered in DOM before setting dimensions
   await nextTick()
   renderOverlay()
@@ -326,22 +237,11 @@ async function handleResetVideo() {
   }
 }
 
-// Watch for frame changes when heatmap is enabled, and discard partial labels
+// Discard partial label (front without rear) when navigating away
 watch(currentFrameIdx, (newFrame, oldFrame) => {
-  if (showHeatmap.value && hasStoredPredictions.value) {
-    loadHeatmap(newFrame)
-  }
-  // Discard partial label (front without rear) when navigating away
   if (isTrainingMode.value && frontPoint.value && !rearPoint.value && newFrame !== oldFrame) {
     frontPoint.value = null
     renderOverlay()
-  }
-})
-
-// Re-render overlay when video resizes
-watch([() => videoRef.value?.videoWidth, () => videoRef.value?.videoHeight], () => {
-  if (showHeatmap.value) {
-    nextTick(() => renderOverlay())
   }
 })
 
@@ -391,7 +291,7 @@ onMounted(() => {
                 Your browser does not support the video tag.
               </video>
               <canvas
-                v-if="showHeatmap || isTrainingMode"
+                v-if="isTrainingMode"
                 ref="overlayCanvasRef"
                 class="overlay-canvas"
                 :class="{ 'training-mode': isTrainingMode }"
@@ -488,20 +388,6 @@ onMounted(() => {
           <span class="count-value">{{ alignmentLabelFrames.length }}</span>
         </div>
 
-        <template v-if="hasStoredPredictions && !isTrainingMode">
-          <h4 class="action-bar-title">Debug</h4>
-          <button
-            class="heatmap-toggle-button"
-            :class="{ active: showHeatmap }"
-            @click="toggleHeatmap"
-          >
-            {{ showHeatmap ? 'Hide' : 'Show' }} Prediction Heatmap
-          </button>
-          <p v-if="showHeatmap" class="heatmap-legend">
-            <span class="legend-front">Green = Front</span>
-            <span class="legend-rear">Red = Rear</span>
-          </p>
-        </template>
       </div>
     </aside>
   </div>
@@ -645,47 +531,6 @@ onMounted(() => {
   color: #888;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-}
-
-.heatmap-toggle-button {
-  width: 100%;
-  padding: 0.75rem 1rem;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  background-color: #f8f8f8;
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.heatmap-toggle-button:hover {
-  background-color: #e8e8e8;
-  border-color: #999;
-}
-
-.heatmap-toggle-button.active {
-  background-color: #e3f2fd;
-  border-color: #2196f3;
-  color: #1976d2;
-}
-
-.heatmap-legend {
-  margin: 0.75rem 0 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.85rem;
-}
-
-.legend-front {
-  color: #22c55e;
-  font-weight: 500;
-}
-
-.legend-rear {
-  color: #ef4444;
-  font-weight: 500;
 }
 
 .frame-indicator {

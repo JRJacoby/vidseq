@@ -783,34 +783,6 @@ export function connectAlignmentApplyStream(projectId: number): EventSource {
     return new EventSource(getVideosAlignmentStreamUrl(projectId))
 }
 
-// --- Stored Alignment Predictions (for debugging) ---
-
-export interface AlignmentPredictionsExistsResponse {
-    exists: boolean
-}
-
-export async function hasAlignmentPredictions(
-    projectId: number,
-    videoId: number
-): Promise<boolean> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-predictions/exists`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to check alignment predictions'))
-    }
-    const data: AlignmentPredictionsExistsResponse = await response.json()
-    return data.exists
-}
-
-export function getStoredAlignmentPredictionUrl(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): string {
-    return `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-prediction/${frameIdx}`
-}
-
 // --- Video-specific Alignment Labels ---
 
 export interface VideoAlignmentLabelsResponse {
