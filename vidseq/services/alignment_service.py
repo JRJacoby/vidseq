@@ -1981,6 +1981,70 @@ class AlignmentService:
         logger.info(f"_load_model: decoder loaded and cached")
         return decoder
 
+    def _extract_features(
+        self,
+        frame: np.ndarray,
+        dinov2: nn.Module,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Extract DINOv2 patch token features from a frame.
+
+        Args:
+            frame: Input frame as (H, W, 3) uint8 BGR array
+            dinov2: Loaded DINOv2 model
+            device: Torch device
+
+        Returns:
+            Patch tokens tensor of shape (1, 1536, 16, 16)
+        """
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame_rgb)
+        frame_tensor = frame_tensor.unsqueeze(0).to(device)
+
+        use_amp = device.type == 'cuda'
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+            features = dinov2.forward_features(frame_tensor)
+            patch_tokens = features["x_norm_patchtokens"]  # (1, 256, 1536)
+            patch_tokens = patch_tokens.permute(0, 2, 1)  # (1, 1536, 256)
+            patch_tokens = patch_tokens.reshape(1, 1536, 16, 16)
+
+        return patch_tokens
+
+    def _decode_features(
+        self,
+        patch_tokens: torch.Tensor,
+        decoder: nn.Module,
+        orig_h: int,
+        orig_w: int,
+    ) -> np.ndarray:
+        """Decode averaged DINOv2 features into a heatmap.
+
+        Args:
+            patch_tokens: Features of shape (1, 1536, 16, 16)
+            decoder: Loaded decoder model
+            orig_h: Original frame height (for resizing output)
+            orig_w: Original frame width (for resizing output)
+
+        Returns:
+            Heatmap array of shape (H, W, 2) with values in [0, 1]
+        """
+        device = patch_tokens.device
+        use_amp = device.type == 'cuda'
+
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp):
+            output = decoder(patch_tokens)
+            output = torch.sigmoid(output)
+
+        heatmap = output[0].float().cpu().numpy()  # (2, 64, 64)
+        heatmap = np.transpose(heatmap, (1, 2, 0))  # (64, 64, 2)
+
+        heatmap_resized = cv2.resize(
+            heatmap, (orig_w, orig_h),
+            interpolation=cv2.INTER_LINEAR
+        )
+
+        return heatmap_resized
+
     def predict_sync(
         self,
         project_path: Path,
