@@ -199,39 +199,21 @@ def _load_dinov2(device: torch.device) -> nn.Module:
     return model
 
 
-class AlignmentDecoder(nn.Module):
-    """Lightweight CNN decoder for upsampling DINOv2 features to heatmaps.
+class HeadingVectorDecoder(nn.Module):
+    """Predicts heading direction (cos θ, sin θ) from DINOv2 features.
 
-    Takes 16×16×1536 patch tokens and outputs 64×64×2 heatmaps (front/rear).
+    Uses global average pooling to collapse spatial dimensions, then an MLP
+    to predict a 2D unit vector representing the animal's heading direction.
     """
 
-    def __init__(self, in_channels: int = 1536, num_keypoints: int = 2):
+    def __init__(self, in_channels: int = 1536):
         super().__init__()
-
-        # 1. Channel reduction (1x1 conv - efficient)
-        self.reduce = nn.Sequential(
-            nn.Conv2d(in_channels, 512, kernel_size=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, 256),
+            nn.ReLU(),
+            nn.Linear(256, 2),
         )
-
-        # 2. First upsample: 16→32 (clean 2x with deconv)
-        self.up1 = nn.Sequential(
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU()
-        )
-
-        # 3. Second upsample: 32→64 (bilinear + conv for smoothing)
-        self.up2 = nn.Sequential(
-            nn.Upsample(scale_factor=2.0, mode='bilinear', align_corners=False),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-
-        # 4. Final prediction (1x1 conv)
-        self.final = nn.Conv2d(128, num_keypoints, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -240,12 +222,12 @@ class AlignmentDecoder(nn.Module):
             x: DINOv2 patch tokens reshaped to (B, 1536, 16, 16)
 
         Returns:
-            Heatmaps of shape (B, 2, 64, 64)
+            Unit vectors of shape (B, 2) representing (cos θ, sin θ)
         """
-        x = self.reduce(x)  # (B, 512, 16, 16)
-        x = self.up1(x)     # (B, 256, 32, 32)
-        x = self.up2(x)     # (B, 128, 64, 64)
-        x = self.final(x)   # (B, 2, 64, 64)
+        x = self.pool(x)          # (B, 1536, 1, 1)
+        x = x.flatten(1)          # (B, 1536)
+        x = self.mlp(x)           # (B, 2)
+        x = nn.functional.normalize(x, dim=-1)  # Unit vector
         return x
 
 
