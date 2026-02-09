@@ -756,32 +756,13 @@ class AlignmentDataset(Dataset):
         # Preprocess for DINOv2 (rescale longest side to 224, pad to square, normalize)
         frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame)
 
-        # Convert normalized coords to 64×64 heatmap space
-        front_hm_x, front_hm_y, _, _, _ = original_coords_to_heatmap(
-            front_x, front_y, orig_w, orig_h
-        )
-        rear_hm_x, rear_hm_y, _, _, _ = original_coords_to_heatmap(
-            rear_x, rear_y, orig_w, orig_h
-        )
+        # Compute heading angle from keypoints
+        dx = (front_x - rear_x) * orig_w
+        dy = (front_y - rear_y) * orig_h
+        angle = np.arctan2(dy, dx)
 
-        # Normalize heatmap coords to 0-1 for generate_gaussian_heatmap
-        front_hm_x_norm = front_hm_x / HEATMAP_OUTPUT_SIZE
-        front_hm_y_norm = front_hm_y / HEATMAP_OUTPUT_SIZE
-        rear_hm_x_norm = rear_hm_x / HEATMAP_OUTPUT_SIZE
-        rear_hm_y_norm = rear_hm_y / HEATMAP_OUTPUT_SIZE
-
-        # Generate target heatmaps at 64×64 resolution
-        front_heatmap = generate_gaussian_heatmap(
-            front_hm_x_norm, front_hm_y_norm, HEATMAP_OUTPUT_SIZE, HEATMAP_OUTPUT_SIZE
-        )
-        rear_heatmap = generate_gaussian_heatmap(
-            rear_hm_x_norm, rear_hm_y_norm, HEATMAP_OUTPUT_SIZE, HEATMAP_OUTPUT_SIZE
-        )
-
-        # Stack into (2, H, W) tensor
-        target = torch.from_numpy(
-            np.stack([front_heatmap, rear_heatmap], axis=0)
-        ).float()
+        # Target is (cos θ, sin θ) unit vector
+        target = torch.tensor([np.cos(angle), np.sin(angle)], dtype=torch.float32)
 
         return frame_tensor, target
 
