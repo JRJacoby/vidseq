@@ -1300,12 +1300,12 @@ class AlignmentService:
             logger.info("train_model_sync: loaded frozen DINOv2 ViT-g")
 
             # Create trainable decoder
-            decoder = AlignmentDecoder(in_channels=1536, num_keypoints=2)
+            decoder = HeadingVectorDecoder(in_channels=1536)
             decoder = decoder.to(device)
 
             # Count trainable parameters
             num_params = sum(p.numel() for p in decoder.parameters() if p.requires_grad)
-            logger.info(f"train_model_sync: created AlignmentDecoder with {num_params:,} trainable parameters")
+            logger.info(f"train_model_sync: created HeadingVectorDecoder with {num_params:,} trainable parameters")
 
             # Create train dataset with augmentation
             train_dataset = AlignmentDataset(
@@ -1384,7 +1384,6 @@ class AlignmentService:
 
                         # Pass through trainable decoder
                         outputs = decoder(patch_tokens)
-                        outputs = torch.sigmoid(outputs)
                         loss = criterion(outputs, targets)
 
                     # Backward pass outside autocast (bfloat16 doesn't need GradScaler)
@@ -1415,7 +1414,6 @@ class AlignmentService:
                             patch_tokens = patch_tokens.reshape(B, 1536, 16, 16)
 
                             outputs = decoder(patch_tokens)
-                            outputs = torch.sigmoid(outputs)
                             loss = criterion(outputs, targets)
 
                             val_loss += loss.item()
