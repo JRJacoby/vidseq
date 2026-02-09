@@ -561,41 +561,6 @@ def _apply_scaling_augmentation(
     return frame, front_x, front_y, rear_x, rear_y
 
 
-def calculate_rotation_angle(
-    front_x: float,
-    front_y: float,
-    rear_x: float,
-    rear_y: float,
-    width: int = 1,
-    height: int = 1,
-) -> float:
-    """Calculate rotation angle to make animal face right.
-
-    Args:
-        front_x, front_y: Front (nose) keypoint coordinates (normalized 0-1)
-        rear_x, rear_y: Rear (tail) keypoint coordinates (normalized 0-1)
-        width, height: Frame dimensions for aspect ratio correction
-
-    Returns:
-        Angle in degrees for cv2.getRotationMatrix2D
-    """
-    # Vector from rear to front, scaled by dimensions for correct aspect ratio
-    dx = (front_x - rear_x) * width
-    dy = (front_y - rear_y) * height
-
-    # Current angle (radians) - note: y increases downward in image coords
-    # arctan2(dy, dx) gives angle from positive x-axis
-    angle_rad = np.arctan2(dy, dx)
-
-    # Convert to degrees
-    # We want animal facing right (angle = 0)
-    # In OpenCV with image coords (y-down), positive angle = visually clockwise
-    # To rotate the animal TO 0°, we need to rotate BY the negative of its current angle
-    # But since positive rotation is CW (decreases angle), we use the angle directly
-    rotation_degrees = np.degrees(angle_rad)
-
-    return rotation_degrees
-
 
 def rotate_frame(frame: np.ndarray, angle_degrees: float) -> np.ndarray:
     """Rotate frame around center by given angle.
@@ -1791,8 +1756,8 @@ class AlignmentService:
                 self._alignment_progress.current_frame = 0
                 self._fps_timestamps.clear()
 
-                # --- Pass 1: Extract features with averaging, decode, collect raw keypoints ---
-                logger.info(f"apply_alignment_sync: pass 1 - extracting keypoints ({frame_count} frames)")
+                # --- Pass 1: Extract features with averaging, decode, collect heading vectors ---
+                logger.info(f"apply_alignment_sync: pass 1 - extracting heading vectors ({frame_count} frames)")
 
                 # Load models once for the video
                 decoder = self._load_model(project_path)
@@ -1803,11 +1768,8 @@ class AlignmentService:
                 half_win = FEATURE_AVG_WINDOW // 2  # e.g., 2 for window=5
                 feature_buffer: collections.deque[torch.Tensor] = collections.deque(maxlen=FEATURE_AVG_WINDOW)
 
-                # Store raw keypoint coords from pass 1
-                raw_front_x = np.zeros(frame_count, dtype=np.float64)
-                raw_front_y = np.zeros(frame_count, dtype=np.float64)
-                raw_rear_x = np.zeros(frame_count, dtype=np.float64)
-                raw_rear_y = np.zeros(frame_count, dtype=np.float64)
+                raw_cos = np.zeros(frame_count, dtype=np.float64)
+                raw_sin = np.zeros(frame_count, dtype=np.float64)
 
                 # Create temp output file (mp4v codec, then re-encode to H.264)
                 temp_path = output_dir / f"{cropped_path.stem}_aligned.temp.mp4"
@@ -1852,22 +1814,10 @@ class AlignmentService:
                         if decode_idx >= 0:
                             # Average all features in the buffer
                             avg_features = torch.stack(list(feature_buffer)).mean(dim=0)
-
-                            # Decode averaged features
-                            heatmap = self._decode_features(avg_features, decoder, height, width)
-                            keypoints_data[decode_idx] = heatmap
-
-                            # Extract keypoints via DARK
-                            front_heatmap = heatmap[:, :, 0]
-                            rear_heatmap = heatmap[:, :, 1]
-                            front_x_px, front_y_px = dark_postprocess(front_heatmap)
-                            rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
-
-                            h, w = front_heatmap.shape
-                            raw_front_x[decode_idx] = front_x_px / w
-                            raw_front_y[decode_idx] = front_y_px / h
-                            raw_rear_x[decode_idx] = rear_x_px / w
-                            raw_rear_y[decode_idx] = rear_y_px / h
+                            cos_val, sin_val = self._decode_features(avg_features, decoder)
+                            keypoints_data[decode_idx] = [cos_val, sin_val]
+                            raw_cos[decode_idx] = cos_val
+                            raw_sin[decode_idx] = sin_val
 
                         # Update progress (pass 1)
                         now = time.time()
@@ -1889,47 +1839,32 @@ class AlignmentService:
                         feature_buffer.popleft()
                         if len(feature_buffer) > 0:
                             avg_features = torch.stack(list(feature_buffer)).mean(dim=0)
-                            heatmap = self._decode_features(avg_features, decoder, height, width)
-                            keypoints_data[decode_idx] = heatmap
+                            cos_val, sin_val = self._decode_features(avg_features, decoder)
+                            keypoints_data[decode_idx] = [cos_val, sin_val]
+                            raw_cos[decode_idx] = cos_val
+                            raw_sin[decode_idx] = sin_val
 
-                            front_heatmap = heatmap[:, :, 0]
-                            rear_heatmap = heatmap[:, :, 1]
-                            front_x_px, front_y_px = dark_postprocess(front_heatmap)
-                            rear_x_px, rear_y_px = dark_postprocess(rear_heatmap)
-
-                            h, w = front_heatmap.shape
-                            raw_front_x[decode_idx] = front_x_px / w
-                            raw_front_y[decode_idx] = front_y_px / h
-                            raw_rear_x[decode_idx] = rear_x_px / w
-                            raw_rear_y[decode_idx] = rear_y_px / h
-
-                    # --- Apply Savitzky-Golay smoothing to keypoint coordinates ---
-                    logger.info(f"apply_alignment_sync: smoothing keypoints (window={SAVGOL_WINDOW_LENGTH}, polyorder={SAVGOL_POLYORDER})")
+                    logger.info(f"apply_alignment_sync: smoothing heading vectors (window={SAVGOL_WINDOW_LENGTH}, polyorder={SAVGOL_POLYORDER})")
 
                     win = min(SAVGOL_WINDOW_LENGTH, frame_count)
                     if win % 2 == 0:
                         win -= 1
                     if win < SAVGOL_POLYORDER + 2:
-                        logger.warning(f"apply_alignment_sync: too few frames ({frame_count}) for SavGol, using raw keypoints")
-                        smooth_front_x = raw_front_x
-                        smooth_front_y = raw_front_y
-                        smooth_rear_x = raw_rear_x
-                        smooth_rear_y = raw_rear_y
+                        logger.warning(f"apply_alignment_sync: too few frames ({frame_count}) for SavGol, using raw heading")
+                        smooth_cos = raw_cos
+                        smooth_sin = raw_sin
                     else:
-                        smooth_front_x = savgol_filter(raw_front_x, win, SAVGOL_POLYORDER)
-                        smooth_front_y = savgol_filter(raw_front_y, win, SAVGOL_POLYORDER)
-                        smooth_rear_x = savgol_filter(raw_rear_x, win, SAVGOL_POLYORDER)
-                        smooth_rear_y = savgol_filter(raw_rear_y, win, SAVGOL_POLYORDER)
+                        smooth_cos = savgol_filter(raw_cos, win, SAVGOL_POLYORDER)
+                        smooth_sin = savgol_filter(raw_sin, win, SAVGOL_POLYORDER)
 
-                    # Compute angles from smoothed keypoints
-                    angles = np.array([
-                        calculate_rotation_angle(
-                            smooth_front_x[i], smooth_front_y[i],
-                            smooth_rear_x[i], smooth_rear_y[i],
-                            width, height,
-                        )
-                        for i in range(frame_count)
-                    ])
+                    # Re-normalize smoothed vectors back to unit circle
+                    norms = np.sqrt(smooth_cos**2 + smooth_sin**2)
+                    norms = np.maximum(norms, 1e-8)
+                    smooth_cos = smooth_cos / norms
+                    smooth_sin = smooth_sin / norms
+
+                    # Convert to angles (degrees)
+                    angles = np.degrees(np.arctan2(smooth_sin, smooth_cos))
 
                     # --- Pass 2: Re-read frames, rotate using smoothed angles, write output ---
                     logger.info(f"apply_alignment_sync: pass 2 - rotating frames ({frame_count} frames)")
