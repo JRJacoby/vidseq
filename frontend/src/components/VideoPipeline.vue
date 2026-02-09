@@ -37,6 +37,32 @@ const isExtracting = ref(false)
 const croppedVideoExists = ref<Record<number, boolean>>({})
 const alignedVideoExists = ref<Record<number, boolean>>({})
 
+// Video selection state
+const selectedVideoIds = ref(new Set<number>())
+
+const selectedCount = computed(() => selectedVideoIds.value.size)
+const allSelected = computed(() => selectedVideoIds.value.size === videos.value.length && videos.value.length > 0)
+const someSelected = computed(() => selectedVideoIds.value.size > 0 && !allSelected.value)
+const selectedVideoIdsList = computed(() => [...selectedVideoIds.value])
+
+const toggleVideo = (id: number) => {
+  const next = new Set(selectedVideoIds.value)
+  if (next.has(id)) {
+    next.delete(id)
+  } else {
+    next.add(id)
+  }
+  selectedVideoIds.value = next
+}
+
+const toggleAll = () => {
+  if (allSelected.value) {
+    selectedVideoIds.value = new Set()
+  } else {
+    selectedVideoIds.value = new Set(videos.value.map(v => v.id))
+  }
+}
+
 // Alignment state
 const alignmentStatus = ref<AlignmentStatus | null>(null)
 const alignmentEpochs = ref(100)
@@ -80,6 +106,7 @@ const loadVideos = async () => {
   if (!projectStore.currentProjectId) return
   isLoading.value = true
   try {
+    selectedVideoIds.value = new Set()
     videos.value = await getVideos(projectStore.currentProjectId)
   } catch (error) {
     console.error('Error loading videos:', error)
@@ -159,7 +186,7 @@ const handleSegmentAll = async () => {
   if (!projectId.value || isSegmenting.value) return
   isSegmenting.value = true
   try {
-    await createVideosSegmentation(projectId.value)
+    await createVideosSegmentation(projectId.value, selectedVideoIdsList.value)
     await loadVideos()
   } catch (e: any) {
     console.error('Failed to segment all videos:', e)
@@ -187,7 +214,7 @@ const handleExtractCroppedVideos = async () => {
   if (!projectId.value || isExtracting.value) return
   isExtracting.value = true
   try {
-    await createVideosExtraction(projectId.value)
+    await createVideosExtraction(projectId.value, selectedVideoIdsList.value)
     // Refresh status after starting extraction
     setTimeout(() => loadCroppedVideoStatus(), 1000)
   } catch (e: any) {
@@ -238,7 +265,7 @@ const handleTrainAlignment = async () => {
   try {
     // Fire-and-forget: endpoint returns immediately after starting training
     // TEST: no augment, early_stop_patience=20, lr_patience=10
-    await createAlignmentTraining(projectId.value, alignmentEpochs.value, false, 20, 10)
+    await createAlignmentTraining(projectId.value, alignmentEpochs.value, false, 20, 10, selectedVideoIdsList.value)
     // Refresh status - will now show is_training=true
     await loadAlignmentStatus()
     // Start polling to detect when training completes
@@ -260,7 +287,7 @@ const handleApplyAlignment = async () => {
 
   try {
     // Start alignment in background (returns immediately)
-    await createVideosAlignment(projectId.value)
+    await createVideosAlignment(projectId.value, selectedVideoIdsList.value)
     // Navigate to Alignment screen to monitor progress
     router.push(`/project/${projectId.value}/alignment`)
   } catch (e: any) {
@@ -307,7 +334,7 @@ const handleRunPCA = async () => {
   if (!projectId.value || isRunningPCA.value) return
   isRunningPCA.value = true
   try {
-    await createPCA(projectId.value, pcaComponents.value)
+    await createPCA(projectId.value, pcaComponents.value, selectedVideoIdsList.value)
     await loadPCAStatus()
   } catch (e: any) {
     console.error('Failed to run PCA:', e)
@@ -320,7 +347,7 @@ const handleRunPCA = async () => {
 const handleTrainDetector = async () => {
   if (!projectId.value || isDetectorTraining.value) return
   try {
-    await startDetectorTraining(1000)
+    await startDetectorTraining(1000, selectedVideoIdsList.value)
     // Navigate to detector training page to see progress
     router.push(`/project/${projectId.value}/detector`)
   } catch (e: any) {
@@ -392,6 +419,13 @@ const formatScore = (score: number | undefined) => {
           </div>
             <div v-else class="videos-list-container">
               <div class="sort-controls">
+                <input
+                  type="checkbox"
+                  class="select-all-checkbox"
+                  :checked="allSelected"
+                  :indeterminate="someSelected"
+                  @change="toggleAll"
+                />
                 <span class="sort-label">Sort by:</span>
                 <select v-model="sortBy" class="sort-select">
                   <option value="name">Name</option>
@@ -405,13 +439,20 @@ const formatScore = (score: number | undefined) => {
               </div>
 
               <div class="videos-list">
-                <div 
-                  v-for="video in sortedVideos" 
-                  :key="video.id" 
+                <div
+                  v-for="video in sortedVideos"
+                  :key="video.id"
                   class="video-item"
-                  :class="getStatusClass(video)"
+                  :class="[getStatusClass(video), { selected: selectedVideoIds.has(video.id) }]"
                   @dblclick="handleVideoDoubleClick(video.id)"
                 >
+                  <input
+                    type="checkbox"
+                    class="video-checkbox"
+                    :checked="selectedVideoIds.has(video.id)"
+                    @change="toggleVideo(video.id)"
+                    @click.stop
+                  />
                   <div class="video-info">
                     <p class="video-name">{{ video.name }}</p>
                     <p class="video-path">{{ video.path }}</p>
@@ -457,18 +498,18 @@ const formatScore = (score: number | undefined) => {
           <button
             class="sidebar-button segment-button"
             @click="handleSegmentAll"
-            :disabled="isSegmenting"
+            :disabled="isSegmenting || selectedCount === 0"
           >
-            <span class="button-label">{{ isSegmenting ? 'Starting...' : 'Segment All Videos' }}</span>
+            <span class="button-label">{{ isSegmenting ? 'Starting...' : `Segment ${selectedCount} Videos` }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Cropped Videos</h4>
           <button
             class="sidebar-button extract-button"
             @click="handleExtractCroppedVideos"
-            :disabled="isExtracting"
+            :disabled="isExtracting || selectedCount === 0"
           >
-            <span class="button-label">{{ isExtracting ? 'Starting...' : 'Extract Cropped Videos' }}</span>
+            <span class="button-label">{{ isExtracting ? 'Starting...' : `Extract ${selectedCount} Cropped Videos` }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Egocentric Alignment</h4>
@@ -490,16 +531,16 @@ const formatScore = (score: number | undefined) => {
           <button
             class="sidebar-button train-alignment-button"
             @click="handleTrainAlignment"
-            :disabled="alignmentStatus?.is_training || alignmentStatus?.is_applying || (alignmentStatus?.label_count ?? 0) === 0"
+            :disabled="alignmentStatus?.is_training || alignmentStatus?.is_applying || (alignmentStatus?.label_count ?? 0) === 0 || selectedCount === 0"
           >
             <span class="button-label">{{ alignmentStatus?.is_training ? 'Training...' : 'Train Alignment Model' }}</span>
           </button>
           <button
             class="sidebar-button apply-alignment-button"
             @click="handleApplyAlignment"
-            :disabled="alignmentStatus?.is_training || (!alignmentStatus?.model_trained && !alignmentStatus?.is_applying)"
+            :disabled="alignmentStatus?.is_training || (!alignmentStatus?.model_trained && !alignmentStatus?.is_applying) || selectedCount === 0"
           >
-            <span class="button-label">{{ alignmentStatus?.is_applying ? 'View Progress' : 'Align All Videos' }}</span>
+            <span class="button-label">{{ alignmentStatus?.is_applying ? 'View Progress' : `Align ${selectedCount} Videos` }}</span>
           </button>
 
           <div class="alignment-clear-buttons">
@@ -549,16 +590,16 @@ const formatScore = (score: number | undefined) => {
           <button
             class="sidebar-button run-pca-button"
             @click="handleRunPCA"
-            :disabled="isRunningPCA || !hasAlignedVideos"
+            :disabled="isRunningPCA || !hasAlignedVideos || selectedCount === 0"
           >
-            <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : 'Run PCA' }}</span>
+            <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : `Run PCA (${selectedCount} Videos)` }}</span>
           </button>
 
           <h4 class="sidebar-section-title">DINOv2 Detector</h4>
           <button
             class="sidebar-button train-detector-button"
             @click="handleTrainDetector"
-            :disabled="isDetectorTraining"
+            :disabled="isDetectorTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isDetectorTraining ? 'Training...' : 'Train Detector' }}</span>
           </button>
@@ -962,5 +1003,25 @@ const formatScore = (score: number | undefined) => {
 
 .run-pca-button {
   margin-top: 0.25rem;
+}
+
+.select-all-checkbox {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  margin-right: 0.25rem;
+}
+
+.video-checkbox {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-right: 1rem;
+}
+
+.video-item.selected {
+  background-color: #f0f7ff;
+  border-color: #a8d1ff;
 }
 </style>

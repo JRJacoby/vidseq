@@ -376,7 +376,7 @@ onMounted(() => {
         <div v-else-if="error" class="error-state">
           {{ error }}
         </div>
-        <div v-else class="video-with-timeline">
+        <div v-else-if="video" class="video-with-timeline">
           <div class="video-container">
             <div class="video-wrapper">
               <video

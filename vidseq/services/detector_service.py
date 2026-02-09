@@ -14,7 +14,6 @@ import numpy as np
 import torch
 import yaml
 from sqlalchemy import select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from vidseq.models.frame_data import FrameData
@@ -115,6 +114,7 @@ class DetectorService:
     def train(
         self,
         project_path: Path,
+        video_ids: list[int],
         max_epochs: int = 100,
         batch_size: int = 2,
         lr: float = 1e-4,
@@ -134,6 +134,7 @@ class DetectorService:
             try:
                 self._train_sync(
                     project_path,
+                    video_ids,
                     max_epochs,
                     batch_size,
                     lr,
@@ -153,6 +154,7 @@ class DetectorService:
     def _train_sync(
         self,
         project_path: Path,
+        video_ids: list[int],
         max_epochs: int,
         batch_size: int,
         lr: float,
@@ -172,7 +174,7 @@ class DetectorService:
         )
 
         # Gather training data
-        all_frames = self._gather_training_frames(project_path)
+        all_frames = self._gather_training_frames(project_path, video_ids)
         if len(all_frames) == 0:
             raise RuntimeError("No training frames found. Mark training ranges first.")
 
@@ -299,7 +301,7 @@ class DetectorService:
                 logger.info("Training stopped by user")
             else:
                 self._training_progress.status = "applying"
-                self._apply_to_training_data(project_path)
+                self._apply_to_training_data(project_path, video_ids)
                 self._training_progress.status = "completed"
 
         finally:
@@ -360,6 +362,7 @@ class DetectorService:
     def _gather_training_frames(
         self,
         project_path: Path,
+        video_ids: list[int],
     ) -> list[tuple[Path, int, int]]:
         """Gather all training frames from all videos in project.
 
@@ -373,13 +376,18 @@ class DetectorService:
 
         frames = []
         with Session(engine) as session:
-            # Get all videos
-            videos = session.execute(select(Video)).scalars().all()
+            # Get selected videos
+            videos = session.execute(
+                select(Video).where(Video.id.in_(video_ids))
+            ).scalars().all()
             video_map = {v.id: v for v in videos}
 
-            # Get all training frames
+            # Get training frames for selected videos
             training_frames = session.execute(
-                select(FrameData).where(FrameData.frame_type == "train")
+                select(FrameData).where(
+                    FrameData.frame_type == "train",
+                    FrameData.video_id.in_(video_ids),
+                )
             ).scalars().all()
 
             for frame_data in training_frames:
@@ -396,13 +404,15 @@ class DetectorService:
     def _apply_to_training_data(
         self,
         project_path: Path,
+        video_ids: list[int],
     ) -> None:
         """Apply trained detector to all training frames and save bboxes/scores to DB."""
         from vidseq.services.detector_model import detect, load_finetuned
+        from vidseq.services.frame_data_service import _chunked_upsert_sync
 
         logger.info("Applying detector to training data...")
 
-        all_frames = self._gather_training_frames(project_path)
+        all_frames = self._gather_training_frames(project_path, video_ids)
         self._training_progress.apply_total = len(all_frames)
         self._training_progress.apply_current = 0
 
@@ -470,17 +480,8 @@ class DetectorService:
                     }
                     for fi, x1, y1, x2, y2 in bbox_list
                 ]
-                stmt = sqlite_insert(FrameData).values(rows)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["video_id", "frame_idx"],
-                    set_={
-                        "detector_bbox_x1": stmt.excluded.detector_bbox_x1,
-                        "detector_bbox_y1": stmt.excluded.detector_bbox_y1,
-                        "detector_bbox_x2": stmt.excluded.detector_bbox_x2,
-                        "detector_bbox_y2": stmt.excluded.detector_bbox_y2,
-                    },
-                )
-                session.execute(stmt)
+                _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"],
+                    ["detector_bbox_x1", "detector_bbox_y1", "detector_bbox_x2", "detector_bbox_y2"])
 
             for video_id, score_list in scores_to_save.items():
                 if not score_list:
@@ -493,12 +494,7 @@ class DetectorService:
                     }
                     for fi, score in score_list
                 ]
-                stmt = sqlite_insert(FrameData).values(rows)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["video_id", "frame_idx"],
-                    set_={"detector_score": stmt.excluded.detector_score},
-                )
-                session.execute(stmt)
+                _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"], ["detector_score"])
 
             session.commit()
 

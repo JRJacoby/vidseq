@@ -364,23 +364,41 @@ async def segment_all_videos(
     session: "AsyncSession",
     project_id: int,
     project_path: Path,
-    videos: list,
+    video_ids: list[int],
 ) -> list[int]:
-    """Segment all videos using detector-tracker approach.
+    """Segment selected videos using detector-tracker approach.
 
-    Runs propagate_with_detector on each video and updates database flags.
+    Fetches videos by ID, validates detector model exists,
+    runs propagate_with_detector on each video, and updates database flags.
 
     Args:
         session: Async database session
         project_id: ID of the project
         project_path: Path to the project folder
-        videos: List of Video model instances
+        video_ids: List of video IDs to segment
 
     Returns:
         List of job IDs (empty for now - synchronous execution)
+
+    Raises:
+        ValueError: If no videos found or detector model missing
     """
     from sqlalchemy import select
     from vidseq.models.conditioning_frame import ConditioningFrame
+    from vidseq.models.video import Video
+
+    # Fetch videos by ID
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids)).order_by(Video.id)
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise ValueError("No videos found for the given IDs")
+
+    # Check that detector model exists
+    detector_model_path = project_path / "models" / "detector.pt"
+    if not detector_model_path.exists():
+        raise ValueError("Detector model not found. Please train the detector first.")
 
     # Query conditioning frames and training frames for all videos
     cond_frames_by_video: dict[int, list[int]] = {}
@@ -426,6 +444,9 @@ async def segment_all_videos(
                 session, video.id, video_detector_bboxes
             )
 
+        video.segmentation_status = "segmented"
+
+    await session.commit()
     return job_ids
 
 

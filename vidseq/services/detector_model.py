@@ -7,8 +7,10 @@ import torch
 from ultralytics import RTDETR
 
 
-# Confidence threshold for detections
-DETECTION_CONF_THRESHOLD = 0.5
+# Confidence threshold for detections.
+# RT-DETR's transformer queries produce lower raw scores than YOLO anchors,
+# so we use a lower threshold and rely on taking the top-1 detection.
+DETECTION_CONF_THRESHOLD = 0.25
 
 
 def load_pretrained(device: str = "cuda") -> RTDETR:

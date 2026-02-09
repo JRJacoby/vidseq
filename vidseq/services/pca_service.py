@@ -449,7 +449,7 @@ def _compute_and_store_scores(
         logger.info(f"[PCA] Saved scores for video {video_id} ({n_frames} frames)")
 
 
-def run_pca(project_path: Path, n_components: int = 20) -> dict:
+def run_pca(project_path: Path, n_components: int, video_ids: list[int]) -> dict:
     """
     Run PCA on all aligned masks in the project.
 
@@ -467,13 +467,13 @@ def run_pca(project_path: Path, n_components: int = 20) -> dict:
     if not array_data_dir.exists():
         raise FileNotFoundError(f"No array_data directory found at {array_data_dir}")
 
-    video_ids = []
-    for video_dir in sorted(array_data_dir.iterdir()):
-        if video_dir.is_dir() and (video_dir / "aligned_masks.h5").exists():
-            try:
-                video_ids.append(int(video_dir.name))
-            except ValueError:
-                continue
+    # Filter to selected videos that have aligned masks
+    discovered_ids = []
+    for vid in video_ids:
+        mask_path = array_data_dir / str(vid) / "aligned_masks.h5"
+        if mask_path.exists():
+            discovered_ids.append(vid)
+    video_ids = discovered_ids
 
     if not video_ids:
         raise FileNotFoundError("No aligned mask files found")

@@ -1,4 +1,10 @@
 """Command-line interface for VidSeq."""
+import os
+
+# Prevent JAX from pre-allocating ~90% of GPU memory on import.
+# Must be set before any JAX import (jax_moseq triggers this at module level).
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 import uvicorn
 
 def main():

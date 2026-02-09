@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.api.schemas import AlignmentTrainingRequest, VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.services import alignment_service
 from vidseq.services.alignment_service import (
@@ -226,30 +227,20 @@ async def delete_model(
 @router.post("/projects/{project_id}/alignment/training")
 async def create_alignment_training(
     project_id: int,
-    epochs: int = 100,
-    augment: bool = True,
-    early_stop_patience: int = 5,
-    lr_patience: int = 3,
+    request: AlignmentTrainingRequest,
     project_path: Path = Depends(get_project_folder),
     session: AsyncSession = Depends(get_project_session),
 ):
-    """Start alignment model training (fire-and-forget).
-
-    Training will run for up to `epochs` (max), but may stop early if loss
-    plateaus. Learning rate is automatically reduced on plateau.
-
-    Returns immediately after starting training. Use the SSE stream endpoint
-    (/alignment/training/stream) to monitor progress, or the status endpoint
-    (/alignment/training/status) to check current state.
-    """
+    """Start alignment model training (fire-and-forget)."""
     service = AlignmentService.get_instance()
     return await service.create_alignment_training(
         session=session,
         project_path=project_path,
-        epochs=epochs,
-        augment=augment,
-        early_stop_patience=early_stop_patience,
-        lr_patience=lr_patience,
+        video_ids=request.video_ids,
+        epochs=request.epochs,
+        augment=request.augment,
+        early_stop_patience=request.early_stop_patience,
+        lr_patience=request.lr_patience,
     )
 
 
@@ -322,16 +313,12 @@ async def stream_training_progress(
 @router.post("/projects/{project_id}/videos/alignment")
 async def create_videos_alignment(
     project_id: int,
+    request: VideoSelectionRequest,
     project_path: Path = Depends(get_project_folder),
 ):
-    """Apply alignment to all cropped videos.
-
-    Creates aligned videos in <project>/aligned_videos/ folder.
-    Returns immediately after starting. Use the SSE stream endpoint
-    (/alignment/apply/stream) to monitor progress.
-    """
+    """Apply alignment to selected cropped videos."""
     service = AlignmentService.get_instance()
-    return await service.create_videos_alignment(project_path)
+    return await service.create_videos_alignment(project_path, request.video_ids)
 
 
 @router.get("/projects/{project_id}/videos/alignment/status")

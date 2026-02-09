@@ -32,6 +32,7 @@ class TrainRequest(BaseModel):
 
     model_config = {"extra": "ignore"}
 
+    video_ids: list[int]
     max_epochs: int = 100
     batch_size: int = 4
     lr: float = 1e-4
@@ -82,6 +83,7 @@ async def create_detection_training(
     try:
         service.train(
             project_path=project_path,
+            video_ids=request.video_ids,
             max_epochs=request.max_epochs,
             batch_size=request.batch_size,
             lr=request.lr,

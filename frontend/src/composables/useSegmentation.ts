@@ -182,6 +182,20 @@ export function useSegmentation(
     const loadFrameData = async (frameIdx: number) => {
         if (!projectId.value || !videoId.value) return
 
+        // In detector mode, always fetch bbox (it's not in the mask cache)
+        if (maskViewMode.value === 'detector') {
+            try {
+                const result = await getDetectorBbox(projectId.value, videoId.value, frameIdx)
+                if (frameIdx === intendedFrameIdx.value) {
+                    detectorBbox.value = result.bbox
+                }
+            } catch {
+                if (frameIdx === intendedFrameIdx.value) {
+                    detectorBbox.value = null
+                }
+            }
+        }
+
         const cachedMask = maskCache.get(frameIdx)
 
         if (cachedMask !== undefined) {

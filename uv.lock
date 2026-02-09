@@ -684,7 +684,7 @@ wheels = [
 [[package]]
 name = "hq-sam-2"
 version = "1.0"
-source = { editable = "../../../../repos/sam-hq/sam-hq2" }
+source = { editable = "../../repos/sam-hq/sam-hq2" }
 dependencies = [
     { name = "hydra-core" },
     { name = "iopath" },
@@ -974,7 +974,7 @@ with-cuda = [
 [[package]]
 name = "jax-moseq"
 version = "0.3.3"
-source = { editable = "../../../../../../../../home/joj144/projects/keypoint-moseq/jax-moseq" }
+source = { editable = "../../../../../../home/joj144/projects/keypoint-moseq/jax-moseq" }
 dependencies = [
     { name = "dynamax" },
     { name = "numba" },
@@ -2971,13 +2971,13 @@ requires-dist = [
     { name = "eva-decord", specifier = ">=0.6.0" },
     { name = "fastapi", specifier = ">=0.121.1" },
     { name = "h5py", specifier = ">=3.11.0" },
-    { name = "hq-sam-2", editable = "../../../../repos/sam-hq/sam-hq2" },
+    { name = "hq-sam-2", editable = "../../repos/sam-hq/sam-hq2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "imageio-ffmpeg", specifier = ">=0.5.1" },
     { name = "ipython" },
     { name = "jax", extras = ["cuda"], specifier = ">=0.6.2,<0.7" },
-    { name = "jax-moseq", extras = ["cuda"], editable = "../../../../../../../../home/joj144/projects/keypoint-moseq/jax-moseq" },
+    { name = "jax-moseq", extras = ["cuda"], editable = "../../../../../../home/joj144/projects/keypoint-moseq/jax-moseq" },
     { name = "joblib", specifier = ">=1.3.0" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
     { name = "pillow", specifier = ">=10.0.0" },

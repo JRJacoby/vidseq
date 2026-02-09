@@ -1,6 +1,5 @@
 """API routes for cropped video extraction and streaming."""
 
-import asyncio
 import mimetypes
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.api.schemas import VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.services import cropped_video_service, video_service
 
@@ -18,58 +18,20 @@ router = APIRouter()
 @router.post("/projects/{project_id}/videos/extraction")
 async def create_videos_extraction(
     project_id: int,
+    request: VideoSelectionRequest,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
-    """
-    Start cropped video extraction for all videos.
-
-    Validates that ALL videos have segmentation_status='segmented'.
-    Returns 400 if any videos are not fully segmented.
-    Returns: { "status": "started", "video_count": N }
-    """
-    # Get all videos
-    all_videos = await video_service.get_all_videos(session)
-    if not all_videos:
-        raise HTTPException(status_code=400, detail="No videos found in project")
-
-    # Validate all videos are segmented
-    unsegmented = []
-    for video in all_videos:
-        if video.segmentation_status != "segmented":
-            unsegmented.append({"id": video.id, "name": video.name, "status": video.segmentation_status})
-
-    if unsegmented:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "All videos must be segmented before extracting cropped videos.",
-                "unsegmented_videos": unsegmented,
-            },
+    """Start cropped video extraction for selected videos."""
+    try:
+        result = await cropped_video_service.create_videos_extraction(
+            session=session,
+            project_path=project_path,
+            video_ids=request.video_ids,
         )
-
-    # Filter out videos that already have cropped files on disk
-    def _uncropped(v: Video) -> bool:
-        return not cropped_video_service.cropped_video_exists(project_path, v.name)
-
-    videos = await asyncio.to_thread(
-        lambda: [v for v in all_videos if _uncropped(v)]
-    )
-    if not videos:
-        return {"status": "skipped", "message": "All videos already cropped", "video_count": 0}
-
-    # Start extraction
-    service = cropped_video_service.CroppedVideoService.get_instance()
-
-    if service.is_extracting():
-        raise HTTPException(status_code=400, detail="Extraction already in progress")
-
-    service.extract_all_cropped_videos(
-        project_path=project_path,
-        videos=videos,
-    )
-
-    return {"status": "started", "video_count": len(videos)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
 
 
 @router.get("/projects/{project_id}/videos/{video_id}/cropped-video/exists")

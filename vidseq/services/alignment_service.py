@@ -1566,6 +1566,7 @@ class AlignmentService:
         self,
         session: AsyncSession,
         project_path: Path,
+        video_ids: list[int],
         epochs: int = 100,
         augment: bool = True,
         early_stop_patience: int = 5,
@@ -1573,12 +1574,13 @@ class AlignmentService:
     ) -> dict:
         """Start alignment model training.
 
-        Fetches labels, builds video name map, validates, and starts training
-        in a background thread.
+        Fetches labels for selected videos, builds video name map,
+        validates, and starts training in a background thread.
 
         Args:
             session: Async database session
             project_path: Path to the project folder
+            video_ids: List of video IDs to use for training
             epochs: Maximum training epochs
             augment: Whether to use data augmentation
             early_stop_patience: Epochs without improvement before stopping
@@ -1593,15 +1595,20 @@ class AlignmentService:
         if self.is_training():
             raise AlignmentTrainingError("Training already in progress")
 
-        # Fetch all labels
-        labels = await self.get_all_labels(session)
+        # Fetch labels only for selected videos
+        result = await session.execute(
+            select(AlignmentLabel)
+            .where(AlignmentLabel.video_id.in_(video_ids))
+            .order_by(AlignmentLabel.id)
+        )
+        labels = list(result.scalars().all())
 
         if len(labels) == 0:
-            raise AlignmentTrainingError("No labels available for training")
+            raise AlignmentTrainingError("No labels available for training in selected videos")
 
         # Build video_name_map: video_id -> video.name
-        video_ids = list({label.video_id for label in labels})
-        result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
+        label_video_ids = list({label.video_id for label in labels})
+        result = await session.execute(select(Video).where(Video.id.in_(label_video_ids)))
         videos = list(result.scalars().all())
         video_name_map = {v.id: v.name for v in videos}
 
@@ -1617,23 +1624,24 @@ class AlignmentService:
                 project_path,
                 labels,
                 video_name_map,
-                epochs,
-                augment,
-                early_stop_patience,
-                lr_patience,
+                max_epochs=epochs,
+                augment=augment,
+                early_stop_patience=early_stop_patience,
+                lr_patience=lr_patience,
             )
         )
 
         return {"status": "started", "max_epochs": epochs, "augment": augment}
 
-    async def create_videos_alignment(self, project_path: Path) -> dict:
-        """Apply alignment to all cropped videos.
+    async def create_videos_alignment(self, project_path: Path, video_ids: list[int]) -> dict:
+        """Apply alignment to selected cropped videos.
 
         Creates aligned videos in <project>/aligned_videos/ folder.
         Starts processing in a background thread.
 
         Args:
             project_path: Path to the project folder
+            video_ids: List of video IDs to apply alignment to
 
         Returns:
             Dict with status
@@ -1661,6 +1669,7 @@ class AlignmentService:
                 self.apply_alignment_sync,
                 project_path,
                 project_engine,
+                video_ids,
             )
         )
 
@@ -2167,8 +2176,9 @@ class AlignmentService:
         self,
         project_path: Path,
         project_engine,
+        video_ids: list[int],
     ) -> bool:
-        """Apply alignment to all cropped videos.
+        """Apply alignment to selected cropped videos.
 
         Reads cropped videos, rotates frames so animal faces right,
         saves to aligned_videos folder. Also rotates cropped masks
@@ -2177,6 +2187,7 @@ class AlignmentService:
         Args:
             project_path: Path to project folder
             project_engine: SQLAlchemy engine for project DB
+            video_ids: List of video IDs to apply alignment to
 
         Returns:
             True if successful
@@ -2194,9 +2205,11 @@ class AlignmentService:
         last_progress_update = time.time()
 
         try:
-            # Get videos with cropping completed (check filesystem)
+            # Get selected videos with cropping completed (check filesystem)
             with Session(project_engine) as session:
-                result = session.execute(select(Video))
+                result = session.execute(
+                    select(Video).where(Video.id.in_(video_ids))
+                )
                 all_videos = list(result.scalars().all())
 
             videos = [v for v in all_videos if cropped_video_exists(project_path, v.name)]

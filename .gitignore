@@ -8,6 +8,7 @@ test_videos/
 dev_scripts/
 ARCHITECTURE_REVIEW.md
 .claude/
+*.pt
 
 # Dependencies
 node_modules/

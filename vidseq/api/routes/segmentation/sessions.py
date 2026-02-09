@@ -9,8 +9,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.api.schemas import VideoSelectionRequest
 from vidseq.models.video import Video
-from vidseq.services import segmentation_service, segmentation_tcp_client, video_service
+from vidseq.services import segmentation_service, segmentation_tcp_client
 
 router = APIRouter()
 
@@ -18,34 +19,20 @@ router = APIRouter()
 @router.post("/projects/{project_id}/videos/segmentation")
 async def create_videos_segmentation(
     project_id: int,
+    request: VideoSelectionRequest,
     session: AsyncSession = Depends(get_project_session),
     project_path: Path = Depends(get_project_folder),
 ):
-    """
-    Start batch segmentation for all videos in the project.
-
-    Validates that the detector model exists. Detection is performed on-the-fly
-    during segmentation, so pre-computed detector masks are no longer required.
-    """
-    videos = await video_service.get_all_videos(session)
-    if not videos:
-        raise HTTPException(status_code=400, detail="No videos found in project")
-
-    # Check that detector model exists
-    detector_model_path = project_path / "models" / "detector.pt"
-    if not detector_model_path.exists():
-        raise HTTPException(
-            status_code=400,
-            detail="Detector model not found. Please train the detector first."
+    """Start batch segmentation for selected videos."""
+    try:
+        job_ids = await segmentation_service.segment_all_videos(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
         )
-
-    job_ids = await segmentation_service.segment_all_videos(
-        session=session,
-        project_id=project_id,
-        project_path=project_path,
-        videos=videos,
-    )
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"job_ids": job_ids}
 
 

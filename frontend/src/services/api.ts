@@ -360,10 +360,14 @@ export async function deleteVideoSegmentation(
     }
 }
 
-export async function createVideosSegmentation(projectId: number): Promise<{ job_ids: number[] }> {
+export async function createVideosSegmentation(projectId: number, videoIds: number[]): Promise<{ job_ids: number[] }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/segmentation`,
-        { method: 'POST' }
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to create videos segmentation'))
@@ -465,10 +469,14 @@ export async function deleteTrainingRange(
 
 // Cropped Video API
 
-export async function createVideosExtraction(projectId: number): Promise<{ status: string; video_count: number; message?: string }> {
+export async function createVideosExtraction(projectId: number, videoIds: number[]): Promise<{ status: string; video_count: number; message?: string }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/extraction`,
-        { method: 'POST' }
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to start video extraction'))
@@ -635,30 +643,39 @@ export async function clearAlignmentModel(projectId: number): Promise<void> {
 
 export async function createAlignmentTraining(
     projectId: number,
-    epochs: number = 100,
-    augment: boolean = true,
-    earlyStopPatience: number = 5,
-    lrPatience: number = 3,
+    epochs: number,
+    augment: boolean,
+    earlyStopPatience: number,
+    lrPatience: number,
+    videoIds: number[],
 ): Promise<void> {
-    const params = new URLSearchParams({
-        epochs: epochs.toString(),
-        augment: augment.toString(),
-        early_stop_patience: earlyStopPatience.toString(),
-        lr_patience: lrPatience.toString(),
-    })
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/training?${params}`,
-        { method: 'POST' }
+        `${API_BASE}/projects/${projectId}/alignment/training`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                video_ids: videoIds,
+                epochs,
+                augment,
+                early_stop_patience: earlyStopPatience,
+                lr_patience: lrPatience,
+            }),
+        }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to start alignment training'))
     }
 }
 
-export async function createVideosAlignment(projectId: number): Promise<void> {
+export async function createVideosAlignment(projectId: number, videoIds: number[]): Promise<void> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/alignment`,
-        { method: 'POST' }
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to start alignment'))
@@ -857,11 +874,16 @@ export interface PCARunResult {
 
 export async function createPCA(
     projectId: number,
-    nComponents: number = 20
+    nComponents: number,
+    videoIds: number[],
 ): Promise<PCARunResult> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/pca?n_components=${nComponents}`,
-        { method: 'POST' }
+        `${API_BASE}/projects/${projectId}/pca`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds, n_components: nComponents }),
+        }
     )
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to run PCA'))
@@ -1165,7 +1187,8 @@ export async function getDetectionStatus(projectId: number): Promise<DetectorSta
 
 export async function createDetectionTraining(
     projectId: number,
-    maxEpochs: number = 1000,
+    maxEpochs: number,
+    videoIds: number[],
     lrPatience: number = 10,
     earlyStopPatience: number = 20,
 ): Promise<void> {
@@ -1173,6 +1196,7 @@ export async function createDetectionTraining(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+            video_ids: videoIds,
             max_epochs: maxEpochs,
             lr_patience: lrPatience,
             early_stop_patience: earlyStopPatience,

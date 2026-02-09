@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from vidseq.api.dependencies import get_project_folder
+from vidseq.api.schemas import PCARequest
 from vidseq.services import pca_service
 
 router = APIRouter()
@@ -14,24 +15,12 @@ router = APIRouter()
 @router.post("/projects/{project_id}/pca")
 async def create_pca(
     project_id: int,
-    n_components: int = 20,
+    request: PCARequest,
     project_path: Path = Depends(get_project_folder),
 ):
-    """
-    Run PCA on aligned masks.
-
-    This is a blocking operation that processes all aligned masks in the project.
-    Progress is logged via tqdm.
-
-    Args:
-        project_id: Project ID
-        n_components: Number of PCA components to compute (default: 20)
-
-    Returns:
-        dict with n_components, explained_variance_ratio, total_frames
-    """
+    """Run PCA on aligned masks for selected videos."""
     try:
-        result = pca_service.run_pca(project_path, n_components)
+        result = pca_service.run_pca(project_path, request.n_components, request.video_ids)
         return result
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

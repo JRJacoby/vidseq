@@ -22,6 +22,9 @@ export function useSegmentationSession(
   const segmentationStatus = ref<SegmentationStatus>({ status: 'not_loaded', error: null })
   const sessionInitialized = ref(false)
   const sessionInitializing = ref(false)
+  // Capture IDs at init time so teardown works after route changes
+  const sessionProjectId = ref<number | null>(null)
+  const sessionVideoId = ref<number | null>(null)
   let eventSource: EventSource | null = null
 
   const isReady = computed(() => 
@@ -68,6 +71,8 @@ export function useSegmentationSession(
       sessionInitializing.value = true
       try {
         await initVideoSession(projectId.value, videoId.value)
+        sessionProjectId.value = projectId.value
+        sessionVideoId.value = videoId.value
         sessionInitialized.value = true
       } catch (e) {
         console.error('Failed to init video session:', e)
@@ -95,9 +100,9 @@ export function useSegmentationSession(
     eventSource?.close()
     eventSource = null
 
-    if (projectId.value && videoId.value) {
+    if (sessionProjectId.value && sessionVideoId.value) {
       try {
-        await closeVideoSession(projectId.value, videoId.value)
+        await closeVideoSession(sessionProjectId.value, sessionVideoId.value)
       } catch (e) {
         console.error('Failed to close video session:', e)
       }

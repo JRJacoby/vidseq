@@ -3,12 +3,18 @@
 Extracts cropped videos centered on the mask centroid with non-mask pixels zeroed out.
 """
 
+import asyncio
 import json
 import random
 import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vidseq.models.video import Video
 
 import cv2
 import imageio_ffmpeg
@@ -420,6 +426,66 @@ def process_single_video(
     temp_path.unlink(missing_ok=True)
     print(f"[Cropped Video] Completed video {video.id}: {output_path}")
     return True
+
+
+async def create_videos_extraction(
+    session: AsyncSession,
+    project_path: Path,
+    video_ids: list[int],
+) -> dict:
+    """Start cropped video extraction for selected videos.
+
+    Fetches videos by ID, validates all are segmented, filters out
+    already-cropped, and starts extraction.
+
+    Args:
+        session: Async database session
+        project_path: Path to the project folder
+        video_ids: List of video IDs to extract
+
+    Returns:
+        Dict with status and video_count
+
+    Raises:
+        ValueError: If no videos found, videos not segmented, or extraction in progress
+    """
+    # Fetch videos by ID
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids)).order_by(Video.id)
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise ValueError("No videos found for the given IDs")
+
+    # Validate all selected videos are segmented
+    unsegmented = [
+        v.name for v in videos if v.segmentation_status != "segmented"
+    ]
+    if unsegmented:
+        raise ValueError(
+            f"Selected videos must be segmented before extraction. "
+            f"Unsegmented: {', '.join(unsegmented)}"
+        )
+
+    # Filter out videos that already have cropped files on disk
+    uncropped = await asyncio.to_thread(
+        lambda: [v for v in videos if not cropped_video_exists(project_path, v.name)]
+    )
+    if not uncropped:
+        return {"status": "skipped", "message": "All selected videos already cropped", "video_count": 0}
+
+    # Start extraction
+    service = CroppedVideoService.get_instance()
+
+    if service.is_extracting():
+        raise ValueError("Extraction already in progress")
+
+    service.extract_all_cropped_videos(
+        project_path=project_path,
+        videos=uncropped,
+    )
+
+    return {"status": "started", "video_count": len(uncropped)}
 
 
 class CroppedVideoService:

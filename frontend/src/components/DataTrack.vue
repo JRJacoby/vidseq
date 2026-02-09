@@ -48,6 +48,8 @@ const selectedRange = ref<[number, number] | null>(null)
 const isHovering = ref(false)
 const plotMinScore = ref<number | null>(null)
 const plotMaxScore = ref<number | null>(null)
+const detectorMinScore = ref<number | null>(null)
+const detectorMaxScore = ref<number | null>(null)
 
 const visibleDuration = computed(() => props.viewEnd - props.viewStart)
 
@@ -76,7 +78,8 @@ const onWheel = (event: WheelEvent) => {
   
   const timeAtMouse = props.viewStart + mousePercent * visibleDuration.value
   
-  const zoomFactor = event.deltaY > 0 ? 1.25 : 0.8
+  const clampedDelta = Math.sign(event.deltaY) * Math.min(Math.abs(event.deltaY), 50)
+  const zoomFactor = 1 + clampedDelta * 0.002
   let newDuration = visibleDuration.value * zoomFactor
   newDuration = Math.max(MIN_VISIBLE_DURATION, Math.min(props.duration, newDuration))
   
@@ -226,12 +229,80 @@ const onKeyDown = (event: KeyboardEvent) => {
   }
 }
 
+const hoverX = ref<number | null>(null)
+const hoverFrame = ref<number | null>(null)
+
+const hoverScores = computed(() => {
+  if (hoverFrame.value === null) return []
+  const frame = hoverFrame.value
+  const results: { label: string; value: number; color: string }[] = []
+
+  // Find nearest tracker confidence score
+  if (props.showConfidencePlot && props.confidenceScores.length > 0) {
+    const nearest = findNearestScore(props.confidenceScores, frame)
+    if (nearest !== null) {
+      results.push({ label: 'Tracker', value: nearest.score, color: 'rgba(255, 235, 59, 0.8)' })
+    }
+  }
+
+  // Find nearest detector confidence score
+  if (props.showDetectorConfidence && props.detectorScores.length > 0) {
+    const nearest = findNearestScore(props.detectorScores, frame)
+    if (nearest !== null) {
+      results.push({ label: 'Detector', value: nearest.score, color: 'rgba(255, 99, 71, 0.8)' })
+    }
+  }
+
+  return results
+})
+
+const findNearestScore = (
+  scores: { frame_idx: number; score: number }[],
+  frame: number,
+): { frame_idx: number; score: number } | null => {
+  if (scores.length === 0) return null
+
+  // Binary search for closest frame
+  let lo = 0
+  let hi = scores.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (scores[mid].frame_idx < frame) lo = mid + 1
+    else hi = mid
+  }
+
+  // Check lo and lo-1, pick closest
+  let best = scores[lo]
+  if (lo > 0) {
+    const prev = scores[lo - 1]
+    if (Math.abs(prev.frame_idx - frame) < Math.abs(best.frame_idx - frame)) {
+      best = prev
+    }
+  }
+
+  // Only show if within reasonable range (half the visible frames)
+  const visibleFrames = visibleDuration.value * props.fps
+  if (Math.abs(best.frame_idx - frame) > visibleFrames / 2) return null
+  if (best.score < 0) return null
+
+  return best
+}
+
+const onTrackMouseMove = (event: MouseEvent) => {
+  if (!trackRef.value) return
+  const rect = trackRef.value.getBoundingClientRect()
+  hoverX.value = event.clientX - rect.left
+  hoverFrame.value = getFrameFromEvent(event)
+}
+
 const onMouseEnter = () => {
   isHovering.value = true
 }
 
 const onMouseLeave = () => {
   isHovering.value = false
+  hoverX.value = null
+  hoverFrame.value = null
 }
 
 // Color palette for PC score lines
@@ -305,6 +376,9 @@ const drawScoreLine = (
     if (x > width + 100) break
 
     if (!hasStarted || isGap) {
+      // Draw a dot at isolated points (moveTo alone is invisible)
+      ctx.fillStyle = color
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3)
       ctx.moveTo(x, y)
       hasStarted = true
     } else {
@@ -342,11 +416,12 @@ const drawPlot = () => {
   }
 
   // Draw detector confidence scores (tomato line)
+  let detectorRange: { min: number; max: number } | null = null
   if (props.showDetectorConfidence && props.detectorScores.length > 0) {
     const validScores = props.detectorScores.filter(s => s.score >= 0)
     if (validScores.length > 0) {
-      const range = drawScoreLine(ctx, validScores, 'rgba(255, 99, 71, 0.8)', width, height)
-      if (range && !activeRange) activeRange = range
+      detectorRange = drawScoreLine(ctx, validScores, 'rgba(255, 99, 71, 0.8)', width, height)
+      if (detectorRange && !activeRange) activeRange = detectorRange
     }
   }
 
@@ -365,6 +440,8 @@ const drawPlot = () => {
   // Update y-axis labels
   plotMinScore.value = activeRange?.min ?? null
   plotMaxScore.value = activeRange?.max ?? null
+  detectorMinScore.value = detectorRange?.min ?? null
+  detectorMaxScore.value = detectorRange?.max ?? null
 }
 
 const resizeCanvas = () => {
@@ -413,13 +490,14 @@ onUnmounted(() => {
       </div>
     </div>
     <div class="timeline-col-center">
-      <div 
+      <div
         ref="trackRef"
         class="data-track"
         :class="{ 'marking-mode': isMarkingMode }"
         @mousedown="onMouseDown"
         @mouseenter="onMouseEnter"
         @mouseleave="onMouseLeave"
+        @mousemove="onTrackMouseMove"
         @wheel="onWheel"
       >
         <div
@@ -455,15 +533,30 @@ onUnmounted(() => {
           :style="dragRangeStyle"
         />
         
-        <div 
-          v-if="displayProgress >= 0 && displayProgress <= 100" 
-          class="data-track-playhead" 
+        <!-- Hover crosshair and tooltip -->
+        <template v-if="hoverX !== null && hoverScores.length > 0">
+          <div class="hover-crosshair" :style="{ left: hoverX + 'px' }" />
+          <div class="hover-tooltip" :style="{ left: hoverX + 'px' }">
+            <div class="hover-frame">F{{ hoverFrame }}</div>
+            <div v-for="s in hoverScores" :key="s.label" class="hover-score-row">
+              <span class="hover-dot" :style="{ backgroundColor: s.color }" />
+              <span>{{ s.value.toFixed(2) }}</span>
+            </div>
+          </div>
+        </template>
+
+        <div
+          v-if="displayProgress >= 0 && displayProgress <= 100"
+          class="data-track-playhead"
           :style="{ left: displayProgress + '%' }"
         />
       </div>
     </div>
     <div class="timeline-col-right">
-      <!-- Spacer to align with time display -->
+      <div v-if="detectorMaxScore !== null" class="data-track-label-col">
+        <span class="y-axis-label top detector">{{ detectorMaxScore.toFixed(1) }}</span>
+        <span class="y-axis-label bottom detector">{{ detectorMinScore?.toFixed(1) }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -472,7 +565,8 @@ onUnmounted(() => {
 /* UI columns for TimelineSystem */
 
 
-.timeline-col-left {
+.timeline-col-left,
+.timeline-col-right {
   height: 120px;
   display: flex;
   align-items: center;
@@ -500,6 +594,10 @@ onUnmounted(() => {
   color: #aaa;
   font-family: monospace;
   line-height: 1;
+}
+
+.y-axis-label.detector {
+  color: rgba(255, 99, 71, 0.8);
 }
 
 .data-track {
@@ -574,6 +672,51 @@ onUnmounted(() => {
   opacity: 0.7;
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.hover-crosshair {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.hover-tooltip {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 4px 8px;
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+  font-size: 11px;
+  font-family: monospace;
+  color: #ddd;
+}
+
+.hover-frame {
+  color: #999;
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+
+.hover-score-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hover-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .alignment-label-tick {

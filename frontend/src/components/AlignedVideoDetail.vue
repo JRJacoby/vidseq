@@ -171,7 +171,7 @@ onMounted(async () => {
         <div v-else-if="error" class="error-state">
           {{ error }}
         </div>
-        <div v-else class="video-with-timeline">
+        <div v-else-if="video" class="video-with-timeline">
           <div class="video-container">
             <video
               ref="videoRef"

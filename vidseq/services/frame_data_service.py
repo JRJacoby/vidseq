@@ -16,6 +16,58 @@ from sqlalchemy.orm import Session
 from vidseq.models.frame_data import FrameData
 from vidseq.services.utils import frames_to_ranges
 
+# SQLite has a max of 32,766 bound parameters per statement.
+# Compute chunk size from actual column count so it stays safe as columns are added.
+_SQLITE_MAX_PARAMS = 32_766
+_UPSERT_CHUNK_SIZE = _SQLITE_MAX_PARAMS // len(FrameData.__table__.columns)
+
+
+async def _chunked_upsert(
+    session: AsyncSession,
+    values: list[dict],
+    conflict_columns: list[str],
+    update_columns: list[str] | dict,
+) -> None:
+    """Execute a chunked INSERT ... ON CONFLICT DO UPDATE.
+
+    Splits values into chunks to stay under SQLite's parameter limit.
+
+    Args:
+        values: List of row dicts to upsert
+        conflict_columns: Index columns for ON CONFLICT
+        update_columns: Either a list of column names (uses excluded ref)
+                       or a dict of {column: static_value}
+    """
+    for i in range(0, len(values), _UPSERT_CHUNK_SIZE):
+        chunk = values[i : i + _UPSERT_CHUNK_SIZE]
+        stmt = sqlite_insert(FrameData).values(chunk)
+        if isinstance(update_columns, list):
+            set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
+        else:
+            set_ = update_columns
+        stmt = stmt.on_conflict_do_update(index_elements=conflict_columns, set_=set_)
+        await session.execute(stmt)
+    await session.commit()
+
+
+def _chunked_upsert_sync(
+    session: Session,
+    values: list[dict],
+    conflict_columns: list[str],
+    update_columns: list[str] | dict,
+) -> None:
+    """Sync version of _chunked_upsert."""
+    for i in range(0, len(values), _UPSERT_CHUNK_SIZE):
+        chunk = values[i : i + _UPSERT_CHUNK_SIZE]
+        stmt = sqlite_insert(FrameData).values(chunk)
+        if isinstance(update_columns, list):
+            set_ = {col: getattr(stmt.excluded, col) for col in update_columns}
+        else:
+            set_ = update_columns
+        stmt = stmt.on_conflict_do_update(index_elements=conflict_columns, set_=set_)
+        session.execute(stmt)
+    session.commit()
+
 
 # =============================================================================
 # BOUNDING BOX OPERATIONS
@@ -348,13 +400,7 @@ async def mark_training_range(
         {"video_id": video_id, "frame_idx": frame_idx, "frame_type": "train"}
         for frame_idx in range(start_frame, end_frame + 1)
     ]
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"frame_type": stmt.excluded.frame_type}
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"], ["frame_type"])
 
 
 async def unmark_training_range(
@@ -470,13 +516,7 @@ async def save_scores_batch(
         for frame_idx, score in scores
     ]
 
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"score": stmt.excluded.score}
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"], ["score"])
 
 
 def save_scores_batch_sync(
@@ -500,14 +540,7 @@ def save_scores_batch_sync(
         for frame_idx, score in scores
     ]
 
-    # SQLite upsert
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"score": stmt.excluded.score}
-    )
-    session.execute(stmt)
-    session.commit()
+    _chunked_upsert_sync(session, values, ["video_id", "frame_idx"], ["score"])
 
 
 async def load_scores_batch(
@@ -587,13 +620,7 @@ async def save_detector_scores_batch(
         {"video_id": video_id, "frame_idx": int(frame_idx), "detector_score": float(score)}
         for frame_idx, score in scores
     ]
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"detector_score": stmt.excluded.detector_score}
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"], ["detector_score"])
 
 
 async def load_detector_scores_in_range(
@@ -686,18 +713,8 @@ async def save_detector_bboxes_batch(
         }
         for frame_idx, x1, y1, x2, y2 in bboxes
     ]
-    stmt = sqlite_insert(FrameData).values(rows)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={
-            "detector_bbox_x1": stmt.excluded.detector_bbox_x1,
-            "detector_bbox_y1": stmt.excluded.detector_bbox_y1,
-            "detector_bbox_x2": stmt.excluded.detector_bbox_x2,
-            "detector_bbox_y2": stmt.excluded.detector_bbox_y2,
-        },
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, rows, ["video_id", "frame_idx"],
+        ["detector_bbox_x1", "detector_bbox_y1", "detector_bbox_x2", "detector_bbox_y2"])
 
 
 async def get_detector_bbox(
@@ -793,12 +810,8 @@ async def set_has_tracker_mask(
         for idx in indices
     ]
 
-    stmt = sqlite_insert(FrameData).values(values).on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"has_tracker_mask": mask_value}
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"],
+        {"has_tracker_mask": mask_value})
 
 
 async def get_has_tracker_mask(
@@ -874,13 +887,7 @@ def set_has_tracker_mask_batch_sync(
         {"video_id": video_id, "frame_idx": frame_idx, "has_tracker_mask": 1 if has_mask else 0}
         for frame_idx in frame_indices
     ]
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"has_tracker_mask": stmt.excluded.has_tracker_mask}
-    )
-    session.execute(stmt)
-    session.commit()
+    _chunked_upsert_sync(session, values, ["video_id", "frame_idx"], ["has_tracker_mask"])
 
 
 async def get_tracker_masked_frames(
@@ -1038,13 +1045,7 @@ def set_has_detector_mask_batch_sync(
         {"video_id": video_id, "frame_idx": frame_idx, "has_detector_mask": 1 if has_mask else 0}
         for frame_idx in frame_indices
     ]
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"has_detector_mask": stmt.excluded.has_detector_mask}
-    )
-    session.execute(stmt)
-    session.commit()
+    _chunked_upsert_sync(session, values, ["video_id", "frame_idx"], ["has_detector_mask"])
 
 
 async def clear_all_has_detector_mask(
@@ -1087,12 +1088,8 @@ async def set_has_final_mask(
         for idx in indices
     ]
 
-    stmt = sqlite_insert(FrameData).values(values).on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"has_final_mask": mask_value}
-    )
-    await session.execute(stmt)
-    await session.commit()
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"],
+        {"has_final_mask": mask_value})
 
 
 def set_has_final_mask_batch_sync(
@@ -1108,13 +1105,7 @@ def set_has_final_mask_batch_sync(
         {"video_id": video_id, "frame_idx": frame_idx, "has_final_mask": 1 if has_mask else 0}
         for frame_idx in frame_indices
     ]
-    stmt = sqlite_insert(FrameData).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["video_id", "frame_idx"],
-        set_={"has_final_mask": stmt.excluded.has_final_mask}
-    )
-    session.execute(stmt)
-    session.commit()
+    _chunked_upsert_sync(session, values, ["video_id", "frame_idx"], ["has_final_mask"])
 
 
 async def clear_all_has_final_mask(
