@@ -1790,7 +1790,7 @@ class AlignmentService:
 
                 # Create H5 files upfront using array_storage create functions
                 create_aligned_masks_array(project_path, video.id, frame_count, mask_height)
-                create_alignment_keypoints_array(project_path, video.id, frame_count, height)
+                create_alignment_keypoints_array(project_path, video.id, frame_count)
 
                 # Use context managers for H5 files with proper locking (append mode)
                 with cropped_masks(project_path, video.id) as cropped_mask_data, \

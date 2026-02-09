@@ -447,24 +447,22 @@ def create_alignment_keypoints_array(
     project_path: Path,
     video_id: int,
     num_frames: int,
-    crop_size: int,
 ) -> None:
-    """Create alignment keypoints (heatmaps) array for a video.
+    """Create alignment heading vectors array for a video.
 
     Args:
         project_path: Path to the project folder
         video_id: ID of the video
         num_frames: Total number of frames in the video
-        crop_size: Heatmap dimensions (same as cropped masks)
     """
     h5_path = _construct_h5_path(project_path, video_id, "alignment_keypoints.h5")
     with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
             "data",
-            shape=(num_frames, crop_size, crop_size, 2),
+            shape=(num_frames, 2),
             dtype=np.float32,
             fillvalue=0.0,
-            chunks=(1, crop_size, crop_size, 2),
+            chunks=(1, 2),
             compression=None,
         )
 
