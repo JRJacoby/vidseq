@@ -691,32 +691,6 @@ class AlignmentDataset(Dataset):
         front_x, front_y = label.front_x, label.front_y
         rear_x, rear_y = label.rear_x, label.rear_y
 
-        # Apply augmentations only for training set (not validation)
-        if self.augment:
-            # Apply augmentations probabilistically (50% chance each category)
-
-            # 1. Geometric (rotation + flips) - affects coordinates
-            if rng.random() < AUGMENT_CATEGORY_PROB:
-                frame, front_x, front_y, rear_x, rear_y = _apply_geometric_augmentation(
-                    frame, front_x, front_y, rear_x, rear_y, rng
-                )
-
-            # 2. Color (brightness, contrast, saturation, blur) - no coord change
-            if rng.random() < AUGMENT_CATEGORY_PROB:
-                frame = _apply_color_augmentation(frame, rng)
-
-            # 3. Random erasing (cutout or dropout) - no coord change
-            if rng.random() < AUGMENT_CATEGORY_PROB:
-                frame = _apply_erasing_augmentation(
-                    frame, front_x, front_y, rear_x, rear_y, rng
-                )
-
-            # 4. Scaling (zoom in/out) - affects coordinates
-            if rng.random() < AUGMENT_CATEGORY_PROB:
-                frame, front_x, front_y, rear_x, rear_y = _apply_scaling_augmentation(
-                    frame, front_x, front_y, rear_x, rear_y, rng
-                )
-
         # Compute heading angle from keypoints
         dx = (front_x - rear_x) * orig_w
         dy = (front_y - rear_y) * orig_h
@@ -1858,24 +1832,9 @@ class AlignmentService:
                             raw_cos[decode_idx] = cos_val
                             raw_sin[decode_idx] = sin_val
 
-                    logger.info(f"apply_alignment_sync: smoothing heading vectors (window={SAVGOL_WINDOW_LENGTH}, polyorder={SAVGOL_POLYORDER})")
-
-                    win = min(SAVGOL_WINDOW_LENGTH, frame_count)
-                    if win % 2 == 0:
-                        win -= 1
-                    if win < SAVGOL_POLYORDER + 2:
-                        logger.warning(f"apply_alignment_sync: too few frames ({frame_count}) for SavGol, using raw heading")
-                        smooth_cos = raw_cos
-                        smooth_sin = raw_sin
-                    else:
-                        smooth_cos = savgol_filter(raw_cos, win, SAVGOL_POLYORDER)
-                        smooth_sin = savgol_filter(raw_sin, win, SAVGOL_POLYORDER)
-
-                    # Re-normalize smoothed vectors back to unit circle
-                    norms = np.sqrt(smooth_cos**2 + smooth_sin**2)
-                    norms = np.maximum(norms, 1e-8)
-                    smooth_cos = smooth_cos / norms
-                    smooth_sin = smooth_sin / norms
+                    # TODO: SavGol smoothing disabled for debugging raw output
+                    smooth_cos = raw_cos
+                    smooth_sin = raw_sin
 
                     # Convert to angles (degrees)
                     angles = np.degrees(np.arctan2(smooth_sin, smooth_cos))
