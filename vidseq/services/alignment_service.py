@@ -196,17 +196,22 @@ def _load_dinov2(device: torch.device) -> nn.Module:
 class HeadingVectorDecoder(nn.Module):
     """Predicts heading direction (cos θ, sin θ) from DINOv2 features.
 
-    Uses global average pooling to collapse spatial dimensions, then an MLP
-    to predict a 2D unit vector representing the animal's heading direction.
+    Uses 1×1 conv to reduce channels, then pools to a 4×4 spatial grid
+    (preserving spatial layout), then an MLP to predict a 2D unit vector.
     """
 
-    def __init__(self, in_channels: int = 1536):
+    def __init__(self, in_channels: int = 1536, spatial_size: int = 4, mid_channels: int = 64):
         super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.mlp = nn.Sequential(
-            nn.Linear(in_channels, 256),
+        self.channel_reduce = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=1),
             nn.ReLU(),
-            nn.Linear(256, 2),
+        )
+        self.pool = nn.AdaptiveAvgPool2d(spatial_size)
+        flat_dim = mid_channels * spatial_size * spatial_size  # 64 * 16 = 1024
+        self.mlp = nn.Sequential(
+            nn.Linear(flat_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -218,9 +223,10 @@ class HeadingVectorDecoder(nn.Module):
         Returns:
             Unit vectors of shape (B, 2) representing (cos θ, sin θ)
         """
-        x = self.pool(x)          # (B, 1536, 1, 1)
-        x = x.flatten(1)          # (B, 1536)
-        x = self.mlp(x)           # (B, 2)
+        x = self.channel_reduce(x)  # (B, 64, 16, 16)
+        x = self.pool(x)            # (B, 64, 4, 4)
+        x = x.flatten(1)            # (B, 1024)
+        x = self.mlp(x)             # (B, 2)
         x = nn.functional.normalize(x, dim=-1)  # Unit vector
         return x
 
@@ -1848,9 +1854,8 @@ class AlignmentService:
                             raw_cos[decode_idx] = cos_val
                             raw_sin[decode_idx] = sin_val
 
-                    # TODO: SavGol smoothing disabled for debugging raw output
-                    smooth_cos = raw_cos
-                    smooth_sin = raw_sin
+                    smooth_cos = savgol_filter(raw_cos, SAVGOL_WINDOW_LENGTH, SAVGOL_POLYORDER)
+                    smooth_sin = savgol_filter(raw_sin, SAVGOL_WINDOW_LENGTH, SAVGOL_POLYORDER)
 
                     # Convert to angles (degrees)
                     angles = np.degrees(np.arctan2(smooth_sin, smooth_cos))
@@ -1869,12 +1874,16 @@ class AlignmentService:
 
                         angle = float(angles[frame_idx])
 
+                        # Zero out non-mask pixels before rotating
+                        cropped_mask = cropped_mask_data[frame_idx]
+                        mask_3ch = np.stack([cropped_mask] * 3, axis=2)
+                        frame = np.where(mask_3ch > 0, frame, 0)
+
                         # Rotate frame
                         rotated = rotate_frame(frame, angle)
                         writer.write(rotated)
 
-                        # Load cropped mask, rotate, threshold, and save
-                        cropped_mask = cropped_mask_data[frame_idx]
+                        # Rotate mask and save
                         aligned_mask = rotate_mask(cropped_mask, angle)
                         aligned_mask_data[frame_idx] = aligned_mask
 

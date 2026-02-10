@@ -314,11 +314,7 @@ def _process_frames_with_masks(
             # Save cropped mask to HDF5
             cropped_masks_data[frame_idx] = cropped_mask
 
-            # Zero out pixels where mask is 0
-            mask_3ch = np.stack([cropped_mask, cropped_mask, cropped_mask], axis=2)
-            cropped_frame = np.where(mask_3ch > 0, cropped_frame, 0)
-
-            # Write frame
+            # Write frame (background preserved for labeling; masking deferred to alignment)
             writer.write(cropped_frame)
 
             frame_idx += 1
