@@ -291,7 +291,7 @@ if not logger.handlers:
 
 
 # --- Augmentation Configuration ---
-AUGMENT_VERSIONS_PER_SAMPLE = 10  # Number of augmented versions per training sample
+AUGMENT_VERSIONS_PER_SAMPLE = 1  # Each epoch sees a fresh random rotation per sample
 AUGMENT_CATEGORY_PROB = 0.5  # 50% chance each category is activated
 
 # --- Train/Validation Split Configuration ---
