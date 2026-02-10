@@ -717,16 +717,31 @@ class AlignmentDataset(Dataset):
                     frame, front_x, front_y, rear_x, rear_y, rng
                 )
 
-        # Preprocess for DINOv2 (rescale longest side to 224, pad to square, normalize)
-        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame)
-
         # Compute heading angle from keypoints
         dx = (front_x - rear_x) * orig_w
         dy = (front_y - rear_y) * orig_h
         angle = np.arctan2(dy, dx)
+        cos_t, sin_t = np.cos(angle), np.sin(angle)
+
+        # Always apply random rotation augmentation (continuous [0, 360))
+        if self.augment:
+            rot_deg = rng.uniform(0.0, 360.0)
+            rot_rad = np.radians(rot_deg)
+            # Rotate image around center
+            h, w = frame.shape[:2]
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), rot_deg, 1.0)
+            frame = cv2.warpAffine(frame, M, (w, h), borderValue=(128, 128, 128))
+            # Rotate target vector by -rot_rad
+            cos_r, sin_r = np.cos(rot_rad), np.sin(rot_rad)
+            new_cos = cos_t * cos_r + sin_t * sin_r
+            new_sin = sin_t * cos_r - cos_t * sin_r
+            cos_t, sin_t = new_cos, new_sin
+
+        # Preprocess for DINOv2 (rescale longest side to 224, pad to square, normalize)
+        frame_tensor, scale, pad_left, pad_top, _, _ = preprocess_for_dinov2(frame)
 
         # Target is (cos θ, sin θ) unit vector
-        target = torch.tensor([np.cos(angle), np.sin(angle)], dtype=torch.float32)
+        target = torch.tensor([cos_t, sin_t], dtype=torch.float32)
 
         return frame_tensor, target
 
