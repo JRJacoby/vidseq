@@ -13,6 +13,6 @@ def main():
     print('=' * 60)
 
     print('Starting server...')
-    uvicorn.run("vidseq.server:app", host='0.0.0.0', port=8000, reload=True)
+    uvicorn.run("vidseq.server:app", host='0.0.0.0', port=8000, reload=False)
 
     print(f'Server started on http://localhost:8000.')
