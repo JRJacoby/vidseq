@@ -264,7 +264,7 @@ const handleTrainAlignment = async () => {
   if (!projectId.value || alignmentStatus.value?.is_training) return
   try {
     // Fire-and-forget: endpoint returns immediately after starting training
-    await createAlignmentTraining(projectId.value, alignmentEpochs.value, true, 100, 10, selectedVideoIdsList.value)
+    await createAlignmentTraining(projectId.value, alignmentEpochs.value, true, 100, 50, selectedVideoIdsList.value)
     // Refresh status - will now show is_training=true
     await loadAlignmentStatus()
     // Start polling to detect when training completes
