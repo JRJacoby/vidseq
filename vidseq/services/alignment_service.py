@@ -741,6 +741,7 @@ class AlignmentService:
 
         self._is_training = False
         self._is_applying = False
+        self._stop_requested = False
 
         # Model caching
         self._model: Optional[nn.Module] = None
@@ -774,6 +775,13 @@ class AlignmentService:
         """Check if training is in progress."""
         logger.debug(f"is_training() -> {self._is_training}")
         return self._is_training
+
+    def stop_training(self) -> bool:
+        """Request training to stop."""
+        if self._is_training:
+            self._stop_requested = True
+            return True
+        return False
 
     def is_applying(self) -> bool:
         """Check if applying alignment is in progress."""
@@ -1208,6 +1216,7 @@ class AlignmentService:
             f"early_stop_patience={early_stop_patience}"
         )
         self._is_training = True
+        self._stop_requested = False
 
         # Split labels into train/val sets
         use_validation = len(labels) >= MIN_LABELS_FOR_VALIDATION
@@ -1430,6 +1439,13 @@ class AlignmentService:
                         self._training_progress.best_val_loss = best_val_loss
                         self._training_progress.best_epoch = best_epoch
                         self._training_progress.epochs_without_improvement = epochs_without_improvement
+                        self._training_progress.is_training = False
+                        self._training_progress.status = "stopped"
+                        break
+
+                    # Check for user-requested stop
+                    if self._stop_requested:
+                        logger.info(f"train_model_sync: stop requested at epoch {epoch + 1}")
                         self._training_progress.is_training = False
                         self._training_progress.status = "stopped"
                         break

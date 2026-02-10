@@ -5,6 +5,7 @@ import {
     connectAlignmentTrainingStream,
     connectAlignmentApplyStream,
     getAlignmentTraining,
+    deleteAlignmentTraining,
     getVideosAlignmentStatus,
     type TrainingProgress,
     type AlignmentApplyProgress
@@ -194,6 +195,16 @@ watch(() => alignProgress.value?.is_aligning, (isAligning) => {
     }
 })
 
+// Stop training handler
+async function handleStopTraining() {
+    if (!projectId.value) return
+    try {
+        await deleteAlignmentTraining(projectId.value)
+    } catch (e: any) {
+        console.error('Failed to stop training:', e)
+    }
+}
+
 // Format helpers
 const formatLR = (lr: number) => lr.toExponential(2)
 const formatLoss = (loss: number | null | undefined) => {
@@ -274,8 +285,17 @@ const frameProgressPercent = computed(() => {
                 <!-- Status Panel -->
                 <div class="status-panel">
                     <h3>Status</h3>
-                <div class="status-indicator" :style="{ backgroundColor: statusColor }">
-                    {{ progress?.status ?? 'idle' }}
+                <div class="status-row">
+                    <div class="status-indicator" :style="{ backgroundColor: statusColor }">
+                        {{ progress?.status ?? 'idle' }}
+                    </div>
+                    <button
+                        v-if="progress?.is_training"
+                        class="btn btn-stop"
+                        @click="handleStopTraining"
+                    >
+                        Stop Training
+                    </button>
                 </div>
 
                 <div class="stats-grid" v-if="progress">
@@ -525,6 +545,20 @@ h3 {
 
 .chart-container {
     height: 350px;
+}
+
+.btn-stop {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    background: #ef4444;
+    color: white;
+}
+
+.btn-stop:hover {
+    background: #dc2626;
 }
 
 .no-data-message {

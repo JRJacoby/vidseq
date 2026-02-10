@@ -239,6 +239,16 @@ async def create_alignment_training(
     )
 
 
+@router.delete("/projects/{project_id}/alignment/training", status_code=204)
+async def delete_alignment_training(project_id: int):
+    """Stop alignment training gracefully."""
+    service = AlignmentService.get_instance()
+    if not service.is_training():
+        raise HTTPException(status_code=400, detail="No training in progress")
+    service.stop_training()
+    return None
+
+
 @router.get("/projects/{project_id}/alignment/training")
 async def get_alignment_training(
     project_id: int,

@@ -724,6 +724,15 @@ export interface TrainingProgress {
     loss_history: number[]     // = train_loss_history
 }
 
+export async function deleteAlignmentTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/training`, {
+        method: 'DELETE',
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to stop alignment training'))
+    }
+}
+
 export async function getAlignmentTraining(projectId: number): Promise<TrainingProgress> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/alignment/training`
