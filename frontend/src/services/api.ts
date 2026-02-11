@@ -1344,3 +1344,172 @@ export async function finalMasksExist(
     }
     return response.json()
 }
+
+// --- Keypoint Tracking ---
+
+export interface KeypointResult {
+    front_x: number | null
+    front_y: number | null
+    rear_x: number | null
+    rear_y: number | null
+}
+
+export interface KeypointTrackingStatus {
+    status: 'not_loaded' | 'loading_model' | 'ready' | 'error'
+    error: string | null
+}
+
+export async function createKeypointModel(): Promise<void> {
+    const response = await fetch(`${API_BASE}/keypoint-tracking/model`, { method: 'POST' })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to load keypoint model'))
+    }
+}
+
+export function getKeypointStatusStreamUrl(): string {
+    return `${API_BASE}/keypoint-tracking/status/stream`
+}
+
+export async function initKeypointSession(
+    projectId: number,
+    videoId: number
+): Promise<{ video_id: number; num_frames: number; height: number; width: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/session`,
+        { method: 'POST' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to init keypoint session'))
+    }
+    return response.json()
+}
+
+export async function closeKeypointSession(
+    projectId: number,
+    videoId: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/session`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to close keypoint session'))
+    }
+}
+
+export async function submitKeypointPrompt(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    x: number,
+    y: number,
+    keypoint: 'front' | 'rear',
+    label: number = 1
+): Promise<KeypointResult> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/prompt/${frameIdx}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ x, y, keypoint, label }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to submit keypoint prompt'))
+    }
+    return response.json()
+}
+
+export async function propagateKeypoints(
+    projectId: number,
+    videoId: number,
+    startFrameIdx: number,
+    maxFrames: number = 1000
+): Promise<{ frames_processed: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/propagate`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to propagate keypoints'))
+    }
+    return response.json()
+}
+
+export async function deleteKeypointFrame(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/frames/${frameIdx}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to delete keypoint frame'))
+    }
+}
+
+export async function deleteKeypointAllFrames(
+    projectId: number,
+    videoId: number
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/frames`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to delete all keypoint frames'))
+    }
+}
+
+export async function getFrameKeypoints(
+    projectId: number,
+    videoId: number,
+    frameIdx: number
+): Promise<KeypointResult> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/keypoints/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch keypoints'))
+    }
+    return response.json()
+}
+
+export async function getKeypointsRange(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100
+): Promise<{ keypoints: Array<{ frame_idx: number } & KeypointResult> }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/keypoints?start_frame=${startFrame}&count=${count}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch keypoints range'))
+    }
+    return response.json()
+}
+
+export interface KeypointLabeledRangesResponse {
+    labeled_ranges: [number, number][]
+    conditioning_frame_indices: { front: number[]; rear: number[] }
+}
+
+export async function getKeypointLabeledRanges(
+    projectId: number,
+    videoId: number
+): Promise<KeypointLabeledRangesResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/keypoint-tracking/labeled-ranges`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch labeled ranges'))
+    }
+    return response.json()
+}
