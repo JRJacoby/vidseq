@@ -261,6 +261,7 @@ class SAM2PlusKeypointTracker:
         x_norm: float,
         y_norm: float,
         frame: np.ndarray,
+        frames,
         coords_source,
     ) -> tuple[float, float, np.ndarray]:
         """Add a keypoint prompt to a frame for a specific object.
@@ -275,6 +276,8 @@ class SAM2PlusKeypointTracker:
             x_norm: Normalized x coordinate in [0, 1].
             y_norm: Normalized y coordinate in [0, 1].
             frame: BGR uint8 frame data (H, W, 3).
+            frames: Indexable frame source for backward memory loading.
+                frames[idx] -> np.ndarray (H, W, 3) BGR.
             coords_source: Indexable coords source for memory preparation.
                 coords_source[idx] -> np.ndarray (K, 2) float32, NaN for empty.
 
@@ -293,7 +296,7 @@ class SAM2PlusKeypointTracker:
         self._ensure_obj(session, obj_id)
 
         # Prepare memory for arbitrary frame access
-        self._set_memory_frame(video_id, frame_idx, obj_id, coords_source=coords_source, frames=None)
+        self._set_memory_frame(video_id, frame_idx, obj_id, coords_source=coords_source, frames=frames)
 
         # Get image features
         _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
@@ -352,6 +355,7 @@ class SAM2PlusKeypointTracker:
         y_norm: float,
         frame: np.ndarray,
         prev_logits: np.ndarray,
+        frames,
         coords_source,
     ) -> tuple[float, float, np.ndarray]:
         """Refine an existing keypoint with updated coordinates.
@@ -367,6 +371,7 @@ class SAM2PlusKeypointTracker:
             y_norm: Updated normalized y coordinate in [0, 1].
             frame: BGR uint8 frame data (H, W, 3).
             prev_logits: Previous low-res logits (256, 256) from prior call.
+            frames: Indexable frame source for backward memory loading.
             coords_source: Indexable coords source for memory preparation.
 
         Returns:
@@ -386,7 +391,7 @@ class SAM2PlusKeypointTracker:
         output_dict["cond_frame_outputs"].pop(frame_idx, None)
 
         # Prepare memory
-        self._set_memory_frame(video_id, frame_idx, obj_id, coords_source=coords_source, frames=None)
+        self._set_memory_frame(video_id, frame_idx, obj_id, coords_source=coords_source, frames=frames)
 
         # Determine is_init_cond_frame based on ALL objects
         has_any_memory = any(
@@ -478,6 +483,13 @@ class SAM2PlusKeypointTracker:
             raise RuntimeError(
                 "No conditioning frames exist for any object. "
                 "Use add_keypoint_prompt() to create an initial keypoint first."
+            )
+
+        # Prepare memory for starting frame for each active object
+        for obj_id in active_obj_ids:
+            self._set_memory_frame(
+                video_id, start_frame, obj_id,
+                coords_source=coords_source, frames=frames,
             )
 
         propagated = []
@@ -837,12 +849,9 @@ class SAM2PlusKeypointTracker:
         """Prepare non_cond_frame_outputs for tracking at frame_idx.
 
         Clears all existing non-cond memory for this object, then walks
-        backward from frame_idx-1, checking coords_source for valid data.
-        Stops after MEM_WINDOW frames or when hitting a gap (NaN coords).
-
-        Note: This method currently only clears non-cond memory. If frames
-        are provided along with coords_source, it would encode them (but
-        for keypoint tracking the propagation loop handles this naturally).
+        backward from frame_idx-1, loading coordinates and encoding them
+        into memory. Stops after MEM_WINDOW frames or when hitting a gap
+        (NaN coords for this object).
 
         Args:
             video_id: The video session ID.
@@ -875,21 +884,26 @@ class SAM2PlusKeypointTracker:
             if prev_idx in cond_indices:
                 continue
 
-            # Check coords for gap detection
+            # Check coords for this specific object (gap detection)
             try:
                 coords = np.asarray(coords_source[prev_idx])
             except (IndexError, KeyError):
                 break
 
-            # Stop at NaN coords (gap in tracking)
-            if np.isnan(coords).any():
+            # coords shape is (K, 2) — check this object's slot
+            obj_coords = coords[obj_id]
+            if np.isnan(obj_coords).any():
                 break
 
-            # For keypoint tracking, we need valid x, y to encode
-            # coords shape may be (K, 2) - find the column for this obj_id
-            # In practice, this is handled by the command layer providing
-            # per-object coords. For now, we skip encoding if no frame source.
-            # The propagation loop builds memory naturally through sequential access.
+            # Encode frame into non-cond memory
+            x_norm = float(obj_coords[0])
+            y_norm = float(obj_coords[1])
+            frame = frames[prev_idx]
+            memory_out = self._encode_stored_keypoint(
+                video_id, prev_idx, obj_id, x_norm, y_norm, frame,
+                store_as_cond=False,
+            )
+            output_dict["non_cond_frame_outputs"][prev_idx] = memory_out
             frames_added += 1
 
     def _point_inputs_from_coords(
