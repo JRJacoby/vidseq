@@ -45,6 +45,7 @@ from vidseq.models.video import Video
 from vidseq.services.cropped_video_service import cropped_video_exists, get_cropped_video_path
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.exceptions import AlignmentTrainingError
+from vidseq.services import keypoint_tcp_client
 
 # Constants
 DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
@@ -2004,3 +2005,54 @@ async def delete_video_alignment_labels(
         delete(AlignmentLabel).where(AlignmentLabel.video_id == video_id)
     )
     await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Keypoint tracking session helpers
+# ---------------------------------------------------------------------------
+
+
+def init_keypoint_session(
+    project_id: int,
+    video_id: int,
+    video_name: str,
+    project_path: Path,
+    num_frames: int,
+):
+    """Initialize a keypoint tracking session using the cropped video.
+
+    Resolves the cropped video path and dimensions, then delegates to
+    the keypoint TCP client.
+
+    Args:
+        project_id: Project ID.
+        video_id: Video ID.
+        video_name: Original video filename (used to derive cropped path).
+        project_path: Path to the project directory.
+        num_frames: Number of frames in the video.
+
+    Returns:
+        KeypointSessionInfo from the TCP client.
+    """
+    cropped_path = get_cropped_video_path(project_path, video_name)
+    if not cropped_path.exists():
+        raise FileNotFoundError(
+            f"Cropped video not found: {cropped_path}. "
+            "Run cropped video extraction first."
+        )
+
+    # Read dimensions from the cropped video file
+    cap = cv2.VideoCapture(str(cropped_path))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    cap.release()
+
+    return keypoint_tcp_client.init_session(
+        project_id=project_id,
+        video_id=video_id,
+        video_path=cropped_path,
+        project_path=project_path,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+    )

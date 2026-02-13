@@ -62,6 +62,10 @@ export function useKeypointSession(
 
     eventSource.onerror = () => {
       eventSource?.close()
+      // Reset state so the watch re-triggers session init on reconnect
+      keypointStatus.value = { status: 'not_loaded', error: null }
+      sessionInitialized.value = false
+      sessionInitializing.value = false
       setTimeout(connectSSE, 1000)
     }
   }

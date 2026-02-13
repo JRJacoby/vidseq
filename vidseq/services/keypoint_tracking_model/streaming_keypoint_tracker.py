@@ -95,6 +95,10 @@ class SAM2PlusKeypointTracker:
     # Model input size (SAM2++ uses 1024x1024)
     INPUT_SIZE = 1024
 
+    # ImageNet normalization (must match SAM2++ training preprocessing)
+    IMG_MEAN = (0.485, 0.456, 0.406)
+    IMG_STD = (0.229, 0.224, 0.225)
+
     # Low-res logits size (SAM2++ outputs 256x256)
     LOGITS_SIZE = 256
 
@@ -161,7 +165,7 @@ class SAM2PlusKeypointTracker:
         video_id: str,
         num_frames: int,
         frame_dims: tuple[int, int],
-        cond_frame_data: list[tuple[int, int, float, float]] | None = None,
+        cond_frame_data: list[dict] | None = None,
         frames=None,
         coords_source=None,
     ) -> None:
@@ -175,9 +179,9 @@ class SAM2PlusKeypointTracker:
             video_id: Unique identifier for this video session.
             num_frames: Actual number of frames in the video.
             frame_dims: Tuple of (height, width) for the video frames.
-            cond_frame_data: List of (frame_idx, obj_id, x_norm, y_norm) tuples
-                for reconstructing conditioning frame memories. Pass None or
-                empty for a fresh session.
+            cond_frame_data: List of dicts with keys frame_idx, obj_id,
+                x_norm, y_norm for reconstructing conditioning frame memories.
+                Pass None or empty for a fresh session.
             frames: Optional indexable frame source (only needed if reconstructing).
             coords_source: Optional indexable coords source (only needed for
                 _set_memory_frame during reconstruction).
@@ -186,7 +190,7 @@ class SAM2PlusKeypointTracker:
             ValueError: If video_id already exists.
         """
         if video_id in self.sessions:
-            raise ValueError(f"Video '{video_id}' is already open. Close it first.")
+            self.close_video(video_id)
 
         session = {
             "output_dicts": {},        # obj_id -> {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
@@ -199,10 +203,12 @@ class SAM2PlusKeypointTracker:
 
         # Reconstruct conditioning frame memories from stored data
         if cond_frame_data and frames is not None:
-            cond_sorted = sorted(cond_frame_data, key=lambda t: (t[0], t[1]))
+            cond_sorted = sorted(cond_frame_data, key=lambda t: (t["frame_idx"], t["obj_id"]))
             print(f"  Reconstructing {len(cond_sorted)} conditioning frame memories...")
             sys.stdout.flush()
-            for i, (frame_idx, obj_id, x_norm, y_norm) in enumerate(cond_sorted):
+            for i, entry in enumerate(cond_sorted):
+                frame_idx, obj_id = entry["frame_idx"], entry["obj_id"]
+                x_norm, y_norm = entry["x_norm"], entry["y_norm"]
                 print(
                     f"    [{i + 1}/{len(cond_sorted)}] Encoding frame {frame_idx}, obj {obj_id}...",
                     end="",
@@ -638,7 +644,7 @@ class SAM2PlusKeypointTracker:
         # GPU-accelerated preprocessing
         frame_gpu = torch.from_numpy(frame_bgr).to(self.device)
 
-        # BGR->RGB, HWC->CHW, normalize to [0,1]
+        # BGR->RGB, HWC->CHW, scale to [0,1]
         image_tensor = frame_gpu[..., [2, 1, 0]].permute(2, 0, 1).float().div_(255.0)
 
         # Resize to model input size
@@ -648,6 +654,11 @@ class SAM2PlusKeypointTracker:
             mode="bilinear",
             align_corners=False,
         )
+
+        # ImageNet normalization (required by SAM2++ backbone)
+        img_mean = torch.tensor(self.IMG_MEAN, device=self.device).view(1, 3, 1, 1)
+        img_std = torch.tensor(self.IMG_STD, device=self.device).view(1, 3, 1, 1)
+        image_tensor = (image_tensor - img_mean) / img_std
 
         # Run through image encoder
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):

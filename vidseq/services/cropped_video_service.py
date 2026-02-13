@@ -23,6 +23,7 @@ import numpy as np
 from vidseq.services.array_storage import (
     compute_bbox_from_mask,
     create_cropped_masks_array,
+    create_keypoint_tracking_arrays,
     cropped_masks,
     tracker_masks,
 )
@@ -375,6 +376,9 @@ def process_single_video(
 
     # Create cropped masks array with pre-allocated dataset
     create_cropped_masks_array(project_path, video.id, video.num_frames, crop_size)
+
+    # Create keypoint tracking arrays (coords + logits) for this video
+    create_keypoint_tracking_arrays(project_path, video.id, video.num_frames)
 
     # Use context manager for cropped masks (write operation needs locking)
     with cropped_masks(project_path, video.id, "a") as cropped_masks_data:

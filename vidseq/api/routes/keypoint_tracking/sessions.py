@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from vidseq.api.dependencies import get_project_folder, get_video
 from vidseq.models.video import Video
 from vidseq.services import keypoint_tcp_client
+from vidseq.services.alignment_service import init_keypoint_session as _init_keypoint_session
 
 router = APIRouter()
 
@@ -60,15 +61,15 @@ async def init_keypoint_session(
 ):
     """Initialize a keypoint tracking session for a video."""
     try:
-        session_info = keypoint_tcp_client.init_session(
+        session_info = _init_keypoint_session(
             project_id=project_id,
             video_id=video.id,
-            video_path=Path(video.path),
+            video_name=video.name,
             project_path=project_path,
             num_frames=video.num_frames,
-            height=video.height,
-            width=video.width,
         )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
