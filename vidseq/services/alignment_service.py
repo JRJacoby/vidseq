@@ -889,10 +889,27 @@ class AlignmentService:
             logger.info(f"delete_model: model file did not exist")
             return False
 
-    async def get_label_count(self, session: AsyncSession) -> int:
-        """Get count of alignment labels."""
-        result = await session.execute(select(func.count(AlignmentLabel.id)))
-        count = result.scalar() or 0
+    async def get_label_count(self, session: AsyncSession, project_path: Path) -> int:
+        """Count total frames with tracked keypoints across all videos."""
+        from vidseq.services.array_storage import keypoint_coords
+
+        result = await session.execute(select(Video))
+        videos = list(result.scalars().all())
+
+        def _count_labels() -> int:
+            count = 0
+            for v in videos:
+                try:
+                    with keypoint_coords(project_path, v.id, "r") as coords_ds:
+                        coords = np.asarray(coords_ds[:])  # (num_frames, 2, 2)
+                        front_valid = ~np.isnan(coords[:, 0, :]).any(axis=1)
+                        rear_valid = ~np.isnan(coords[:, 1, :]).any(axis=1)
+                        count += int((front_valid & rear_valid).sum())
+                except (FileNotFoundError, OSError):
+                    continue
+            return count
+
+        count = await asyncio.to_thread(_count_labels)
         logger.info(f"get_label_count: count={count}")
         return count
 
@@ -1078,7 +1095,7 @@ class AlignmentService:
         Returns:
             Dict with keys: label_count, model_trained, is_training, is_applying, all_videos_cropped
         """
-        label_count = await self.get_label_count(session)
+        label_count = await self.get_label_count(session, project_path)
         model_trained = self.is_model_trained(project_path)
         is_training = self.is_training()
         is_applying = self.is_applying()
