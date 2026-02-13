@@ -12,7 +12,6 @@ from vidseq.models.project_db import Base as ProjectBase
 from vidseq.models.video import Video  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.conditioning_frame import ConditioningFrame  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.frame_data import FrameData  # noqa: F401 - registers with ProjectBase.metadata
-from vidseq.models.alignment_label import AlignmentLabel  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.keypoint_conditioning_frame import KeypointConditioningFrame  # noqa: F401 - registers with ProjectBase.metadata
 from vidseq.models.registry import Base as RegistryBase
 
