@@ -371,7 +371,11 @@ def build_labels_from_keypoint_coords(
 
     labels = []
     for vid_id in video_ids:
-        with keypoint_coords(project_path, vid_id, "r") as coords_ds:
+        try:
+            coords_ctx = keypoint_coords(project_path, vid_id, "r")
+        except (FileNotFoundError, OSError):
+            continue  # Video has no keypoint tracking data yet
+        with coords_ctx as coords_ds:
             coords = np.asarray(coords_ds[:])  # (num_frames, 2, 2)
             for frame_idx in range(coords.shape[0]):
                 front = coords[frame_idx, 0]  # (2,) — x, y
