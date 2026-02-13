@@ -1144,26 +1144,17 @@ class AlignmentService:
         if self.is_training():
             raise AlignmentTrainingError("Training already in progress")
 
-        # Fetch labels only for selected videos
-        result = await session.execute(
-            select(AlignmentLabel)
-            .where(AlignmentLabel.video_id.in_(video_ids))
-            .order_by(AlignmentLabel.id)
-        )
-        labels = list(result.scalars().all())
-
-        if len(labels) == 0:
-            raise AlignmentTrainingError("No labels available for training in selected videos")
-
-        # Build video_name_map: video_id -> video.name
-        label_video_ids = list({label.video_id for label in labels})
-        result = await session.execute(select(Video).where(Video.id.in_(label_video_ids)))
+        # Build video_name_map from DB (still needed for frame loading)
+        result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
         videos = list(result.scalars().all())
         video_name_map = {v.id: v.name for v in videos}
 
+        if not video_name_map:
+            raise AlignmentTrainingError("No videos found for selected IDs")
+
         logger.info(
-            f"create_alignment_training: starting training with {len(labels)} labels, "
-            f"{len(video_name_map)} videos, max_epochs={epochs}, augment={augment}"
+            f"create_alignment_training: starting with {len(video_ids)} videos, "
+            f"max_epochs={epochs}, augment={augment}"
         )
 
         # Start training in background thread
@@ -1171,7 +1162,7 @@ class AlignmentService:
             asyncio.to_thread(
                 self.train_model_sync,
                 project_path,
-                labels,
+                video_ids,
                 video_name_map,
                 max_epochs=epochs,
                 augment=augment,
@@ -1227,7 +1218,7 @@ class AlignmentService:
     def train_model_sync(
         self,
         project_path: Path,
-        labels: list,
+        video_ids: list[int],
         video_name_map: dict[int, str],
         max_epochs: int = 100,
         batch_size: int = 8,
@@ -1237,7 +1228,7 @@ class AlignmentService:
         early_stop_patience: int = 5,
         augment: bool = True,
     ) -> bool:
-        """Train the alignment model using labeled data with train/val split.
+        """Train the alignment model using tracked keypoint data with train/val split.
 
         Uses early stopping and learning rate reduction on plateau based on
         validation loss (or training loss if insufficient labels for validation):
@@ -1247,7 +1238,7 @@ class AlignmentService:
 
         Args:
             project_path: Path to project folder
-            labels: List of AlignmentLabel objects
+            video_ids: List of video IDs to scan for tracked keypoints
             video_name_map: Dict mapping video_id -> video.name
             max_epochs: Maximum number of training epochs (default 100)
             batch_size: Training batch size
@@ -1259,6 +1250,21 @@ class AlignmentService:
         Returns:
             True if successful
         """
+        self._is_training = True
+        self._stop_requested = False
+
+        # Build training labels from tracked keypoints
+        labels = build_labels_from_keypoint_coords(project_path, video_ids)
+
+        if len(labels) == 0:
+            logger.error("train_model_sync: no tracked keypoints found in selected videos")
+            self._is_training = False
+            self._training_progress = TrainingProgress(
+                status="error",
+            )
+            return False
+
+        logger.info(f"train_model_sync: found {len(labels)} labeled frames from H5")
         logger.info(
             f"train_model_sync: starting training with max_epochs={max_epochs}, "
             f"batch_size={batch_size}, lr={lr}, num_labels={len(labels)}"
@@ -1267,8 +1273,6 @@ class AlignmentService:
             f"train_model_sync: lr_patience={lr_patience}, lr_factor={lr_factor}, "
             f"early_stop_patience={early_stop_patience}"
         )
-        self._is_training = True
-        self._stop_requested = False
 
         # Split labels into train/val sets
         use_validation = len(labels) >= MIN_LABELS_FOR_VALIDATION
