@@ -66,6 +66,21 @@ FEATURE_AVG_WINDOW = 5     # ~167ms at 30fps — average 5 DINOv2 feature tensor
 
 
 @dataclass
+class KeypointLabel:
+    """Training label built from tracked keypoint coordinates.
+
+    Fields mirror AlignmentLabel for compatibility with AlignmentDataset.
+    Coordinates are normalized (0-1) relative to cropped frame dimensions.
+    """
+    video_id: int
+    frame_idx: int
+    front_x: float
+    front_y: float
+    rear_x: float
+    rear_y: float
+
+
+@dataclass
 class TrainingProgress:
     """Real-time training progress state for SSE streaming."""
 
@@ -341,6 +356,36 @@ def split_labels_train_val(
     )
 
     return train_labels, val_labels
+
+
+def build_labels_from_keypoint_coords(
+    project_path: Path,
+    video_ids: list[int],
+) -> list[KeypointLabel]:
+    """Scan keypoint_coords.h5 for each video and build training labels.
+
+    Reads all frames, keeps only those where both front (obj 0) and
+    rear (obj 1) have non-NaN coordinates.
+    """
+    from vidseq.services.array_storage import keypoint_coords
+
+    labels = []
+    for vid_id in video_ids:
+        with keypoint_coords(project_path, vid_id, "r") as coords_ds:
+            coords = np.asarray(coords_ds[:])  # (num_frames, 2, 2)
+            for frame_idx in range(coords.shape[0]):
+                front = coords[frame_idx, 0]  # (2,) — x, y
+                rear = coords[frame_idx, 1]   # (2,) — x, y
+                if not (np.any(np.isnan(front)) or np.any(np.isnan(rear))):
+                    labels.append(KeypointLabel(
+                        video_id=vid_id,
+                        frame_idx=frame_idx,
+                        front_x=float(front[0]),
+                        front_y=float(front[1]),
+                        rear_x=float(rear[0]),
+                        rear_y=float(rear[1]),
+                    ))
+    return labels
 
 
 def _apply_geometric_augmentation(
