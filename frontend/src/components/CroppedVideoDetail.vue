@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getCroppedVideoStreamUrl,
-  getVideoAlignmentLabels,
-  saveAlignmentLabel,
-  deleteAlignmentLabel,
-  deleteVideoAlignmentLabels,
   propagateKeypoints,
   getKeypointLabeledRanges,
   type KeypointLabeledRangesResponse,
@@ -31,13 +27,6 @@ const viewStart = ref(0)
 const viewEnd = ref(0)
 
 const overlayCanvasRef = ref<HTMLCanvasElement | null>(null)
-
-// Training mode state (alignment labels)
-const isTrainingMode = ref(false)
-const frontPoint = ref<{ x: number; y: number } | null>(null)
-const rearPoint = ref<{ x: number; y: number } | null>(null)
-const alignmentLabelFrames = ref<number[]>([])
-const isSaving = ref(false)
 
 // Keypoint tracking mode state
 const isKeypointMode = ref(false)
@@ -72,21 +61,6 @@ const {
   toggleRearTool,
 } = useKeypointTracking(projectId, videoId, currentFrameIdx)
 
-const loadExtraData = async () => {
-  if (!video.value) return
-  try {
-    // Load alignment labels for this video
-    const labelsResponse = await getVideoAlignmentLabels(
-      projectId.value,
-      videoId.value
-    )
-    alignmentLabelFrames.value = labelsResponse.frame_indices
-  } catch (e) {
-    // Extra data loading failed, but video loaded fine
-    console.error('Failed to load extra data:', e)
-  }
-}
-
 // Load keypoint labeled ranges
 async function loadKeypointLabeledRanges() {
   if (!projectId.value || !videoId.value) return
@@ -101,7 +75,6 @@ async function loadKeypointLabeledRanges() {
 // Load extra data when video loads
 watch(video, (v) => {
   if (v) {
-    loadExtraData()
     loadKeypointLabeledRanges()
   }
 })
@@ -137,7 +110,7 @@ const handleViewChange = (start: number, end: number) => {
   viewEnd.value = end
 }
 
-// Render overlay: training points AND/OR keypoint tracking points
+// Render overlay: keypoint tracking points
 function renderOverlay() {
   const canvas = overlayCanvasRef.value
   const videoEl = videoRef.value
@@ -154,33 +127,6 @@ function renderOverlay() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   const radius = 10
-
-  // Draw alignment training points
-  if (isTrainingMode.value) {
-    if (frontPoint.value) {
-      const px = frontPoint.value.x * canvas.width
-      const py = frontPoint.value.y * canvas.height
-      ctx.beginPath()
-      ctx.arc(px, py, radius, 0, 2 * Math.PI)
-      ctx.fillStyle = 'rgba(34, 197, 94, 0.8)' // Green
-      ctx.fill()
-      ctx.strokeStyle = 'white'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-
-    if (rearPoint.value) {
-      const px = rearPoint.value.x * canvas.width
-      const py = rearPoint.value.y * canvas.height
-      ctx.beginPath()
-      ctx.arc(px, py, radius, 0, 2 * Math.PI)
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)' // Red
-      ctx.fill()
-      ctx.strokeStyle = 'white'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-  }
 
   // Draw keypoint tracking points
   if (isKeypointMode.value && currentKeypoints.value) {
@@ -233,24 +179,10 @@ function renderOverlay() {
 // Re-render overlay when keypoints change
 watch(currentKeypoints, () => renderOverlay(), { deep: true })
 
-// Toggle training mode (alignment labels)
-async function toggleTrainingMode() {
-  isTrainingMode.value = !isTrainingMode.value
-  if (isTrainingMode.value) isKeypointMode.value = false
-  frontPoint.value = null
-  rearPoint.value = null
-  // Wait for canvas to be rendered in DOM before setting dimensions
-  await nextTick()
-  renderOverlay()
-}
-
 // Toggle keypoint tracking mode
 async function toggleKeypointMode() {
   isKeypointMode.value = !isKeypointMode.value
   if (isKeypointMode.value) {
-    isTrainingMode.value = false
-    frontPoint.value = null
-    rearPoint.value = null
     // Load keypoints for current frame
     await loadFrameKeypoints(currentFrameIdx.value)
   }
@@ -258,8 +190,10 @@ async function toggleKeypointMode() {
   renderOverlay()
 }
 
-// Handle overlay click — routes to appropriate mode handler
+// Handle overlay click
 function handleOverlayClick(event: MouseEvent) {
+  if (activeTool.value === 'none' || isPrompting.value) return
+
   const canvas = overlayCanvasRef.value
   const videoEl = videoRef.value
   if (!canvas || !videoEl) return
@@ -268,83 +202,7 @@ function handleOverlayClick(event: MouseEvent) {
   const x = (event.clientX - rect.left) / rect.width
   const y = (event.clientY - rect.top) / rect.height
 
-  if (isTrainingMode.value && !isSaving.value) {
-    // Alignment training click handler
-    if (!frontPoint.value) {
-      frontPoint.value = { x, y }
-      renderOverlay()
-    } else if (!rearPoint.value) {
-      rearPoint.value = { x, y }
-      renderOverlay()
-      saveAndAdvance()
-    }
-  } else if (isKeypointMode.value && activeTool.value !== 'none' && !isPrompting.value) {
-    // Keypoint tracking click handler
-    handlePointComplete({ x, y })
-  }
-}
-
-// Save alignment label and advance to next frame
-async function saveAndAdvance() {
-  if (!frontPoint.value || !rearPoint.value) return
-  if (!video.value) return
-
-  isSaving.value = true
-  try {
-    await saveAlignmentLabel(
-      projectId.value,
-      videoId.value,
-      currentFrameIdx.value,
-      frontPoint.value.x,
-      frontPoint.value.y,
-      rearPoint.value.x,
-      rearPoint.value.y
-    )
-
-    // Add to local list if not already present
-    if (!alignmentLabelFrames.value.includes(currentFrameIdx.value)) {
-      alignmentLabelFrames.value = [...alignmentLabelFrames.value, currentFrameIdx.value].sort(
-        (a, b) => a - b
-      )
-    }
-
-    // Clear points
-    frontPoint.value = null
-    rearPoint.value = null
-
-    // Advance to next frame
-    const nextFrame = currentFrameIdx.value + 1
-    const nextTime = (nextFrame + 0.5) / video.value.fps
-    seek(nextTime)
-  } catch (e) {
-    console.error('Failed to save alignment label:', e)
-  } finally {
-    isSaving.value = false
-    renderOverlay()
-  }
-}
-
-// Reset current frame's alignment label
-async function handleResetFrame() {
-  try {
-    await deleteAlignmentLabel(projectId.value, videoId.value, currentFrameIdx.value)
-    alignmentLabelFrames.value = alignmentLabelFrames.value.filter(
-      (f) => f !== currentFrameIdx.value
-    )
-  } catch (e) {
-    console.error('Failed to reset frame:', e)
-  }
-}
-
-// Reset all alignment labels for this video
-async function handleResetVideo() {
-  if (!confirm('Delete all alignment labels for this video?')) return
-  try {
-    await deleteVideoAlignmentLabels(projectId.value, videoId.value)
-    alignmentLabelFrames.value = []
-  } catch (e) {
-    console.error('Failed to reset video:', e)
-  }
+  handlePointComplete({ x, y })
 }
 
 // Propagate keypoints
@@ -387,20 +245,11 @@ async function onKeypointResetVideo() {
   renderOverlay()
 }
 
-// Discard partial alignment label (front without rear) when navigating away
-watch(currentFrameIdx, (newFrame, oldFrame) => {
-  if (isTrainingMode.value && frontPoint.value && !rearPoint.value && newFrame !== oldFrame) {
-    frontPoint.value = null
-    renderOverlay()
-  }
-})
-
 // Whether the canvas overlay should be visible
-const showOverlay = computed(() => isTrainingMode.value || isKeypointMode.value)
+const showOverlay = computed(() => isKeypointMode.value)
 
 // Whether the overlay should accept pointer events (crosshair cursor)
 const overlayInteractive = computed(() => {
-  if (isTrainingMode.value) return true
   if (isKeypointMode.value && activeTool.value !== 'none') return true
   return false
 })
@@ -413,21 +262,6 @@ const hasConditioningFrames = computed(() => {
   // More accurately: user has placed at least one keypoint somewhere
   return keypointLabeledRanges.value.length > 0 ||
     (kp.front_x !== null || kp.rear_x !== null)
-})
-
-onMounted(() => {
-  // Handle query params from AlignedVideoDetail navigation
-  if (route.query.training === 'true') {
-    isTrainingMode.value = true
-  }
-  if (route.query.frame !== undefined && video.value?.fps) {
-    const frameIdx = parseInt(route.query.frame as string, 10)
-    if (!isNaN(frameIdx)) {
-      const targetTime = (frameIdx + 0.5) / video.value.fps
-      // Wait for video to be ready before seeking
-      setTimeout(() => seek(targetTime), 100)
-    }
-  }
 })
 </script>
 
@@ -494,8 +328,8 @@ onMounted(() => {
               :show-confidence-plot="false"
               :is-marking-mode="false"
               :confidence-scores="[]"
-              :alignment-label-frames="alignmentLabelFrames"
-              :show-alignment-labels="true"
+              :alignment-label-frames="[]"
+              :show-alignment-labels="false"
               @view-change="handleViewChange"
             />
           </TimelineSystem>
@@ -505,59 +339,6 @@ onMounted(() => {
 
     <aside class="action-bar">
       <div class="action-bar-content">
-        <h4 class="action-bar-title">Alignment Training</h4>
-        <button
-          class="training-toggle-button"
-          :class="{ active: isTrainingMode }"
-          @click="toggleTrainingMode"
-        >
-          {{ isTrainingMode ? 'Stop Training' : 'Start Training' }}
-        </button>
-
-        <template v-if="isTrainingMode">
-          <div class="training-instructions">
-            <p class="instruction-step">
-              <span class="step-number">1</span>
-              Click <span class="front-text">front</span> of animal
-            </p>
-            <p class="instruction-step">
-              <span class="step-number">2</span>
-              Click <span class="rear-text">rear</span> of animal
-            </p>
-            <p class="instruction-note">Auto-saves and advances</p>
-          </div>
-
-          <div class="current-state">
-            <p class="frame-indicator">Frame: {{ currentFrameIdx }}</p>
-            <p v-if="frontPoint && !rearPoint" class="waiting-indicator">
-              Waiting for rear click...
-            </p>
-            <p v-if="isSaving" class="saving-indicator">Saving...</p>
-          </div>
-
-          <div class="training-actions">
-            <button
-              class="reset-button"
-              :disabled="!alignmentLabelFrames.includes(currentFrameIdx)"
-              @click="handleResetFrame"
-            >
-              Reset Frame
-            </button>
-            <button
-              class="reset-button danger"
-              :disabled="alignmentLabelFrames.length === 0"
-              @click="handleResetVideo"
-            >
-              Reset Video
-            </button>
-          </div>
-        </template>
-
-        <div class="label-count">
-          <span class="count-label">Labels (this video):</span>
-          <span class="count-value">{{ alignmentLabelFrames.length }}</span>
-        </div>
-
         <h4 class="action-bar-title">Keypoint Tracking</h4>
         <button
           class="training-toggle-button"
@@ -816,38 +597,6 @@ onMounted(() => {
   color: #b45309;
 }
 
-.training-instructions {
-  margin-top: 1rem;
-  padding: 0.75rem;
-  background-color: #f0f0f0;
-  border-radius: 4px;
-}
-
-.instruction-step {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0 0 0.5rem 0;
-  font-size: 0.85rem;
-}
-
-.instruction-step:last-of-type {
-  margin-bottom: 0;
-}
-
-.step-number {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background-color: #666;
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
 .front-text {
   color: #22c55e;
   font-weight: 600;
@@ -863,24 +612,10 @@ onMounted(() => {
   font-style: italic;
 }
 
-.instruction-note {
-  margin: 0.5rem 0 0 0;
-  font-size: 0.8rem;
-  color: #888;
-  font-style: italic;
-}
-
 .current-state {
   margin-top: 1rem;
   padding: 0.5rem 0;
   border-top: 1px solid #e0e0e0;
-}
-
-.waiting-indicator {
-  margin: 0.25rem 0 0 0;
-  font-size: 0.85rem;
-  color: #f59e0b;
-  font-weight: 500;
 }
 
 .saving-indicator {
@@ -926,28 +661,6 @@ onMounted(() => {
   background-color: #fee2e2;
   border-color: #dc2626;
 }
-
-.label-count {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 1rem;
-  padding: 0.5rem 0;
-  border-top: 1px solid #e0e0e0;
-}
-
-.count-label {
-  font-size: 0.85rem;
-  color: #666;
-}
-
-.count-value {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #a855f7;
-}
-
-/* Keypoint tracking specific styles */
 
 .keypoint-tools {
   display: flex;

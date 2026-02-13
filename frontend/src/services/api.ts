@@ -546,16 +546,6 @@ export async function getCroppedVideoFrame(
 
 // Alignment API
 
-export interface AlignmentLabel {
-    id: number
-    video_id: number
-    frame_idx: number
-    front_x: number
-    front_y: number
-    rear_x: number
-    rear_y: number
-}
-
 export interface AlignmentStatus {
     label_count: number
     model_trained: boolean
@@ -581,52 +571,6 @@ export async function getRandomAlignmentFrame(projectId: number): Promise<Random
     const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/random-frame`)
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch random frame'))
-    }
-    return response.json()
-}
-
-export async function saveAlignmentLabel(
-    projectId: number,
-    videoId: number,
-    frameIdx: number,
-    frontX: number,
-    frontY: number,
-    rearX: number,
-    rearY: number
-): Promise<AlignmentLabel> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/labels`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            video_id: videoId,
-            frame_idx: frameIdx,
-            front_x: frontX,
-            front_y: frontY,
-            rear_x: rearX,
-            rear_y: rearY,
-        }),
-    })
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to save alignment label'))
-    }
-    return response.json()
-}
-
-export async function getAllAlignmentLabels(projectId: number): Promise<AlignmentLabel[]> {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/alignment/labels`)
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch alignment labels'))
-    }
-    return response.json()
-}
-
-export async function clearAllAlignmentLabels(projectId: number): Promise<{ deleted_count: number }> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/alignment/labels`,
-        { method: 'DELETE' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to clear alignment labels'))
     }
     return response.json()
 }
@@ -790,52 +734,6 @@ export function getVideosAlignmentStreamUrl(projectId: number): string {
 
 export function connectAlignmentApplyStream(projectId: number): EventSource {
     return new EventSource(getVideosAlignmentStreamUrl(projectId))
-}
-
-// --- Video-specific Alignment Labels ---
-
-export interface VideoAlignmentLabelsResponse {
-    frame_indices: number[]
-}
-
-export async function getVideoAlignmentLabels(
-    projectId: number,
-    videoId: number
-): Promise<VideoAlignmentLabelsResponse> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels`
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to fetch video alignment labels'))
-    }
-    return response.json()
-}
-
-export async function deleteAlignmentLabel(
-    projectId: number,
-    videoId: number,
-    frameIdx: number
-): Promise<void> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels/${frameIdx}`,
-        { method: 'DELETE' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to delete alignment label'))
-    }
-}
-
-export async function deleteVideoAlignmentLabels(
-    projectId: number,
-    videoId: number
-): Promise<void> {
-    const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/alignment-labels`,
-        { method: 'DELETE' }
-    )
-    if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to delete video alignment labels'))
-    }
 }
 
 // --- PCA API ---

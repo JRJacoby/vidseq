@@ -16,16 +16,11 @@ const props = withDefaults(defineProps<{
   confidenceScores: { frame_idx: number; score: number }[]
   showDetectorConfidence?: boolean
   detectorScores?: { frame_idx: number; score: number }[]
-  // Alignment label frames (individual frame indices)
-  alignmentLabelFrames?: number[]
-  showAlignmentLabels?: boolean
   // PCA scores (keyed by PC index string)
   pcaScores?: Record<string, { frame_idx: number; score: number }[]>
   visiblePCs?: number[]
   showPCAPlot?: boolean
 }>(), {
-  alignmentLabelFrames: () => [],
-  showAlignmentLabels: false,
   pcaScores: () => ({}),
   visiblePCs: () => [],
   showPCAPlot: false,
@@ -149,17 +144,6 @@ const dragRangeStyle = computed(() => {
 const selectedRangeStyle = computed(() => {
   if (!selectedRange.value) return null
   return rangeToStyle(selectedRange.value)
-})
-
-const alignmentLabelStyles = computed(() => {
-  if (!props.showAlignmentLabels) return []
-  return props.alignmentLabelFrames
-    .map(frameIdx => {
-      const percent = frameToPercent(frameIdx)
-      if (percent < 0 || percent > 100) return null
-      return { frameIdx, left: `${percent}%` }
-    })
-    .filter((s): s is { frameIdx: number; left: string } => s !== null)
 })
 
 const getFrameFromEvent = (event: MouseEvent): number => {
@@ -521,13 +505,6 @@ onUnmounted(() => {
         />
 
         <div
-          v-for="item in alignmentLabelStyles"
-          :key="'alignment-' + item.frameIdx"
-          class="alignment-label-tick"
-          :style="{ left: item.left }"
-        />
-
-        <div
           v-if="dragRangeStyle"
           class="range-overlay drag-selection"
           :style="dragRangeStyle"
@@ -717,16 +694,5 @@ onUnmounted(() => {
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-}
-
-.alignment-label-tick {
-  position: absolute;
-  top: 0;
-  width: 3px;
-  height: 100%;
-  background-color: rgba(168, 85, 247, 0.8); /* Purple */
-  transform: translateX(-50%);
-  pointer-events: none;
-  z-index: 4;
 }
 </style>
