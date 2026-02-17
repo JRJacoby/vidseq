@@ -70,6 +70,7 @@ export function useKeypointTracking(
       await deleteKeypointFrame(projectId.value, videoId.value, currentFrameIdx.value)
       keypointCache.delete(currentFrameIdx.value)
       currentKeypoints.value = null
+      activeTool.value = 'front'
     } catch (e) {
       console.error('Failed to reset frame:', e)
     }
