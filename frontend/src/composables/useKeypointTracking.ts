@@ -43,6 +43,8 @@ export function useKeypointTracking(
       )
       keypointCache.set(currentFrameIdx.value, result)
       currentKeypoints.value = result
+      // Auto-cycle: front → rear, rear → front
+      activeTool.value = activeTool.value === 'front' ? 'rear' : 'front'
     } catch (e) {
       console.error('Failed to submit keypoint prompt:', e)
     } finally {

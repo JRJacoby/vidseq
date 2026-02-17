@@ -183,8 +183,10 @@ watch(currentKeypoints, () => renderOverlay(), { deep: true })
 async function toggleKeypointMode() {
   isKeypointMode.value = !isKeypointMode.value
   if (isKeypointMode.value) {
-    // Load keypoints for current frame
+    activeTool.value = 'front'
     await loadFrameKeypoints(currentFrameIdx.value)
+  } else {
+    activeTool.value = 'none'
   }
   await nextTick()
   renderOverlay()
