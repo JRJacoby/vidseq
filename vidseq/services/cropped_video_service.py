@@ -25,7 +25,7 @@ from vidseq.services.array_storage import (
     create_cropped_masks_array,
     create_keypoint_tracking_arrays,
     cropped_masks,
-    tracker_masks,
+    final_masks,
 )
 
 
@@ -224,7 +224,7 @@ def compute_global_crop_size(
         _, height, width = frame_list[0]
 
         try:
-            with tracker_masks(project_path, video_id, "r") as masks:
+            with final_masks(project_path, video_id, "r") as masks:
                 for frame_idx, height, width in frame_list:
                     mask = masks[frame_idx]
                     bbox = compute_bbox_from_mask(mask)
@@ -385,8 +385,8 @@ def process_single_video(
         # Get mask dataset from tracker masks (optional - may not exist yet)
         processed = False
         try:
-            # Use tracker_masks context manager - handle is cached for reads
-            with tracker_masks(project_path, video.id, "r") as mask_dataset:
+            # Use final_masks context manager - handle is cached for reads
+            with final_masks(project_path, video.id, "r") as mask_dataset:
                 # Process all frames within this context
                 _process_frames_with_masks(
                     cap, writer, video, crop_size, mask_dataset,
