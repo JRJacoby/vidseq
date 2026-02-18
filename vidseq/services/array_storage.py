@@ -219,39 +219,6 @@ def pca_scores(project_path: Path, video_id: int, mode: str = "r"):
         yield f["data"]
 
 
-@contextmanager
-def keypoint_coords(project_path: Path, video_id: int, mode: str = "r"):
-    """Keypoint coordinates: array_data/{video_id}/keypoint_coords.h5
-
-    Dataset 'coords': shape (num_frames, K, 2) float32, NaN for empty.
-
-    Usage:
-        with keypoint_coords(project_path, video_id) as coords:
-            xy = coords[frame_idx]
-
-        with keypoint_coords(project_path, video_id, mode="a") as coords:
-            coords[frame_idx] = xy
-    """
-    h5_path = _construct_h5_path(project_path, video_id, "keypoint_coords.h5")
-    with open_h5_with_lock(h5_path, mode=mode) as f:
-        yield f["coords"]
-
-
-@contextmanager
-def keypoint_logits(project_path: Path, video_id: int, mode: str = "r"):
-    """Keypoint logits: array_data/{video_id}/keypoint_logits.h5
-
-    Dataset 'logits': shape (num_frames, K, 256, 256) float32.
-
-    Usage:
-        with keypoint_logits(project_path, video_id) as logits:
-            prev_logits = logits[frame_idx]
-    """
-    h5_path = _construct_h5_path(project_path, video_id, "keypoint_logits.h5")
-    with open_h5_with_lock(h5_path, mode=mode) as f:
-        yield f["logits"]
-
-
 def compute_bbox_from_mask(mask: np.ndarray) -> Optional[np.ndarray]:
     """Compute bounding box [x1, y1, x2, y2] from a binary mask.
 
@@ -522,61 +489,3 @@ def create_pca_scores_array(
             dtype=np.float32,
             fillvalue=0.0,
         )
-
-
-# ----- Keypoint tracking H5 file creation -----
-
-
-def create_keypoint_tracking_arrays(
-    project_path: Path,
-    video_id: int,
-    num_frames: int,
-    num_keypoints: int = 2,
-    logits_size: int = 256,
-) -> None:
-    """Create keypoint_coords.h5 and keypoint_logits.h5 atomically.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-        num_frames: Total number of frames in the video
-        num_keypoints: Number of keypoints per frame (default 2: front + rear)
-        logits_size: Size of low-res logits (SAM2=256)
-    """
-    coords_path = _construct_h5_path(project_path, video_id, "keypoint_coords.h5")
-    coords_path.parent.mkdir(parents=True, exist_ok=True)
-    with open_h5_with_lock(coords_path, mode="w") as f:
-        ds = f.create_dataset(
-            "coords",
-            shape=(num_frames, num_keypoints, 2),
-            dtype=np.float32,
-            chunks=(1, num_keypoints, 2),
-        )
-        ds[...] = np.nan
-
-    logits_path = _construct_h5_path(project_path, video_id, "keypoint_logits.h5")
-    with open_h5_with_lock(logits_path, mode="w") as f:
-        f.create_dataset(
-            "logits",
-            shape=(num_frames, num_keypoints, logits_size, logits_size),
-            dtype=np.float32,
-            chunks=(1, num_keypoints, logits_size, logits_size),
-            fillvalue=0.0,
-        )
-
-
-def delete_keypoint_tracking_arrays(project_path: Path, video_id: int) -> None:
-    """Delete keypoint_coords.h5 and keypoint_logits.h5.
-
-    Args:
-        project_path: Path to the project folder
-        video_id: ID of the video
-    """
-    for filename in ["keypoint_coords.h5", "keypoint_logits.h5"]:
-        h5_path = _construct_h5_path(project_path, video_id, filename)
-        if h5_path.exists():
-            h5_path.unlink()
-        lock_path = _get_lock_path(h5_path)
-        if lock_path.exists():
-            lock_path.unlink()
-

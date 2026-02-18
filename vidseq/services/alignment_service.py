@@ -35,16 +35,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 from scipy.signal import savgol_filter
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from torch.utils.data import Dataset, DataLoader
 
+from vidseq.models.alignment_label import AlignmentLabel
 from vidseq.models.video import Video
 from vidseq.services.cropped_video_service import cropped_video_exists, get_cropped_video_path
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.exceptions import AlignmentTrainingError
-from vidseq.services import keypoint_tcp_client
 
 # Constants
 DINOV2_INPUT_SIZE = 224  # Input size for DINOv2 (must be divisible by 14)
@@ -62,21 +62,6 @@ SAVGOL_POLYORDER = 3       # Cubic polynomial — preserves acceleration in real
 
 # DINOv2 feature averaging window (centered sliding window before decoder)
 FEATURE_AVG_WINDOW = 5     # ~167ms at 30fps — average 5 DINOv2 feature tensors before decoding
-
-
-@dataclass
-class KeypointLabel:
-    """Training label built from tracked keypoint coordinates.
-
-    Fields mirror AlignmentLabel for compatibility with AlignmentDataset.
-    Coordinates are normalized (0-1) relative to cropped frame dimensions.
-    """
-    video_id: int
-    frame_idx: int
-    front_x: float
-    front_y: float
-    rear_x: float
-    rear_y: float
 
 
 @dataclass
@@ -355,40 +340,6 @@ def split_labels_train_val(
     )
 
     return train_labels, val_labels
-
-
-def build_labels_from_keypoint_coords(
-    project_path: Path,
-    video_ids: list[int],
-) -> list[KeypointLabel]:
-    """Scan keypoint_coords.h5 for each video and build training labels.
-
-    Reads all frames, keeps only those where both front (obj 0) and
-    rear (obj 1) have non-NaN coordinates.
-    """
-    from vidseq.services.array_storage import keypoint_coords
-
-    labels = []
-    for vid_id in video_ids:
-        try:
-            coords_ctx = keypoint_coords(project_path, vid_id, "r")
-        except (FileNotFoundError, OSError):
-            continue  # Video has no keypoint tracking data yet
-        with coords_ctx as coords_ds:
-            coords = np.asarray(coords_ds[:])  # (num_frames, 2, 2)
-            for frame_idx in range(coords.shape[0]):
-                front = coords[frame_idx, 0]  # (2,) — x, y
-                rear = coords[frame_idx, 1]   # (2,) — x, y
-                if not (np.any(np.isnan(front)) or np.any(np.isnan(rear))):
-                    labels.append(KeypointLabel(
-                        video_id=vid_id,
-                        frame_idx=frame_idx,
-                        front_x=float(front[0]),
-                        front_y=float(front[1]),
-                        rear_x=float(rear[0]),
-                        rear_y=float(rear[1]),
-                    ))
-    return labels
 
 
 def _apply_geometric_augmentation(
@@ -892,29 +843,182 @@ class AlignmentService:
             logger.info(f"delete_model: model file did not exist")
             return False
 
-    async def get_label_count(self, session: AsyncSession, project_path: Path) -> int:
-        """Count total frames with tracked keypoints across all videos."""
-        from vidseq.services.array_storage import keypoint_coords
-
-        result = await session.execute(select(Video))
-        videos = list(result.scalars().all())
-
-        def _count_labels() -> int:
-            count = 0
-            for v in videos:
-                try:
-                    with keypoint_coords(project_path, v.id, "r") as coords_ds:
-                        coords = np.asarray(coords_ds[:])  # (num_frames, 2, 2)
-                        front_valid = ~np.isnan(coords[:, 0, :]).any(axis=1)
-                        rear_valid = ~np.isnan(coords[:, 1, :]).any(axis=1)
-                        count += int((front_valid & rear_valid).sum())
-                except (FileNotFoundError, OSError):
-                    continue
-            return count
-
-        count = await asyncio.to_thread(_count_labels)
+    async def get_label_count(self, session: AsyncSession) -> int:
+        """Get count of alignment labels."""
+        result = await session.execute(select(func.count(AlignmentLabel.id)))
+        count = result.scalar() or 0
         logger.info(f"get_label_count: count={count}")
         return count
+
+    async def get_all_labels(self, session: AsyncSession) -> list[AlignmentLabel]:
+        """Get all alignment labels."""
+        result = await session.execute(
+            select(AlignmentLabel).order_by(AlignmentLabel.id)
+        )
+        labels = list(result.scalars().all())
+        logger.info(f"get_all_labels: returning {len(labels)} labels")
+        for label in labels:
+            logger.debug(
+                f"  Label id={label.id}: video={label.video_id}, frame={label.frame_idx}, "
+                f"front=({label.front_x:.3f}, {label.front_y:.3f}), "
+                f"rear=({label.rear_x:.3f}, {label.rear_y:.3f})"
+            )
+        return labels
+
+    async def save_label(
+        self,
+        session: AsyncSession,
+        video_id: int,
+        frame_idx: int,
+        front_x: float,
+        front_y: float,
+        rear_x: float,
+        rear_y: float,
+    ) -> AlignmentLabel:
+        """Save or update an alignment label.
+
+        Args:
+            session: Database session
+            video_id: Video ID
+            frame_idx: Frame index
+            front_x, front_y: Front (nose) coordinates (normalized 0-1)
+            rear_x, rear_y: Rear (tail) coordinates (normalized 0-1)
+
+        Returns:
+            The saved AlignmentLabel
+        """
+        logger.info(
+            f"save_label: video_id={video_id}, frame_idx={frame_idx}, "
+            f"front=({front_x:.4f}, {front_y:.4f}), rear=({rear_x:.4f}, {rear_y:.4f})"
+        )
+
+        # Validate coordinates are in range
+        for name, val in [("front_x", front_x), ("front_y", front_y), ("rear_x", rear_x), ("rear_y", rear_y)]:
+            if not (0.0 <= val <= 1.0):
+                logger.warning(f"save_label: {name}={val} is outside [0, 1] range!")
+
+        # Check for existing label
+        result = await session.execute(
+            select(AlignmentLabel).where(
+                AlignmentLabel.video_id == video_id,
+                AlignmentLabel.frame_idx == frame_idx,
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            # Update existing
+            logger.info(f"save_label: updating existing label id={existing.id}")
+            existing.front_x = front_x
+            existing.front_y = front_y
+            existing.rear_x = rear_x
+            existing.rear_y = rear_y
+            await session.commit()
+            logger.info(f"save_label: updated label id={existing.id}")
+            return existing
+        else:
+            # Create new
+            label = AlignmentLabel(
+                video_id=video_id,
+                frame_idx=frame_idx,
+                front_x=front_x,
+                front_y=front_y,
+                rear_x=rear_x,
+                rear_y=rear_y,
+            )
+            session.add(label)
+            await session.commit()
+            await session.refresh(label)
+            logger.info(f"save_label: created new label id={label.id}")
+            return label
+
+    async def delete_label(
+        self,
+        session: AsyncSession,
+        video_id: int,
+        frame_idx: int,
+    ) -> bool:
+        """Delete an alignment label.
+
+        Returns:
+            True if label was deleted, False if not found
+        """
+        logger.info(f"delete_label: video_id={video_id}, frame_idx={frame_idx}")
+        result = await session.execute(
+            delete(AlignmentLabel).where(
+                AlignmentLabel.video_id == video_id,
+                AlignmentLabel.frame_idx == frame_idx,
+            )
+        )
+        await session.commit()
+        deleted = result.rowcount > 0
+        logger.info(f"delete_label: deleted={deleted}, rowcount={result.rowcount}")
+        return deleted
+
+    async def delete_all_labels(self, session: AsyncSession) -> int:
+        """Delete all alignment labels.
+
+        Returns:
+            Number of labels deleted
+        """
+        logger.info("delete_all_labels: starting")
+        result = await session.execute(delete(AlignmentLabel))
+        await session.commit()
+        deleted_count = result.rowcount
+        logger.info(f"delete_all_labels: deleted {deleted_count} labels")
+        return deleted_count
+
+    async def get_random_unlabeled_frame(
+        self,
+        session: AsyncSession,
+        project_path: Path,
+    ) -> Optional[tuple[int, int]]:
+        """Get a random unlabeled frame from videos with cropping completed.
+
+        Returns:
+            (video_id, frame_idx) tuple or None if no frames available
+        """
+        logger.info("get_random_unlabeled_frame: starting")
+
+        # Get videos with cropping completed (check filesystem)
+        videos_result = await session.execute(select(Video))
+        all_videos = list(videos_result.scalars().all())
+        videos = await asyncio.to_thread(
+            lambda: [v for v in all_videos if cropped_video_exists(project_path, v.name)]
+        )
+        logger.info(f"get_random_unlabeled_frame: found {len(videos)} videos with cropping completed")
+
+        if not videos:
+            logger.warning("get_random_unlabeled_frame: no videos with cropping completed")
+            return None
+
+        for v in videos:
+            logger.debug(f"  Video id={v.id}, name={v.name}, num_frames={v.num_frames}")
+
+        # Get all existing labels
+        labels_result = await session.execute(select(AlignmentLabel))
+        labels = list(labels_result.scalars().all())
+        labeled_set = {(l.video_id, l.frame_idx) for l in labels}
+        logger.info(f"get_random_unlabeled_frame: {len(labels)} existing labels")
+
+        # Build list of all possible frames
+        total_frames = sum(v.num_frames for v in videos)
+        unlabeled_count = total_frames - len(labeled_set)
+        logger.info(f"get_random_unlabeled_frame: total_frames={total_frames}, unlabeled={unlabeled_count}")
+
+        all_frames = []
+        for video in videos:
+            for frame_idx in range(video.num_frames):
+                if (video.id, frame_idx) not in labeled_set:
+                    all_frames.append((video.id, frame_idx))
+
+        if not all_frames:
+            logger.warning("get_random_unlabeled_frame: all frames are labeled!")
+            return None
+
+        choice = random.choice(all_frames)
+        logger.info(f"get_random_unlabeled_frame: selected video_id={choice[0]}, frame_idx={choice[1]}")
+        return choice
 
     async def get_alignment_status(
         self, session: AsyncSession, project_path: Path
@@ -928,7 +1032,7 @@ class AlignmentService:
         Returns:
             Dict with keys: label_count, model_trained, is_training, is_applying, all_videos_cropped
         """
-        label_count = await self.get_label_count(session, project_path)
+        label_count = await self.get_label_count(session)
         model_trained = self.is_model_trained(project_path)
         is_training = self.is_training()
         is_applying = self.is_applying()
@@ -994,17 +1098,26 @@ class AlignmentService:
         if self.is_training():
             raise AlignmentTrainingError("Training already in progress")
 
-        # Build video_name_map from DB (still needed for frame loading)
-        result = await session.execute(select(Video).where(Video.id.in_(video_ids)))
+        # Fetch labels only for selected videos
+        result = await session.execute(
+            select(AlignmentLabel)
+            .where(AlignmentLabel.video_id.in_(video_ids))
+            .order_by(AlignmentLabel.id)
+        )
+        labels = list(result.scalars().all())
+
+        if len(labels) == 0:
+            raise AlignmentTrainingError("No labels available for training in selected videos")
+
+        # Build video_name_map: video_id -> video.name
+        label_video_ids = list({label.video_id for label in labels})
+        result = await session.execute(select(Video).where(Video.id.in_(label_video_ids)))
         videos = list(result.scalars().all())
         video_name_map = {v.id: v.name for v in videos}
 
-        if not video_name_map:
-            raise AlignmentTrainingError("No videos found for selected IDs")
-
         logger.info(
-            f"create_alignment_training: starting with {len(video_ids)} videos, "
-            f"max_epochs={epochs}, augment={augment}"
+            f"create_alignment_training: starting training with {len(labels)} labels, "
+            f"{len(video_name_map)} videos, max_epochs={epochs}, augment={augment}"
         )
 
         # Start training in background thread
@@ -1012,7 +1125,7 @@ class AlignmentService:
             asyncio.to_thread(
                 self.train_model_sync,
                 project_path,
-                video_ids,
+                labels,
                 video_name_map,
                 max_epochs=epochs,
                 augment=augment,
@@ -1068,7 +1181,7 @@ class AlignmentService:
     def train_model_sync(
         self,
         project_path: Path,
-        video_ids: list[int],
+        labels: list,
         video_name_map: dict[int, str],
         max_epochs: int = 100,
         batch_size: int = 8,
@@ -1078,7 +1191,7 @@ class AlignmentService:
         early_stop_patience: int = 5,
         augment: bool = True,
     ) -> bool:
-        """Train the alignment model using tracked keypoint data with train/val split.
+        """Train the alignment model using labeled data with train/val split.
 
         Uses early stopping and learning rate reduction on plateau based on
         validation loss (or training loss if insufficient labels for validation):
@@ -1088,7 +1201,7 @@ class AlignmentService:
 
         Args:
             project_path: Path to project folder
-            video_ids: List of video IDs to scan for tracked keypoints
+            labels: List of AlignmentLabel objects
             video_name_map: Dict mapping video_id -> video.name
             max_epochs: Maximum number of training epochs (default 100)
             batch_size: Training batch size
@@ -1100,21 +1213,6 @@ class AlignmentService:
         Returns:
             True if successful
         """
-        self._is_training = True
-        self._stop_requested = False
-
-        # Build training labels from tracked keypoints
-        labels = build_labels_from_keypoint_coords(project_path, video_ids)
-
-        if len(labels) == 0:
-            logger.error("train_model_sync: no tracked keypoints found in selected videos")
-            self._is_training = False
-            self._training_progress = TrainingProgress(
-                status="error",
-            )
-            return False
-
-        logger.info(f"train_model_sync: found {len(labels)} labeled frames from H5")
         logger.info(
             f"train_model_sync: starting training with max_epochs={max_epochs}, "
             f"batch_size={batch_size}, lr={lr}, num_labels={len(labels)}"
@@ -1123,6 +1221,8 @@ class AlignmentService:
             f"train_model_sync: lr_patience={lr_patience}, lr_factor={lr_factor}, "
             f"early_stop_patience={early_stop_patience}"
         )
+        self._is_training = True
+        self._stop_requested = False
 
         # Split labels into train/val sets
         use_validation = len(labels) >= MIN_LABELS_FOR_VALIDATION
@@ -1842,52 +1942,65 @@ class AlignmentService:
             self._is_applying = False
 
 
-# ---------------------------------------------------------------------------
-# Keypoint tracking session helpers
-# ---------------------------------------------------------------------------
+# Module-level singleton instance
+alignment_service = AlignmentService.get_instance()
 
 
-def init_keypoint_session(
-    project_id: int,
+# ----- Alignment Label CRUD -----
+
+
+async def get_video_alignment_label_frames(
+    session: AsyncSession,
     video_id: int,
-    video_name: str,
-    project_path: Path,
-    num_frames: int,
-):
-    """Initialize a keypoint tracking session using the cropped video.
-
-    Resolves the cropped video path and dimensions, then delegates to
-    the keypoint TCP client.
+) -> list[int]:
+    """Get frame indices that have alignment labels for a video.
 
     Args:
-        project_id: Project ID.
-        video_id: Video ID.
-        video_name: Original video filename (used to derive cropped path).
-        project_path: Path to the project directory.
-        num_frames: Number of frames in the video.
+        session: Project database session
+        video_id: ID of the video
 
     Returns:
-        KeypointSessionInfo from the TCP client.
+        List of frame indices with alignment labels, ordered ascending
     """
-    cropped_path = get_cropped_video_path(project_path, video_name)
-    if not cropped_path.exists():
-        raise FileNotFoundError(
-            f"Cropped video not found: {cropped_path}. "
-            "Run cropped video extraction first."
-        )
-
-    # Read dimensions from the cropped video file
-    cap = cv2.VideoCapture(str(cropped_path))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    cap.release()
-
-    return keypoint_tcp_client.init_session(
-        project_id=project_id,
-        video_id=video_id,
-        video_path=cropped_path,
-        project_path=project_path,
-        num_frames=num_frames,
-        height=height,
-        width=width,
+    result = await session.execute(
+        select(AlignmentLabel.frame_idx)
+        .where(AlignmentLabel.video_id == video_id)
+        .order_by(AlignmentLabel.frame_idx)
     )
+    return list(result.scalars().all())
+
+
+async def delete_video_alignment_label(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> None:
+    """Delete an alignment label for a specific frame.
+
+    Args:
+        session: Project database session
+        video_id: ID of the video
+        frame_idx: Frame index
+    """
+    await session.execute(
+        delete(AlignmentLabel)
+        .where(AlignmentLabel.video_id == video_id)
+        .where(AlignmentLabel.frame_idx == frame_idx)
+    )
+    await session.commit()
+
+
+async def delete_video_alignment_labels(
+    session: AsyncSession,
+    video_id: int,
+) -> None:
+    """Delete all alignment labels for a video.
+
+    Args:
+        session: Project database session
+        video_id: ID of the video
+    """
+    await session.execute(
+        delete(AlignmentLabel).where(AlignmentLabel.video_id == video_id)
+    )
+    await session.commit()

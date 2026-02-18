@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.api.schemas import AlignmentTrainingRequest, VideoSelectionRequest
 from vidseq.models.video import Video
+from vidseq.services import alignment_service
 from vidseq.services.alignment_service import AlignmentService
 
 
@@ -42,6 +43,33 @@ if not logger.handlers:
 # --- Schemas ---
 
 
+class AlignmentLabelCreate(BaseModel):
+    """Request body for creating an alignment label."""
+    video_id: int
+    frame_idx: int
+    front_x: float
+    front_y: float
+    rear_x: float
+    rear_y: float
+
+
+class AlignmentLabelResponse(BaseModel):
+    """Response for an alignment label."""
+    id: int
+    video_id: int
+    frame_idx: int
+    front_x: float
+    front_y: float
+    rear_x: float
+    rear_y: float
+
+
+class RandomFrameResponse(BaseModel):
+    """Response for a random frame request."""
+    video_id: int
+    frame_idx: int
+
+
 class AlignmentStatusResponse(BaseModel):
     """Response for alignment status."""
     label_count: int
@@ -64,6 +92,115 @@ async def get_alignment_status(
     service = AlignmentService.get_instance()
     status = await service.get_alignment_status(session, project_path)
     return AlignmentStatusResponse(**status)
+
+
+@router.get("/projects/{project_id}/alignment/random-frame")
+async def get_random_frame(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+) -> RandomFrameResponse:
+    """Get a random unlabeled frame from cropped videos."""
+    logger.info(f"GET /alignment/random-frame: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    result = await service.get_random_unlabeled_frame(session, project_path)
+    if result is None:
+        logger.warning(f"GET /alignment/random-frame: no unlabeled frames available")
+        raise HTTPException(
+            status_code=404,
+            detail="No unlabeled frames available. Either no videos have cropping completed, or all frames are labeled.",
+        )
+
+    video_id, frame_idx = result
+    logger.info(f"GET /alignment/random-frame: returning video_id={video_id}, frame_idx={frame_idx}")
+    return RandomFrameResponse(video_id=video_id, frame_idx=frame_idx)
+
+
+@router.post("/projects/{project_id}/alignment/labels")
+async def save_alignment_label(
+    project_id: int,
+    label: AlignmentLabelCreate,
+    session: AsyncSession = Depends(get_project_session),
+) -> AlignmentLabelResponse:
+    """Save front/rear keypoint label for a frame."""
+    logger.info(
+        f"POST /alignment/labels: project_id={project_id}, "
+        f"video_id={label.video_id}, frame_idx={label.frame_idx}, "
+        f"front=({label.front_x:.4f}, {label.front_y:.4f}), "
+        f"rear=({label.rear_x:.4f}, {label.rear_y:.4f})"
+    )
+
+    service = AlignmentService.get_instance()
+
+    saved = await service.save_label(
+        session,
+        video_id=label.video_id,
+        frame_idx=label.frame_idx,
+        front_x=label.front_x,
+        front_y=label.front_y,
+        rear_x=label.rear_x,
+        rear_y=label.rear_y,
+    )
+
+    response = AlignmentLabelResponse(
+        id=saved.id,
+        video_id=saved.video_id,
+        frame_idx=saved.frame_idx,
+        front_x=saved.front_x,
+        front_y=saved.front_y,
+        rear_x=saved.rear_x,
+        rear_y=saved.rear_y,
+    )
+    logger.info(f"POST /alignment/labels: created/updated label id={saved.id}")
+    logger.debug(f"POST /alignment/labels: response={response.model_dump()}")
+    return response
+
+
+@router.get("/projects/{project_id}/alignment/labels")
+async def get_all_labels(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+) -> list[AlignmentLabelResponse]:
+    """Get all alignment labels."""
+    logger.info(f"GET /alignment/labels: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    labels = await service.get_all_labels(session)
+
+    response = [
+        AlignmentLabelResponse(
+            id=l.id,
+            video_id=l.video_id,
+            frame_idx=l.frame_idx,
+            front_x=l.front_x,
+            front_y=l.front_y,
+            rear_x=l.rear_x,
+            rear_y=l.rear_y,
+        )
+        for l in labels
+    ]
+
+    logger.info(f"GET /alignment/labels: returning {len(response)} labels")
+    return response
+
+
+@router.delete("/projects/{project_id}/alignment/labels")
+async def delete_all_labels(
+    project_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete all alignment labels for the project."""
+    logger.info(f"DELETE /alignment/labels: project_id={project_id}")
+
+    service = AlignmentService.get_instance()
+
+    deleted_count = await service.delete_all_labels(session)
+
+    logger.info(f"DELETE /alignment/labels: deleted {deleted_count} labels")
+    return {"deleted_count": deleted_count}
 
 
 @router.delete("/projects/{project_id}/alignment/model", status_code=204)
@@ -318,3 +455,32 @@ async def stream_aligned_video(
                 "Accept-Ranges": "bytes",
             },
         )
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/alignment-labels")
+async def get_video_alignment_labels(
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get frame indices that have alignment labels for a specific video."""
+    frames = await alignment_service.get_video_alignment_label_frames(session, video_id)
+    return {"frame_indices": frames}
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels/{frame_idx}", status_code=204)
+async def delete_video_alignment_label(
+    video_id: int,
+    frame_idx: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete a single alignment label for a specific frame."""
+    await alignment_service.delete_video_alignment_label(session, video_id, frame_idx)
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/alignment-labels", status_code=204)
+async def delete_video_alignment_labels(
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete all alignment labels for a specific video."""
+    await alignment_service.delete_video_alignment_labels(session, video_id)

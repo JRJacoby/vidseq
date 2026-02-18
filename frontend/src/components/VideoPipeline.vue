@@ -13,6 +13,7 @@ import {
   createAlignmentTraining,
   createVideosAlignment,
   clearAlignmentModel,
+  clearAllAlignmentLabels,
   getPCAStatus,
   createPCA,
   type Video,
@@ -306,6 +307,18 @@ const handleClearAlignmentModel = async () => {
   }
 }
 
+const handleClearAlignmentLabels = async () => {
+  if (!projectId.value) return
+  if (!confirm('Delete ALL alignment labels across ALL videos?')) return
+  try {
+    await clearAllAlignmentLabels(projectId.value)
+    await loadAlignmentStatus()
+  } catch (e: any) {
+    console.error('Failed to clear alignment labels:', e)
+    alert(e.message || 'Failed to clear alignment labels')
+  }
+}
+
 // PCA handlers
 const loadPCAStatus = async () => {
   if (!projectStore.currentProjectId) return
@@ -500,7 +513,7 @@ const formatScore = (score: number | undefined) => {
 
           <h4 class="sidebar-section-title">Egocentric Alignment</h4>
           <div class="alignment-info">
-            <span class="info-label">Tracked Frames:</span>
+            <span class="info-label">Labels:</span>
             <span class="info-value">{{ alignmentStatus?.label_count ?? 0 }}</span>
           </div>
           <div class="epochs-input">
@@ -537,6 +550,14 @@ const formatScore = (score: number | undefined) => {
               title="Delete trained model"
             >
               Clear Model
+            </button>
+            <button
+              class="clear-button"
+              @click="handleClearAlignmentLabels"
+              :disabled="(alignmentStatus?.label_count ?? 0) === 0"
+              title="Delete all training labels"
+            >
+              Clear Labels
             </button>
           </div>
 

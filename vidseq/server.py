@@ -18,7 +18,7 @@ from vidseq.services.exceptions import (
     MissingMasksError,
     AlignmentTrainingError,
 )
-from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, keypoint_tracking, pca, projects, segmentation, videos
+from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -54,7 +54,6 @@ app.include_router(alignment.router, prefix="/api", tags=["alignment"])
 app.include_router(pca.router, prefix="/api", tags=["pca"])
 app.include_router(arhmm.router, prefix="/api", tags=["arhmm"])
 app.include_router(detector.router, prefix="/api", tags=["detector"])
-app.include_router(keypoint_tracking.router, prefix="/api", tags=["keypoint_tracking"])
 
 
 # Exception handlers - translate service exceptions to HTTP responses

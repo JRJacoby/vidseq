@@ -68,7 +68,7 @@ Start both servers concurrently - backend on :8000, frontend on :5173. Vite prox
 **Route → Service → TCP Client layering:**
 - Routes should NOT call TCP clients directly. Routes call service functions, services call TCP clients.
 - Services handle business logic like resolving file paths, reading dimensions, and coordinating DB + H5 + TCP operations.
-- Example: `alignment route → alignment_service → keypoint_tcp_client`
+- Example: `alignment route → alignment_service`
 
 ### H5 File Management
 
@@ -278,7 +278,7 @@ segmentation_tcp_client.py    ──TCP──>  segmentation_tcp_server.py
 1. **Project Setup**: Create project → Add videos (extracts metadata, creates H5 files)
 2. **Segmentation**: Initialize SAM2 session → Provide prompts (points/boxes) → Generate/store masks
 3. **Detection**: Mark training frames → Train SegFormer detector → Apply to videos
-4. **Cropped Video Pipeline**: Crop → Keypoint tracking → Alignment → PCA. All inference at this stage operates on **cropped videos** (not original videos). Use `get_cropped_video_path()` from `cropped_video_service` to resolve paths.
+4. **Cropped Video Pipeline**: Crop → Alignment → PCA. All inference at this stage operates on **cropped videos** (not original videos). Use `get_cropped_video_path()` from `cropped_video_service` to resolve paths.
 5. **Refinement**: Iteratively improve via interactive segmentation
 
 ---
