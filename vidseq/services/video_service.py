@@ -21,6 +21,7 @@ from vidseq.services.array_storage import (
     reset_video_segmentation_arrays,
 )
 from vidseq.services.exceptions import (
+    TextFileParseError,
     VideoFileNotFoundError,
     VideoFileInvalidError,
 )
@@ -180,6 +181,85 @@ async def get_all_videos(session: AsyncSession) -> list[Video]:
     return list(result.scalars().all())
 
 
+def resolve_video_paths(
+    paths: list[Path],
+) -> list[tuple[Path, VideoMetadata]]:
+    """Resolve a mixed list of video files and text file video lists.
+
+    For each path, try reading as a UTF-8 text file first (video list),
+    then fall back to treating it as a video. Text-first avoids FFmpeg's
+    tty demuxer, which falsely "opens" text files as ANSI art video.
+
+    Returns a deduplicated list of (path, metadata) tuples.
+    """
+    resolved: list[tuple[Path, VideoMetadata]] = []
+    seen: set[str] = set()
+
+    for path in paths:
+        if not path.exists():
+            raise VideoFileNotFoundError(str(path))
+
+        # Try text file first — real videos are binary and fail UTF-8 decode
+        text_content = _try_read_as_text(path)
+        if text_content is not None:
+            _parse_and_validate_video_list(path, text_content, resolved, seen)
+        else:
+            meta = get_video_metadata(path)
+            path_str = str(path)
+            if path_str not in seen:
+                seen.add(path_str)
+                resolved.append((path, meta))
+
+    return resolved
+
+
+def _try_read_as_text(path: Path) -> str | None:
+    """Try to read a file as UTF-8 text. Returns content or None if binary."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return None
+
+
+def _parse_and_validate_video_list(
+    text_file_path: Path,
+    content: str,
+    resolved: list[tuple[Path, VideoMetadata]],
+    seen: set[str],
+) -> None:
+    """Parse a text file as a video list and validate each path."""
+    lines = [line.strip() for line in content.splitlines()]
+    non_empty = [line for line in lines if line]
+
+    if not non_empty:
+        raise TextFileParseError(str(text_file_path), "no video paths found")
+
+    for line in non_empty:
+        if not line.startswith("/"):
+            raise TextFileParseError(
+                str(text_file_path),
+                f"path is not absolute: {line}",
+            )
+
+        video_path = Path(line)
+        try:
+            meta = get_video_metadata(video_path)
+        except VideoFileNotFoundError:
+            raise VideoFileNotFoundError(
+                f"{line} (listed in {text_file_path})"
+            )
+        except VideoFileInvalidError as e:
+            raise VideoFileInvalidError(
+                str(video_path),
+                f"{e.reason} (listed in {text_file_path})",
+            )
+
+        path_str = str(video_path)
+        if path_str not in seen:
+            seen.add(path_str)
+            resolved.append((video_path, meta))
+
+
 async def add_videos(
     session: AsyncSession,
     project_path: Path,
@@ -187,13 +267,12 @@ async def add_videos(
 ) -> list[Video]:
     """Add multiple videos to a project.
 
-    Validates each video path, extracts metadata, creates database records,
-    and initializes H5 storage files.
+    Resolves text file video lists, validates all paths, then adds to DB.
 
     Args:
         session: Project database session
         project_path: Path to the project folder
-        video_paths: List of paths to video files
+        video_paths: List of paths to video files or text file video lists
 
     Returns:
         List of created Video records
@@ -201,13 +280,12 @@ async def add_videos(
     Raises:
         VideoFileNotFoundError: If a video file doesn't exist
         VideoFileInvalidError: If a video cannot be read
+        TextFileParseError: If a text file is malformed
     """
+    resolved = resolve_video_paths(video_paths)
     added_videos = []
 
-    for video_path in video_paths:
-        # get_video_metadata raises VideoFileNotFoundError or VideoFileInvalidError
-        meta = get_video_metadata(video_path)
-
+    for video_path, meta in resolved:
         video = Video(
             name=video_path.name,
             path=str(video_path),

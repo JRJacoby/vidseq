@@ -97,3 +97,15 @@ class AlignmentTrainingError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
+
+
+class TextFileParseError(Exception):
+    """Raised when a text file cannot be parsed as a video list."""
+
+    def __init__(self, text_file_path: str, reason: str):
+        self.text_file_path = text_file_path
+        self.reason = reason
+        super().__init__(
+            f"Invalid video list file {text_file_path}: {reason}. "
+            f"Expected format: one absolute video file path per line."
+        )

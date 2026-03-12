@@ -17,6 +17,7 @@ from vidseq.services.exceptions import (
     MultiPointWithoutMaskError,
     MissingMasksError,
     AlignmentTrainingError,
+    TextFileParseError,
 )
 from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, filesystem, pca, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
@@ -120,3 +121,8 @@ async def missing_masks_handler(request, exc: MissingMasksError):
 @app.exception_handler(AlignmentTrainingError)
 async def alignment_training_error_handler(request, exc: AlignmentTrainingError):
     return JSONResponse(status_code=400, content={"detail": exc.message})
+
+
+@app.exception_handler(TextFileParseError)
+async def text_file_parse_error_handler(request, exc: TextFileParseError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
