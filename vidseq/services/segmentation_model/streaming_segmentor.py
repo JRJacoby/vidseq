@@ -710,14 +710,10 @@ class SAM2StreamingSegmentor:
         # 3. Prepare memory for arbitrary frame access (loads non-cond frames)
         self._set_memory_frame(video_id, frame_idx, frames, masks)
 
-        # 4. Determine is_init_cond_frame based on whether OTHER memory exists.
-        #    If no other frames have memory, we use is_init_cond_frame=True to avoid
-        #    the assertion in _prepare_memory_conditioned_features.
-        has_other_memory = (
-            len(output_dict["cond_frame_outputs"]) > 0
-            or len(output_dict["non_cond_frame_outputs"]) > 0
-        )
-        is_init_cond_frame = not has_other_memory
+        # 4. Determine is_init_cond_frame based on whether OTHER conditioning
+        #    frames exist. Non-cond memory from propagated masks is context but
+        #    doesn't satisfy SAM2's requirement for the non-init path.
+        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
 
         # 5. Get frame from source
         frame = frames[frame_idx]
