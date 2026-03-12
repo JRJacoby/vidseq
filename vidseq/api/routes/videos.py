@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.api.schemas import VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
 from vidseq.services import video_service
@@ -170,6 +171,27 @@ async def delete_video_segmentation(
         project_id=project_id,
         project_path=project_path,
         video=video,
+        session=session,
+    )
+    return None
+
+
+@router.delete("/projects/{project_id}/videos", status_code=204)
+async def delete_videos(
+    project_id: int,
+    body: VideoSelectionRequest,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete videos and all associated data from a project.
+
+    Removes DB records, H5 files, and generated videos.
+    Does not touch original source video files.
+    """
+    await video_service.delete_videos(
+        project_id=project_id,
+        project_path=project_path,
+        video_ids=body.video_ids,
         session=session,
     )
     return None

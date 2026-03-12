@@ -88,6 +88,15 @@ export async function addVideos(projectId: number, paths: string[]): Promise<voi
     }
 }
 
+export async function deleteVideos(projectId: number, videoIds: number[]): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_ids: videoIds })
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to delete videos'))
+}
+
 export async function getVideo(projectId: number, videoId: number): Promise<Video> {
     const response = await fetch(`${API_BASE}/projects/${projectId}/videos/${videoId}`)
     if (!response.ok) {

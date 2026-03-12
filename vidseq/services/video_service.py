@@ -1,5 +1,7 @@
 """Video service - metadata extraction and database operations."""
 
+import logging
+import shutil
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -21,11 +23,14 @@ from vidseq.services.array_storage import (
     reset_video_segmentation_arrays,
 )
 from vidseq.services.exceptions import (
+    DBRecordNotFoundError,
     TextFileParseError,
     VideoFileNotFoundError,
     VideoFileInvalidError,
 )
 from vidseq.services import segmentation_service, segmentation_tcp_client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -422,4 +427,81 @@ async def reset_video(
             width=video.width,
             cond_frame_indices=[],
         )
+
+
+async def delete_videos(
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+    session: AsyncSession,
+) -> None:
+    """Delete videos and all associated data from a project.
+
+    Steps:
+    1. Resolve & validate all video IDs
+    2. Close any open SAM2 sessions
+    3. Delete DB records (child tables first, then Video)
+    4. Commit
+    5. Delete files (H5 directories, cropped/aligned videos)
+
+    Args:
+        project_id: ID of the project
+        project_path: Path to the project folder
+        video_ids: List of video IDs to delete
+        session: Async database session
+
+    Raises:
+        DBRecordNotFoundError: If any video_id is not found
+    """
+    from vidseq.models.alignment_label import AlignmentLabel
+
+    # 1. Resolve & validate — fetch all videos, fail fast if any missing
+    videos: list[Video] = []
+    for vid in video_ids:
+        result = await session.execute(
+            select(Video).where(Video.id == vid)
+        )
+        video = result.scalar_one_or_none()
+        if video is None:
+            raise DBRecordNotFoundError("Video", vid)
+        videos.append(video)
+
+    # 2. Close SAM2 sessions
+    for video in videos:
+        segmentation_tcp_client.close_session(project_id, video.id)
+
+    # 3. Delete DB records (child tables first)
+    for video in videos:
+        await session.execute(
+            delete(FrameData).where(FrameData.video_id == video.id)
+        )
+        await session.execute(
+            delete(ConditioningFrame).where(ConditioningFrame.video_id == video.id)
+        )
+        await session.execute(
+            delete(AlignmentLabel).where(AlignmentLabel.video_id == video.id)
+        )
+        await session.delete(video)
+
+    # 4. Commit
+    await session.commit()
+
+    # 5. Delete files (after commit — orphaned files are harmless)
+    for video in videos:
+        # H5 directory
+        h5_dir = project_path / "array_data" / str(video.id)
+        if h5_dir.exists():
+            try:
+                shutil.rmtree(h5_dir)
+            except OSError:
+                logger.warning("Failed to delete H5 directory: %s", h5_dir)
+
+        # Cropped video
+        stem = Path(video.name).stem
+        cropped = project_path / "cropped_videos" / f"{stem}_cropped.mp4"
+        cropped.unlink(missing_ok=True)
+
+        # Aligned video
+        aligned = project_path / "aligned_videos" / f"{stem}_cropped_aligned.mp4"
+        aligned.unlink(missing_ok=True)
 

@@ -5,6 +5,7 @@ import {
   getProject,
   getVideos,
   addVideos,
+  deleteVideos,
   createVideosSegmentation,
   createVideosExtraction,
   getCroppedVideoExists,
@@ -34,6 +35,7 @@ const isLoading = ref(false)
 const showFilePicker = ref(false)
 const isSegmenting = ref(false)
 const isExtracting = ref(false)
+const isDeleting = ref(false)
 const croppedVideoExists = ref<Record<number, boolean>>({})
 const alignedVideoExists = ref<Record<number, boolean>>({})
 
@@ -158,6 +160,24 @@ onUnmounted(() => {
 
 const handleAddVideos = () => {
   showFilePicker.value = true
+}
+
+const handleDeleteVideos = async () => {
+  if (!projectStore.currentProjectId || isDeleting.value || selectedCount.value === 0) return
+  const count = selectedCount.value
+  if (!confirm(`Delete ${count} video(s)? This will remove all annotations, masks, and generated videos. Original video files will not be affected.`)) return
+  isDeleting.value = true
+  try {
+    await deleteVideos(projectStore.currentProjectId, selectedVideoIdsList.value)
+    await loadVideos()
+    await loadCroppedVideoStatus()
+    await loadAlignedVideoStatus()
+  } catch (e: any) {
+    console.error('Failed to delete videos:', e)
+    alert(e.message || 'Failed to delete videos')
+  } finally {
+    isDeleting.value = false
+  }
 }
 
 const handleFilesSelected = async (selectedPaths: string[]) => {
@@ -492,6 +512,13 @@ const formatScore = (score: number | undefined) => {
           </div>
         <aside class="sidebar">
           <button class="sidebar-button" @click="handleAddVideos">Add Videos</button>
+          <button
+            class="sidebar-button delete-button"
+            @click="handleDeleteVideos"
+            :disabled="isDeleting || selectedCount === 0"
+          >
+            <span class="button-label">{{ isDeleting ? 'Deleting...' : `Delete ${selectedCount} Videos` }}</span>
+          </button>
 
           <h4 class="sidebar-section-title">Segmentation</h4>
           <button
@@ -610,8 +637,8 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">View Detector Training</span>
           </button>
 
-          <div v-if="isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
-            {{ isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
+          <div v-if="isDeleting || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
+            {{ isDeleting ? 'Deleting videos...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
           </div>
         </aside>
       </div>
@@ -692,6 +719,17 @@ const formatScore = (score: number | undefined) => {
 .sidebar-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.delete-button {
+  background-color: #fef2f2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.delete-button:hover:not(:disabled) {
+  background-color: #fee2e2;
+  border-color: #dc2626;
 }
 
 .sidebar-section-title {
