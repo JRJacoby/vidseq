@@ -620,12 +620,11 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Determine is_init_cond_frame (True if no existing memory)
-        has_existing_memory = (
-            len(output_dict["cond_frame_outputs"]) > 0
-            or len(output_dict["non_cond_frame_outputs"]) > 0
-        )
-        is_init_cond_frame = not has_existing_memory
+        # 8. Determine is_init_cond_frame (True if no conditioning frames exist)
+        # Only conditioning frames matter here — non-cond memory from nearby
+        # propagated masks is context but doesn't satisfy SAM2's requirement
+        # for at least one conditioning frame on the non-init path.
+        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
 
         # 9. Call track_step with point_inputs
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
