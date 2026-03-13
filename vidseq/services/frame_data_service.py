@@ -608,6 +608,23 @@ async def load_scores_in_range(
     return [{"frame_idx": r[0], "score": r[1]} for r in result.all()]
 
 
+async def load_all_scores(
+    session: AsyncSession,
+    video_id: int,
+) -> dict[int, float]:
+    """Load all scores for a video as {frame_idx: score}.
+
+    Returns all FrameData rows for the video as a dict. Frames without
+    FrameData rows are absent from the dict. The caller should treat
+    missing keys the same as scores <= 0 (below threshold).
+    """
+    result = await session.execute(
+        select(FrameData.frame_idx, FrameData.score)
+        .where(FrameData.video_id == video_id)
+    )
+    return {row.frame_idx: row.score for row in result.all()}
+
+
 async def save_detector_scores_batch(
     session: AsyncSession,
     video_id: int,
