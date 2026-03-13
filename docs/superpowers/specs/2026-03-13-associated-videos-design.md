@@ -23,7 +23,7 @@ A new propagation workflow segments the depth video by:
 - `is_associated: bool = False` — hides video from pipeline list
 - `associated_with_id: int | None = None` — FK to the main Video's ID
 
-A new `get_main_videos()` function returns only videos where `is_associated = False`. The existing `get_all_videos()` remains unchanged for callers like ARHMM that need all videos. The pipeline list uses `get_main_videos()`.
+The existing `get_all_videos()` adds a filter for `WHERE is_associated = False`. All whole-project operations (pipeline list, ARHMM, batch segmentation, etc.) should only operate on main videos. Associated videos are only accessed individually through their main video's relationship.
 
 **VideoResponse schema** (`vidseq/schemas/video.py`) adds `is_associated: bool` and `associated_with_id: int | None` so the frontend can render associations.
 
@@ -151,8 +151,8 @@ Usage: `uv run python scripts/migrate_associated_videos.py /path/to/project`
 Backend:
 - `vidseq/models/video.py` — add `is_associated`, `associated_with_id` columns
 - `vidseq/schemas/video.py` — add `is_associated`, `associated_with_id` to VideoResponse
-- `vidseq/services/video_service.py` — add `get_main_videos()`, associated video ingestion, cascade delete
-- `vidseq/api/routes/videos.py` — new `POST /videos/associated`, `GET /videos/{id}/associated` endpoints; use `get_main_videos()` for pipeline list
+- `vidseq/services/video_service.py` — filter `get_all_videos()`, associated video ingestion, cascade delete
+- `vidseq/api/routes/videos.py` — new `POST /videos/associated`, `GET /videos/{id}/associated` endpoints
 - `vidseq/services/segmentation_model/streaming_segmentor.py` — new `propagate_with_associated()` method
 - `vidseq/services/segmentation_commands.py` — new `handle_propagate_with_associated` TCP handler
 - `vidseq/services/segmentation_service.py` — orchestrate batch co-segmentation
