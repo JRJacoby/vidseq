@@ -564,10 +564,8 @@ async def delete_videos(
         select(Video).where(Video.associated_with_id.in_(video_ids))
     )
     assoc_videos = list(assoc_result.scalars().all())
-    assoc_ids = [v.id for v in assoc_videos]
 
-    # Merge associated video IDs into the deletion batch
-    all_video_ids = list(video_ids) + assoc_ids
+    # Merge associated videos into the deletion batch
     all_videos = videos + assoc_videos
 
     # 2. Close SAM2 sessions
