@@ -1,8 +1,10 @@
+import json
 import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -232,3 +234,67 @@ async def delete_videos(
         session=session,
     )
     return None
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/associated",
+    response_model=VideoResponse,
+)
+async def get_associated_video(
+    project_id: int,
+    video_id: int,
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get the associated video for a main video, or 404 if none."""
+    result = await session.execute(
+        select(Video).where(Video.associated_with_id == video_id)
+    )
+    assoc = result.scalar_one_or_none()
+    if assoc is None:
+        raise HTTPException(status_code=404, detail="No associated video found")
+    return VideoResponse.model_validate(assoc)
+
+
+class AssociatedVideoRequest(BaseModel):
+    json_path: str
+
+
+@router.post(
+    "/projects/{project_id}/videos/associated",
+    response_model=list[VideoResponse],
+    status_code=201,
+)
+async def add_associated_videos(
+    project_id: int,
+    body: AssociatedVideoRequest,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Add associated videos from a JSON mapping file on disk."""
+    json_file = Path(body.json_path)
+    if not json_file.exists():
+        raise HTTPException(status_code=400, detail=f"File not found: {body.json_path}")
+
+    try:
+        mapping = json.loads(json_file.read_text())
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    if not isinstance(mapping, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Expected flat {string: string} mapping",
+        )
+
+    try:
+        videos = await video_service.add_associated_videos(
+            session=session,
+            project_path=project_path,
+            mapping=mapping,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return [VideoResponse.model_validate(v) for v in videos]
