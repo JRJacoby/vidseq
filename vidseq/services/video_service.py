@@ -416,7 +416,29 @@ async def reset_video(
     )
     await session.commit()
 
-    # 5. Re-open SAM session if it was open before
+    # 5. Cascade: reset associated video's co-segmentation if it exists
+    assoc_result = await session.execute(
+        select(Video).where(
+            Video.associated_with_id == video.id,
+            Video.segmentation_status == "segmented",
+        )
+    )
+    assoc_video = assoc_result.scalar_one_or_none()
+    if assoc_video is not None:
+        reset_video_segmentation_arrays(
+            project_path=project_path,
+            video_id=assoc_video.id,
+            num_frames=assoc_video.num_frames,
+            height=assoc_video.height,
+            width=assoc_video.width,
+            is_associated=True,
+        )
+        await session.execute(
+            delete(FrameData).where(FrameData.video_id == assoc_video.id)
+        )
+        assoc_video.segmentation_status = None
+
+    # 6. Re-open SAM session if it was open before
     if session_was_open:
         # After reset, there are no conditioning frames
         segmentation_tcp_client.init_session(
@@ -475,6 +497,28 @@ async def delete_videos_segmentation(
         )
         video.segmentation_status = None
 
+        # Cascade: reset associated video's co-segmentation
+        assoc_result = await session.execute(
+            select(Video).where(
+                Video.associated_with_id == video.id,
+                Video.segmentation_status == "segmented",
+            )
+        )
+        assoc_video = assoc_result.scalar_one_or_none()
+        if assoc_video is not None:
+            reset_video_segmentation_arrays(
+                project_path=project_path,
+                video_id=assoc_video.id,
+                num_frames=assoc_video.num_frames,
+                height=assoc_video.height,
+                width=assoc_video.width,
+                is_associated=True,
+            )
+            await session.execute(
+                delete(FrameData).where(FrameData.video_id == assoc_video.id)
+            )
+            assoc_video.segmentation_status = None
+
     await session.commit()
 
 
@@ -515,12 +559,23 @@ async def delete_videos(
             raise DBRecordNotFoundError("Video", vid)
         videos.append(video)
 
+    # Find associated videos for cascade deletion
+    assoc_result = await session.execute(
+        select(Video).where(Video.associated_with_id.in_(video_ids))
+    )
+    assoc_videos = list(assoc_result.scalars().all())
+    assoc_ids = [v.id for v in assoc_videos]
+
+    # Merge associated video IDs into the deletion batch
+    all_video_ids = list(video_ids) + assoc_ids
+    all_videos = videos + assoc_videos
+
     # 2. Close SAM2 sessions
-    for video in videos:
+    for video in all_videos:
         segmentation_tcp_client.close_session(project_id, video.id)
 
     # 3. Delete DB records (child tables first)
-    for video in videos:
+    for video in all_videos:
         await session.execute(
             delete(FrameData).where(FrameData.video_id == video.id)
         )
@@ -536,7 +591,7 @@ async def delete_videos(
     await session.commit()
 
     # 5. Delete files (after commit — orphaned files are harmless)
-    for video in videos:
+    for video in all_videos:
         # H5 directory
         h5_dir = project_path / "array_data" / str(video.id)
         if h5_dir.exists():

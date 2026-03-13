@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from vidseq.services.array_storage import (
+    compute_bbox_from_mask,
     tracker_masks,
     tracker_logits,
     detector_masks,
@@ -549,6 +550,210 @@ def handle_propagate_with_detector(
         if detector is not None:
             del detector
             torch.cuda.empty_cache()
+
+
+def handle_propagate_with_associated(
+    params: dict,
+    segmentor: StreamingSegmentor,
+    response_callback: Callable[[dict], None],
+) -> dict:
+    """Propagate associated video segmentation using main video's bbox prompts.
+
+    The main video's scores determine when to provide box prompts from its masks.
+    Uses sparse conditioning + LRU eviction for memory management on long videos.
+    """
+    from collections import deque
+
+    video_id = params["video_id"]
+    main_video_id = params["main_video_id"]
+    project_path = Path(params["project_path"])
+    confidence_threshold = params["confidence_threshold"]
+    main_height = params["main_height"]
+    main_width = params["main_width"]
+    main_video_scores = params["main_video_scores"]  # {str(frame_idx): float}
+    # Note: JSON keys are strings, convert to int
+    main_scores = {int(k): v for k, v in main_video_scores.items()}
+    num_frames = params["num_frames"]
+    cond_frame_interval = params.get("cond_frame_interval", 50)
+    max_cond_frames = params.get("max_cond_frames", 32)
+
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+
+    # Check that at least one frame exceeds threshold
+    has_valid = any(
+        s > confidence_threshold
+        for s in main_scores.values()
+        if s > 0
+    )
+    if not has_valid:
+        raise RuntimeError(
+            "Main video has no segmentation data above confidence threshold"
+        )
+
+    # Compute bbox rescaling factors
+    assoc_height, assoc_width = resources.height, resources.width
+    x_scale = assoc_width / main_width if main_width != assoc_width else 1.0
+    y_scale = assoc_height / main_height if main_height != assoc_height else 1.0
+    needs_rescale = x_scale != 1.0 or y_scale != 1.0
+
+    # LRU tracking for conditioning frames
+    cond_lru: deque[int] = deque()
+    prompted_count = 0  # Counts prompted frames for interval logic
+
+    depth_scores: dict[int, float] = {}
+
+    # Open H5 files: main video read-only, associated video read-write
+    # This direct H5 access is a deliberate exception — see spec for justification
+    with tracker_masks(project_path, main_video_id, "r") as main_masks, \
+         tracker_masks(project_path, video_id, "a") as depth_trk, \
+         final_masks(project_path, video_id, "a") as depth_fin:
+
+        frame_source = resources.frame_source
+
+        # 1. Find first frame above threshold
+        start_frame = None
+        for idx in range(num_frames):
+            score = main_scores.get(idx, -1.0)
+            if score > 0 and score > confidence_threshold:
+                start_frame = idx
+                break
+
+        if start_frame is None:
+            raise RuntimeError(
+                "Main video has no segmentation data above confidence threshold"
+            )
+
+        # 2. Get bbox from main video's mask for the start frame
+        main_mask = np.asarray(main_masks[start_frame])
+        bbox = compute_bbox_from_mask(main_mask)
+        if bbox is None:
+            raise RuntimeError(f"Main video mask at frame {start_frame} is empty")
+
+        if needs_rescale:
+            bbox = np.array([
+                bbox[0] * x_scale, bbox[1] * y_scale,
+                bbox[2] * x_scale, bbox[3] * y_scale,
+            ], dtype=np.float32)
+
+        # Initialize with box prompt (always conditioning)
+        frame = frame_source[start_frame]
+        mask, _, score = segmentor.propagate_with_box(
+            str(video_id), start_frame, frame,
+            box_prompt=tuple(bbox),
+            add_as_conditioning=True,
+        )
+        depth_trk[start_frame] = mask
+        depth_fin[start_frame] = mask
+        depth_scores[start_frame] = score
+        cond_lru.append(start_frame)
+        prompted_count = 1
+        last_anchor_frame = start_frame
+        was_below_threshold = False
+
+        if response_callback:
+            response_callback({
+                "type": "progress",
+                "frame_idx": start_frame,
+                "total": num_frames,
+            })
+
+        # 3. Main loop: propagate forward
+        for frame_idx in range(start_frame + 1, num_frames):
+            frame = frame_source[frame_idx]
+            main_score = main_scores.get(frame_idx, -1.0)
+            is_above = main_score > 0 and main_score >= confidence_threshold
+
+            if is_above:
+                # Get bbox from main video
+                main_mask = np.asarray(main_masks[frame_idx])
+                bbox = compute_bbox_from_mask(main_mask)
+
+                if bbox is not None:
+                    if needs_rescale:
+                        bbox = np.array([
+                            bbox[0] * x_scale, bbox[1] * y_scale,
+                            bbox[2] * x_scale, bbox[3] * y_scale,
+                        ], dtype=np.float32)
+
+                    # 4. Check for confidence recovery (backtrack)
+                    if was_below_threshold:
+                        # Re-condition with new anchor
+                        mask, _, score = segmentor.propagate_with_box(
+                            str(video_id), frame_idx, frame,
+                            box_prompt=tuple(bbox),
+                            add_as_conditioning=True,
+                        )
+                        depth_fin[frame_idx] = mask
+                        depth_scores[frame_idx] = score
+                        cond_lru.append(frame_idx)
+
+                        # Backtrack gap frames
+                        if last_anchor_frame + 1 <= frame_idx - 1:
+                            segmentor.backtrack_reprop(
+                                str(video_id), frame_source, depth_fin,
+                                last_anchor_frame + 1, frame_idx - 1,
+                                scores=depth_scores,
+                            )
+
+                        was_below_threshold = False
+                    else:
+                        # Normal prompted frame
+                        prompted_count += 1
+                        add_cond = (prompted_count % cond_frame_interval) == 0
+                        mask, _, score = segmentor.propagate_with_box(
+                            str(video_id), frame_idx, frame,
+                            box_prompt=tuple(bbox),
+                            add_as_conditioning=add_cond,
+                        )
+
+                        if add_cond:
+                            cond_lru.append(frame_idx)
+                            # LRU eviction
+                            while len(cond_lru) > max_cond_frames:
+                                oldest = cond_lru.popleft()
+                                segmentor.evict_conditioning_frame(
+                                    str(video_id), oldest
+                                )
+
+                    depth_trk[frame_idx] = mask
+                    depth_fin[frame_idx] = mask
+                    depth_scores[frame_idx] = score
+                    last_anchor_frame = frame_idx
+                else:
+                    # Main mask is empty despite score above threshold
+                    mask, _, score = segmentor.propagate_frame(
+                        str(video_id), frame_idx, frame
+                    )
+                    depth_trk[frame_idx] = mask
+                    depth_fin[frame_idx] = mask
+                    depth_scores[frame_idx] = score
+                    was_below_threshold = True
+            else:
+                # Coast: propagate without prompt
+                mask, _, score = segmentor.propagate_frame(
+                    str(video_id), frame_idx, frame
+                )
+                depth_trk[frame_idx] = mask
+                depth_fin[frame_idx] = mask
+                depth_scores[frame_idx] = score
+                was_below_threshold = True
+
+            # Progress callback
+            if response_callback and (frame_idx % 50 == 0 or frame_idx == num_frames - 1):
+                response_callback({
+                    "type": "progress",
+                    "frame_idx": frame_idx,
+                    "total": num_frames,
+                })
+
+    return {
+        "type": "propagate_with_associated_result",
+        "status": "ok",
+        "scores": [[idx, s] for idx, s in depth_scores.items()],
+    }
 
 
 def handle_reset_frame(
