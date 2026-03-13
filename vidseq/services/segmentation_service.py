@@ -450,6 +450,115 @@ async def segment_all_videos(
     return job_ids
 
 
+async def co_segment_videos(
+    session: "AsyncSession",
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+    confidence_threshold: float = 0.9,
+) -> None:
+    """Batch co-segmentation of associated videos.
+
+    For each main video:
+    1. Load its scores from DB
+    2. Find its associated video
+    3. Init session for the associated video
+    4. Run propagate_with_associated
+    5. Save results to DB
+    6. Close session
+
+    Continues on per-video errors.
+    """
+    from sqlalchemy import select
+
+    # Fetch main videos
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids)).order_by(Video.id)
+    )
+    main_videos = list(result.scalars().all())
+    if not main_videos:
+        raise ValueError("No videos found for the given IDs")
+
+    # Fetch associated videos
+    result = await session.execute(
+        select(Video).where(
+            Video.associated_with_id.in_(video_ids),
+            Video.is_associated == True,
+        )
+    )
+    assoc_by_main = {v.associated_with_id: v for v in result.scalars().all()}
+
+    for main_video in main_videos:
+        assoc_video = assoc_by_main.get(main_video.id)
+        if assoc_video is None:
+            print(f"[Co-Segment] Video {main_video.id} has no associated video, skipping")
+            continue
+
+        try:
+            # Load main video scores
+            main_scores = await frame_data_service.load_all_scores(
+                session, main_video.id
+            )
+
+            # Init session for associated video
+            segmentation_tcp_client.init_session(
+                project_id=project_id,
+                video_id=assoc_video.id,
+                video_path=Path(assoc_video.path),
+                project_path=project_path,
+                num_frames=assoc_video.num_frames,
+                height=assoc_video.height,
+                width=assoc_video.width,
+                cond_frame_indices=[],
+            )
+
+            # Run propagation
+            result = segmentation_tcp_client.propagate_with_associated(
+                video_id=assoc_video.id,
+                main_video_id=main_video.id,
+                project_path=project_path,
+                num_frames=assoc_video.num_frames,
+                confidence_threshold=confidence_threshold,
+                main_height=main_video.height,
+                main_width=main_video.width,
+                main_video_scores=main_scores,
+            )
+
+            if result.get("status") == "ok":
+                # Save scores to DB
+                scores = result.get("scores", [])
+                if scores:
+                    await frame_data_service.save_scores_batch(
+                        session, assoc_video.id, scores
+                    )
+
+                # Update mask flags
+                processed_frames = [s[0] for s in scores]
+                await frame_data_service.set_has_tracker_mask(
+                    session, assoc_video.id, processed_frames, True
+                )
+                await frame_data_service.set_has_final_mask(
+                    session, assoc_video.id, processed_frames, True
+                )
+
+                assoc_video.segmentation_status = "segmented"
+                print(f"[Co-Segment] Video {main_video.id} -> {assoc_video.id} complete")
+            else:
+                print(f"[Co-Segment] Failed for video {main_video.id}: {result.get('error')}")
+
+            # Close session
+            segmentation_tcp_client.close_session(project_id, assoc_video.id)
+
+        except Exception as e:
+            print(f"[Co-Segment] Error for video {main_video.id}: {e}")
+            try:
+                segmentation_tcp_client.close_session(project_id, assoc_video.id)
+            except Exception:
+                pass
+
+    await session.commit()
+
+
 def shutdown() -> None:
     """Shutdown the SAM2 worker, freeing GPU memory.
 
