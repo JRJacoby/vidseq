@@ -1,41 +1,57 @@
-"""RT-DETR detector model for bounding box detection."""
+"""Detector model for bounding box detection (RT-DETR or YOLO)."""
 
 from pathlib import Path
 
 import numpy as np
-import torch
-from ultralytics import RTDETR
+from ultralytics import YOLO
 
 
 # Confidence threshold for detections.
-# RT-DETR's transformer queries produce lower raw scores than YOLO anchors,
-# so we use a lower threshold and rely on taking the top-1 detection.
+# Set low enough for RT-DETR's transformer queries (which produce lower raw
+# scores than YOLO anchors). Both code paths take the top-1 detection, so
+# a shared low threshold is functionally fine for YOLO as well.
 DETECTION_CONF_THRESHOLD = 0.25
 
+# Map config names to pretrained model identifiers
+PRETRAINED_MODELS = {
+    "rtdetr": "rtdetr-x.pt",
+    "yolo": "yolo11n.pt",
+}
 
-def load_pretrained(device: str = "cuda") -> RTDETR:
-    """Load COCO-pretrained RT-DETR-X model."""
-    model = RTDETR("rtdetr-x.pt")
+
+def load_pretrained(detector_type: str, device: str = "cuda"):
+    """Load a COCO-pretrained detector model.
+
+    Args:
+        detector_type: "rtdetr" or "yolo"
+        device: Device to load onto
+    """
+    model_name = PRETRAINED_MODELS[detector_type]
+    model = YOLO(model_name)
     model.to(device)
     return model
 
 
-def load_finetuned(weights_path: str | Path, device: str = "cuda") -> RTDETR:
-    """Load fine-tuned RT-DETR model from checkpoint."""
-    model = RTDETR(str(weights_path))
+def load_finetuned(weights_path: str | Path, device: str = "cuda"):
+    """Load a fine-tuned detector from checkpoint.
+
+    Uses YOLO() which auto-detects the architecture from the checkpoint.
+    Works for both RT-DETR and YOLO weights.
+    """
+    model = YOLO(str(weights_path))
     model.to(device)
     return model
 
 
 def detect(
-    model: RTDETR,
+    model,
     frame: np.ndarray,
     conf: float = DETECTION_CONF_THRESHOLD,
 ) -> list[dict]:
     """Run detection on a single BGR frame.
 
     Args:
-        model: RT-DETR model instance.
+        model: Ultralytics model instance (RTDETR or YOLO).
         frame: BGR uint8 numpy array (H, W, 3).
         conf: Confidence threshold.
 

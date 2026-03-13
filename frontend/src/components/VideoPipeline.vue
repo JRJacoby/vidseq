@@ -91,8 +91,10 @@ const getStatusClass = (video: Video) => {
 const {
   isTraining: isDetectorTraining,
   modelExists: detectorModelExists,
+  detectorType,
   startTraining: startDetectorTraining,
   checkStatus: checkDetectorStatus,
+  setDetectorType,
 } = useDetector(projectId)
 
 const loadProject = async () => {
@@ -621,7 +623,17 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isRunningPCA ? 'Running PCA...' : `Run PCA (${selectedCount} Videos)` }}</span>
           </button>
 
-          <h4 class="sidebar-section-title">DINOv2 Detector</h4>
+          <h4 class="sidebar-section-title">Detector</h4>
+          <div class="detector-type-selector">
+            <label class="detector-radio">
+              <input type="radio" value="rtdetr" :checked="detectorType === 'rtdetr'" @change="setDetectorType('rtdetr')" :disabled="isDetectorTraining" />
+              RT-DETR
+            </label>
+            <label class="detector-radio">
+              <input type="radio" value="yolo" :checked="detectorType === 'yolo'" @change="setDetectorType('yolo')" :disabled="isDetectorTraining" />
+              YOLO
+            </label>
+          </div>
           <button
             class="sidebar-button train-detector-button"
             @click="handleTrainDetector"
@@ -1060,5 +1072,28 @@ const formatScore = (score: number | undefined) => {
 .video-item.selected {
   background-color: #f0f7ff;
   border-color: #a8d1ff;
+}
+
+.detector-type-selector {
+  display: flex;
+  gap: 1rem;
+  padding: 0.25rem 0;
+}
+
+.detector-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: #555;
+  cursor: pointer;
+}
+
+.detector-radio input[type="radio"] {
+  cursor: pointer;
+}
+
+.detector-radio input[type="radio"]:disabled {
+  cursor: not-allowed;
 }
 </style>

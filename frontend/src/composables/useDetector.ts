@@ -3,20 +3,24 @@ import {
     getDetectionStatus,
     createDetectionTraining,
     deleteDetectionTraining,
+    updateDetectionConfig,
     type DetectorStatus,
 } from '@/services/api'
 
 export interface UseDetectorReturn {
     isTraining: Ref<boolean>
     modelExists: Ref<boolean>
+    detectorType: Ref<string>
     startTraining: (maxEpochs?: number, videoIds?: number[]) => Promise<void>
     stopTraining: () => Promise<void>
     checkStatus: () => Promise<void>
+    setDetectorType: (type: string) => Promise<void>
 }
 
 export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
     const isTraining = ref(false)
     const modelExists = ref(false)
+    const detectorType = ref('rtdetr')
 
     const checkStatus = async () => {
         if (!projectId.value) return
@@ -24,8 +28,19 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
             const status = await getDetectionStatus(projectId.value)
             modelExists.value = status.model_exists
             isTraining.value = status.is_training
+            detectorType.value = status.detector_type
         } catch (e) {
             console.error('Failed to check detector status:', e)
+        }
+    }
+
+    const setDetectorType = async (type: string) => {
+        if (!projectId.value) return
+        try {
+            await updateDetectionConfig(projectId.value, type)
+            detectorType.value = type
+        } catch (e) {
+            console.error('Failed to set detector type:', e)
         }
     }
 
@@ -91,8 +106,10 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
     return {
         isTraining,
         modelExists,
+        detectorType,
         startTraining,
         stopTraining,
         checkStatus,
+        setDetectorType,
     }
 }

@@ -1140,6 +1140,7 @@ export function getCrowdMovieVideoUrl(projectId: number, syllable: number): stri
 export interface DetectorStatus {
     model_exists: boolean
     is_training: boolean
+    detector_type: string
 }
 
 export interface DetectorTrainingProgress {
@@ -1173,6 +1174,15 @@ export async function getDetectionStatus(projectId: number): Promise<DetectorSta
         throw new Error(await getErrorMessage(response, 'Failed to get detection status'))
     }
     return response.json()
+}
+
+export async function updateDetectionConfig(projectId: number, detectorType: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ detector_type: detectorType })
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to update detector config'))
 }
 
 export async function createDetectionTraining(

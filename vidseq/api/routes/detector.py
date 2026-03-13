@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
-from vidseq.services.detector_service import DetectorService
+from vidseq.services.detector_service import DetectorService, read_detector_config, write_detector_config
 from vidseq.services import frame_data_service, segmentation_service
 from vidseq.services.array_storage import detector_masks
 
@@ -25,6 +25,7 @@ class DetectorStatusResponse(BaseModel):
 
     model_exists: bool
     is_training: bool
+    detector_type: str
 
 
 class TrainRequest(BaseModel):
@@ -39,10 +40,31 @@ class TrainRequest(BaseModel):
     early_stop_patience: int = 20
 
 
+class DetectorConfigRequest(BaseModel):
+    """Request body for setting detector type."""
+
+    detector_type: str
+
+
 class DetectorMasksExistsResponse(BaseModel):
     """Response for detector masks existence check."""
 
     exists: bool
+
+
+@router.put("/projects/{project_id}/detection/config")
+async def update_detection_config(
+    body: DetectorConfigRequest,
+    project_path: Path = Depends(get_project_folder),
+):
+    """Set the detector type for this project."""
+    if body.detector_type not in ("rtdetr", "yolo"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid detector_type: {body.detector_type}. Must be 'rtdetr' or 'yolo'.",
+        )
+    write_detector_config(project_path, body.detector_type)
+    return {"detector_type": body.detector_type}
 
 
 @router.get(
@@ -61,6 +83,7 @@ async def get_detection_status(
     return DetectorStatusResponse(
         model_exists=service.model_exists(project_path),
         is_training=service.is_training(),
+        detector_type=read_detector_config(project_path),
     )
 
 

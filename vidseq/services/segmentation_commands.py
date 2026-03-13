@@ -467,7 +467,7 @@ def handle_propagate_with_detector(
     segmentor: StreamingSegmentor,
     response_callback: Callable[[dict], None],
 ) -> dict:
-    """Propagate tracking with on-the-fly RT-DETR bbox detection."""
+    """Propagate tracking with on-the-fly detector bbox detection."""
     import torch
     from vidseq.services.detector_model import load_finetuned, detect, pick_best_detection
 
@@ -492,7 +492,7 @@ def handle_propagate_with_detector(
 
     detector = None
     try:
-        print(f"[Segmentation Worker] Loading RT-DETR detector from {model_path}")
+        print(f"[Segmentation Worker] Loading detector from {model_path}")
         detector = load_finetuned(model_path, device="cuda")
 
         detector_scores: dict[int, float] = {}
@@ -502,7 +502,7 @@ def handle_propagate_with_detector(
             frame_idx: int, frame: np.ndarray,
             tracker_bbox_hint: tuple | None = None,
         ) -> tuple[tuple[float, float, float, float] | None, float]:
-            """Run RT-DETR on a single frame, return (bbox, conf) or (None, 0.0)."""
+            """Run detector on a single frame, return (bbox, conf) or (None, 0.0)."""
             detections = detect(detector, frame)
             bbox, conf = pick_best_detection(detections, tracker_bbox_hint)
             return bbox, conf

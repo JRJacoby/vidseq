@@ -1,5 +1,6 @@
-"""Detector Service for RT-DETR-based object detection training and inference."""
+"""Detector Service for object detection training and inference."""
 
+import json
 import logging
 import random
 import shutil
@@ -62,8 +63,35 @@ def _mask_to_yolo_bbox(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
     return f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
 
 
+VALID_DETECTOR_TYPES = ("rtdetr", "yolo")
+DEFAULT_DETECTOR_TYPE = "rtdetr"
+
+
+def read_detector_config(project_path: Path) -> str:
+    """Read detector type from project config. Defaults to 'rtdetr'."""
+    config_path = project_path / "models" / "detector_config.json"
+    if not config_path.exists():
+        return DEFAULT_DETECTOR_TYPE
+    try:
+        data = json.loads(config_path.read_text())
+        dtype = data.get("detector_type", DEFAULT_DETECTOR_TYPE)
+        return dtype if dtype in VALID_DETECTOR_TYPES else DEFAULT_DETECTOR_TYPE
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_DETECTOR_TYPE
+
+
+def write_detector_config(project_path: Path, detector_type: str) -> None:
+    """Write detector type to project config."""
+    if detector_type not in VALID_DETECTOR_TYPES:
+        raise ValueError(f"Invalid detector type: {detector_type}")
+    config_dir = project_path / "models"
+    config_dir.mkdir(exist_ok=True)
+    config_path = config_dir / "detector_config.json"
+    config_path.write_text(json.dumps({"detector_type": detector_type}))
+
+
 class DetectorService:
-    """Singleton service for RT-DETR detector training and inference."""
+    """Singleton service for detector training and inference (RT-DETR or YOLO)."""
 
     _instance: Optional["DetectorService"] = None
     _lock = threading.Lock()
@@ -160,16 +188,19 @@ class DetectorService:
         lr: float,
         early_stop_patience: int,
     ) -> None:
-        """Synchronous training implementation using Ultralytics RT-DETR."""
-        from ultralytics import RTDETR
+        """Synchronous training implementation using Ultralytics."""
+        from vidseq.services.detector_model import load_pretrained
         from vidseq.services import segmentation_service
 
         # Free GPU memory by shutting down SAM2 worker
         # Raises RuntimeError if SAM2 has active sessions
         segmentation_service.shutdown()
 
+        # Read detector type from config
+        detector_type = read_detector_config(project_path)
+
         logger.info(
-            f"Starting RT-DETR training: max_epochs={max_epochs}, "
+            f"Starting {detector_type.upper()} training: max_epochs={max_epochs}, "
             f"batch_size={batch_size}, lr={lr}"
         )
 
@@ -240,7 +271,7 @@ class DetectorService:
             )
 
             # Create and train model
-            model = RTDETR("rtdetr-x.pt")
+            model = load_pretrained(detector_type, device="cpu")
 
             # Graceful stop callback
             def check_stop(trainer):
@@ -269,26 +300,36 @@ class DetectorService:
             model_save_dir = project_path / "models"
             model_save_dir.mkdir(exist_ok=True)
 
+            # Per-model training hyperparameters
+            if detector_type == "yolo":
+                train_workers = 4
+                train_batch = max(batch_size, 8)
+                train_name = "yolo_train"
+            else:
+                train_workers = 0  # RT-DETR transforms contain unpicklable lambdas
+                train_batch = batch_size
+                train_name = "rtdetr_train"
+
             model.train(
                 data=str(yaml_path),
                 epochs=max_epochs,
                 imgsz=640,
-                batch=batch_size,
+                batch=train_batch,
                 lr0=lr,
                 optimizer="AdamW",
                 patience=early_stop_patience,
                 single_cls=True,
                 device=0,
-                workers=0,  # RT-DETR transforms contain unpicklable lambdas
-                plots=False,  # avoid accumulating plot data across epochs
+                workers=train_workers,
+                plots=False,
                 project=str(model_save_dir),
-                name="rtdetr_train",
+                name=train_name,
                 exist_ok=True,
                 verbose=False,
             )
 
             # Copy best weights to standard location
-            best_pt = model_save_dir / "rtdetr_train" / "weights" / "best.pt"
+            best_pt = model_save_dir / train_name / "weights" / "best.pt"
             if best_pt.exists():
                 shutil.copy2(best_pt, model_save_dir / "detector.pt")
                 logger.info(f"Best weights saved to {model_save_dir / 'detector.pt'}")
