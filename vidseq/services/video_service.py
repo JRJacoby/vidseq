@@ -554,3 +554,96 @@ async def delete_videos(
         aligned = project_path / "aligned_videos" / f"{stem}_cropped_aligned.mp4"
         aligned.unlink(missing_ok=True)
 
+
+async def add_associated_videos(
+    session: AsyncSession,
+    project_path: Path,
+    mapping: dict[str, str],
+) -> list[Video]:
+    """Add associated videos from a JSON mapping of main_path -> associated_path.
+
+    Validates all pairs, creates Video rows with is_associated=True, and creates
+    H5 files (tracker_masks + final_masks only, no detector_masks or logits).
+
+    Raises ValueError on any validation failure (fail-fast).
+    """
+    # 1. Load all existing videos by path for lookup
+    result = await session.execute(
+        select(Video).where(Video.is_associated == False)
+    )
+    main_videos = {v.path: v for v in result.scalars().all()}
+
+    # 2. Check for existing associated videos
+    result = await session.execute(
+        select(Video).where(Video.is_associated == True)
+    )
+    existing_assoc = {v.associated_with_id for v in result.scalars().all()}
+
+    # 3. Validate all pairs — extract metadata once per video via get_video_metadata()
+    seen_assoc_paths: set[str] = set()
+    pairs: list[tuple[Video, VideoMetadata, str]] = []
+
+    for main_path, assoc_path in mapping.items():
+        # Main video must exist
+        main_video = main_videos.get(main_path)
+        if main_video is None:
+            raise ValueError(f"Main video not found: {main_path}")
+
+        # No duplicate associations
+        if main_video.id in existing_assoc:
+            raise ValueError(f"Main video already has an associated video: {main_path}")
+
+        # No duplicate associated paths
+        if assoc_path in seen_assoc_paths:
+            raise ValueError(f"Duplicate associated video path: {assoc_path}")
+        seen_assoc_paths.add(assoc_path)
+
+        # Extract metadata (validates existence, readability, fps/frames/dims > 0)
+        try:
+            meta = get_video_metadata(assoc_path)
+        except VideoFileNotFoundError:
+            raise ValueError(f"Associated video file not found: {assoc_path}")
+        except VideoFileInvalidError as e:
+            raise ValueError(f"Cannot open associated video {assoc_path}: {e}")
+
+        # Frame count must match
+        if meta.num_frames != main_video.num_frames:
+            raise ValueError(
+                f"Frame count mismatch for {assoc_path}: "
+                f"associated has {meta.num_frames}, main has {main_video.num_frames}"
+            )
+
+        pairs.append((main_video, meta, assoc_path))
+
+    # 4. All validation passed — create Video rows (reuse metadata from validation)
+    created: list[Video] = []
+    for main_video, meta, assoc_path in pairs:
+        video = Video(
+            name=Path(assoc_path).name,
+            path=assoc_path,
+            fps=meta.fps,
+            height=meta.height,
+            width=meta.width,
+            num_frames=meta.num_frames,
+            is_associated=True,
+            associated_with_id=main_video.id,
+        )
+        session.add(video)
+        created.append(video)
+
+    await session.commit()
+
+    # 5. Create H5 files (need video.id from commit)
+    for video in created:
+        await session.refresh(video)
+        create_video_segmentation_arrays(
+            project_path=project_path,
+            video_id=video.id,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+            is_associated=True,
+        )
+
+    return created
+
