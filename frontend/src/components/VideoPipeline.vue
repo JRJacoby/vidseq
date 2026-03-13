@@ -18,6 +18,8 @@ import {
   clearAllAlignmentLabels,
   getPCAStatus,
   createPCA,
+  addAssociatedVideos,
+  coSegmentVideos,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -47,6 +49,29 @@ const selectedCount = computed(() => selectedVideoIds.value.size)
 const allSelected = computed(() => selectedVideoIds.value.size === videos.value.length && videos.value.length > 0)
 const someSelected = computed(() => selectedVideoIds.value.size > 0 && !allSelected.value)
 const selectedVideoIdsList = computed(() => [...selectedVideoIds.value])
+
+// Associated videos
+const expandedVideoIds = ref(new Set<number>())
+const isCoSegmenting = ref(false)
+const confidenceThreshold = ref(0.9)
+const showAssociatedFilePicker = ref(false)
+const isAddingAssociated = ref(false)
+
+const toggleExpand = (videoId: number) => {
+  const next = new Set(expandedVideoIds.value)
+  if (next.has(videoId)) {
+    next.delete(videoId)
+  } else {
+    next.add(videoId)
+  }
+  expandedVideoIds.value = next
+}
+
+const selectedWithAssociated = computed(() =>
+  videos.value.filter(
+    v => selectedVideoIds.value.has(v.id) && v.associated_video_id != null
+  )
+)
 
 const toggleVideo = (id: number) => {
   const next = new Set(selectedVideoIds.value)
@@ -396,6 +421,35 @@ const handleTrainDetector = async () => {
   }
 }
 
+const handleCoSegment = async () => {
+  if (!projectId.value || isCoSegmenting.value) return
+  isCoSegmenting.value = true
+  try {
+    const ids = selectedWithAssociated.value.map(v => v.id)
+    await coSegmentVideos(projectId.value, ids, confidenceThreshold.value)
+    await loadVideos()
+  } catch (e: any) {
+    alert(e.message || 'Co-segmentation failed')
+  } finally {
+    isCoSegmenting.value = false
+  }
+}
+
+const handleAssociatedFileSelected = async (paths: string[]) => {
+  showAssociatedFilePicker.value = false
+  if (!projectStore.currentProjectId || paths.length === 0) return
+
+  isAddingAssociated.value = true
+  try {
+    await addAssociatedVideos(projectStore.currentProjectId, paths[0])
+    await loadVideos()
+  } catch (e: any) {
+    alert(e.message || 'Failed to add associated videos')
+  } finally {
+    isAddingAssociated.value = false
+  }
+}
+
 const hasAlignedVideos = computed(() => {
   return Object.values(alignedVideoExists.value).some(exists => exists)
 })
@@ -484,48 +538,68 @@ const formatScore = (score: number | undefined) => {
                   :key="video.id"
                   class="video-item"
                   :class="[getStatusClass(video), { selected: selectedVideoIds.has(video.id) }]"
-                  @dblclick="handleVideoDoubleClick(video.id)"
                 >
-                  <input
-                    type="checkbox"
-                    class="video-checkbox"
-                    :checked="selectedVideoIds.has(video.id)"
-                    @change="toggleVideo(video.id)"
-                    @click.stop
-                  />
-                  <div class="video-info">
-                    <p class="video-name">{{ video.name }}</p>
-                    <p class="video-path">{{ video.path }}</p>
-                    <div v-if="hasStats(video)" class="video-stats">
-                      <span class="stat-item" title="Minimum Confidence">
-                        Min: <strong>{{ formatScore(video.min_confidence) }}</strong>
+                  <div class="video-item-row" @dblclick="handleVideoDoubleClick(video.id)">
+                    <input
+                      type="checkbox"
+                      class="video-checkbox"
+                      :checked="selectedVideoIds.has(video.id)"
+                      @change="toggleVideo(video.id)"
+                      @click.stop
+                    />
+                    <div class="video-info">
+                      <p class="video-name">{{ video.name }}</p>
+                      <p class="video-path">{{ video.path }}</p>
+                      <div v-if="hasStats(video)" class="video-stats">
+                        <span class="stat-item" title="Minimum Confidence">
+                          Min: <strong>{{ formatScore(video.min_confidence) }}</strong>
+                        </span>
+                        <span class="stat-item" title="Median Confidence">
+                          Med: <strong>{{ formatScore(video.p50_confidence) }}</strong>
+                        </span>
+                        <span class="stat-item" title="95th Percentile Confidence">
+                          P95: <strong>{{ formatScore(video.p95_confidence) }}</strong>
+                        </span>
+                      </div>
+                    </div>
+                    <div class="video-actions">
+                      <button
+                        v-if="croppedVideoExists[video.id]"
+                        class="view-cropped-button"
+                        @click.stop="handleViewCropped(video.id)"
+                      >
+                        View Cropped
+                      </button>
+                      <button
+                        v-if="alignedVideoExists[video.id]"
+                        class="view-aligned-button"
+                        @click.stop="handleViewAligned(video.id)"
+                      >
+                        View Aligned
+                      </button>
+                      <span v-if="getStatusDisplay(video)" class="status-badge" :class="getStatusClass(video)">
+                        {{ getStatusDisplay(video) }}
                       </span>
-                      <span class="stat-item" title="Median Confidence">
-                        Med: <strong>{{ formatScore(video.p50_confidence) }}</strong>
-                      </span>
-                      <span class="stat-item" title="95th Percentile Confidence">
-                        P95: <strong>{{ formatScore(video.p95_confidence) }}</strong>
-                      </span>
+                      <button
+                        v-if="video.associated_video_id"
+                        class="expand-toggle"
+                        @click.stop="toggleExpand(video.id)"
+                      >
+                        {{ expandedVideoIds.has(video.id) ? '&#9662; 1 associated' : '&#9656; 1 associated' }}
+                      </button>
                     </div>
                   </div>
-                  <div class="video-actions">
-                    <button
-                      v-if="croppedVideoExists[video.id]"
-                      class="view-cropped-button"
-                      @click.stop="handleViewCropped(video.id)"
+
+                  <div
+                    v-if="video.associated_video_id && expandedVideoIds.has(video.id)"
+                    class="associated-video-expanded"
+                  >
+                    <router-link
+                      :to="`/project/${projectId}/video/${video.id}/associated`"
+                      class="associated-link"
                     >
-                      View Cropped
-                    </button>
-                    <button
-                      v-if="alignedVideoExists[video.id]"
-                      class="view-aligned-button"
-                      @click.stop="handleViewAligned(video.id)"
-                    >
-                      View Aligned
-                    </button>
-                    <span v-if="getStatusDisplay(video)" class="status-badge" :class="getStatusClass(video)">
-                      {{ getStatusDisplay(video) }}
-                    </span>
+                      View Associated Video &rarr;
+                    </router-link>
                   </div>
                 </div>
               </div>
@@ -675,8 +749,37 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">View Detector Training</span>
           </button>
 
-          <div v-if="isDeleting || isDeletingSegmentations || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
-            {{ isDeleting ? 'Deleting videos...' : isDeletingSegmentations ? 'Deleting segmentations...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
+          <h4 class="sidebar-section-title">Associated Videos</h4>
+          <button
+            class="sidebar-button"
+            @click="showAssociatedFilePicker = true"
+            :disabled="isAddingAssociated"
+          >
+            <span class="button-label">{{ isAddingAssociated ? 'Adding...' : 'Add Associated Videos' }}</span>
+          </button>
+          <div class="co-segment-controls">
+            <button
+              class="sidebar-button"
+              @click="handleCoSegment"
+              :disabled="isCoSegmenting || selectedWithAssociated.length === 0"
+            >
+              <span class="button-label">{{ isCoSegmenting ? 'Co-Segmenting...' : `Co-Segment ${selectedWithAssociated.length} Videos` }}</span>
+            </button>
+            <label class="threshold-label">
+              Confidence:
+              <input
+                type="number"
+                v-model.number="confidenceThreshold"
+                min="0"
+                max="1"
+                step="0.05"
+                class="threshold-input"
+              />
+            </label>
+          </div>
+
+          <div v-if="isDeleting || isDeletingSegmentations || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining || isCoSegmenting || isAddingAssociated" class="status-indicator">
+            {{ isDeleting ? 'Deleting videos...' : isDeletingSegmentations ? 'Deleting segmentations...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : isDetectorTraining ? 'Training detector...' : isCoSegmenting ? 'Co-segmenting videos...' : 'Adding associated videos...' }}
           </div>
         </aside>
       </div>
@@ -686,6 +789,14 @@ const formatScore = (score: number | undefined) => {
       :initial-path="project?.path"
       @files-selected="handleFilesSelected"
       @cancel="handleFilePickerCancel"
+    />
+    <FilePickerModal
+      v-if="showAssociatedFilePicker"
+      :initial-path="project?.path"
+      :accept="['.json']"
+      :single-select="true"
+      @files-selected="handleAssociatedFileSelected"
+      @cancel="showAssociatedFilePicker = false"
     />
   </div>
 </template>
@@ -808,14 +919,19 @@ const formatScore = (score: number | undefined) => {
 
 .video-item {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1.25rem;
+  flex-direction: column;
   border: 1px solid #e0e0e0;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
   background-color: white;
+}
+
+.video-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem;
 }
 
 .video-item:hover {
@@ -1121,5 +1237,59 @@ const formatScore = (score: number | undefined) => {
 
 .detector-radio input[type="radio"]:disabled {
   cursor: not-allowed;
+}
+
+/* Associated Videos */
+.associated-video-expanded {
+  padding: 8px 16px 8px 40px;
+  background: #f5f5f5;
+  border-top: 1px solid #e0e0e0;
+}
+
+.associated-link {
+  color: #0366d6;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.associated-link:hover {
+  text-decoration: underline;
+}
+
+.expand-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: #666;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.expand-toggle:hover {
+  color: #333;
+}
+
+.co-segment-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.threshold-label {
+  font-size: 0.85em;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.threshold-input {
+  width: 60px;
+  padding: 2px 4px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 0.85rem;
 }
 </style>
