@@ -830,6 +830,87 @@ class SAM2StreamingSegmentor:
         frame = frames[frame_idx]
         return self._propagate_single_frame(video_id, frame_idx, frame)
 
+    def propagate_with_box(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frame: np.ndarray,
+        box_prompt: tuple,
+        add_as_conditioning: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Propagate with a box prompt, controlling conditioning storage.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Frame index to propagate to.
+            frame: BGR uint8 frame (H, W, 3).
+            box_prompt: Bounding box as (x1, y1, x2, y2).
+            add_as_conditioning: If True, store in cond_frame_outputs (permanent).
+                If False, box guides prediction but result goes to non_cond_frame_outputs.
+
+        Returns:
+            Tuple of (mask, logits, score).
+        """
+        return self._propagate_single_frame(
+            video_id, frame_idx, frame,
+            box_prompt=box_prompt,
+            store_as_cond=add_as_conditioning,
+        )
+
+    def propagate_frame(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frame: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Propagate to a single frame without prompts, no memory rebuild.
+
+        Unlike propagate(), this does NOT call _set_memory_frame(). Use this
+        for sequential forward processing where the sliding window is already
+        correct from the previous frame. This matches how propagate_with_detector
+        handles coasting frames internally.
+        """
+        return self._propagate_single_frame(video_id, frame_idx, frame)
+
+    def backtrack_reprop(
+        self,
+        video_id: str,
+        frames,
+        final_masks,
+        start_idx: int,
+        end_idx: int,
+        scores=None,
+    ) -> None:
+        """Re-propagate gap frames after a new anchor.
+
+        Public wrapper around _backtrack_reprop. Only updates final_masks.
+        """
+        self._backtrack_reprop(
+            video_id, frames, final_masks, start_idx, end_idx, scores=scores,
+        )
+
+    def set_memory_frame(
+        self,
+        video_id: str,
+        frame_idx: int,
+        frames,
+        masks,
+    ) -> None:
+        """Rebuild non-cond memory window before propagating to frame_idx.
+
+        Public wrapper around _set_memory_frame.
+        """
+        self._set_memory_frame(video_id, frame_idx, frames, masks)
+
+    def evict_conditioning_frame(self, video_id: str, frame_idx: int) -> None:
+        """Remove a frame from SAM2's conditioning memory.
+
+        Used by command handler's LRU eviction policy for long videos.
+        """
+        session = self.sessions[video_id]
+        session["cond_frame_indices"].discard(frame_idx)
+        session["output_dict"]["cond_frame_outputs"].pop(frame_idx, None)
+
     def propagate_sequential(
         self,
         video_id: str,
@@ -1149,6 +1230,7 @@ class SAM2StreamingSegmentor:
         frame: np.ndarray,
         mask_prompt: np.ndarray | None = None,
         box_prompt: tuple[float, float, float, float] | None = None,
+        store_as_cond: bool | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Propagate to a single frame, optionally with a mask or box prompt.
 
@@ -1259,13 +1341,22 @@ class SAM2StreamingSegmentor:
         # Get logits
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
 
-        # Store in output_dict (memory for future frames)
-        if is_prompted:
+        # Determine storage destination
+        # store_as_cond overrides default is_prompted logic when explicitly set
+        should_store_as_cond = is_prompted if store_as_cond is None else store_as_cond
+
+        if should_store_as_cond:
             output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+            # Only update cond_frame_indices when store_as_cond was explicitly requested.
+            # When store_as_cond is None (default), preserve existing behavior where
+            # cond_frame_indices is managed by add_point_prompt, not here.
+            if store_as_cond is not None:
+                session["cond_frame_indices"].add(frame_idx)
         else:
             output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
 
-            # Memory eviction: keep MEM_WINDOW + 1 frames (current + MEM_WINDOW previous)
+            # CRITICAL: Preserve the sliding window eviction from the original code.
+            # Without this, non_cond_frame_outputs grows unboundedly for long videos.
             eviction_threshold = frame_idx - (self.MEM_WINDOW + 1)
             keys_to_evict = [
                 k for k in output_dict["non_cond_frame_outputs"]
