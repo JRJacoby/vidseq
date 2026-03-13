@@ -25,7 +25,7 @@ A new propagation workflow segments the depth video by:
 
 The existing `get_all_videos()` adds a filter for `WHERE is_associated = False`. All whole-project operations (pipeline list, ARHMM, batch segmentation, etc.) should only operate on main videos. Associated videos are only accessed individually through their main video's relationship.
 
-**VideoResponse schema** (`vidseq/schemas/video.py`) adds `is_associated: bool` and `associated_with_id: int | None` so the frontend can render associations.
+**VideoResponse schema** (`vidseq/schemas/video.py`) adds `is_associated: bool` and `associated_with_id: int | None` so the frontend can render associations. Note: `num_frames`, `height`, `width` are NOT needed in VideoResponse — the frontend derives frame information from the `<video>` element's duration and fps, not from the API. This applies to the associated video detail screen as well.
 
 **Fetching associated videos:** The existing `GET /projects/{project_id}/videos` endpoint does not return associated videos (filtered out by `get_all_videos`). A new `GET /projects/{project_id}/videos/{video_id}/associated` endpoint returns the associated video (or 404 if none). The frontend fetches this for each main video to know whether to show the expand toggle.
 
@@ -51,6 +51,7 @@ The JSON file format is a flat object mapping main video filepaths to associated
 - Every key matches an existing video's `path` in the project
 - Every value is a valid, readable video file on disk
 - No duplicate associations (main video doesn't already have an associated video)
+- No duplicate associated paths (same depth video path cannot be mapped to multiple main videos)
 - Associated video has the same `num_frames` as the main video (required for frame-aligned propagation)
 - On any error → 400 with specific message (e.g., "Main video not found: /path/to/ir.avi")
 
@@ -69,9 +70,9 @@ On success, for each pair: extract video metadata from the associated file, crea
 **"Co-Segment" batch action:**
 - New sidebar button: "Co-Segment N Videos"
 - Active only when selected main videos have associated videos
-- Confidence threshold input (default 0.9) next to the button, like the alignment epochs input
+- Confidence threshold input (default 0.9, range 0.0–1.0, step 0.05) next to the button, like the alignment epochs input. 0.0 means always prompt (every frame with a main bbox), 1.0 means never prompt (SAM2 coasts entirely).
 - Triggers `POST /projects/{project_id}/videos/associated/segmentation` with `{video_ids: [...], confidence_threshold: 0.9}`
-- Fire-and-forget with progress polling, similar to "Segment N Videos"
+- Synchronous-blocking like existing `segment_all_videos` — the endpoint blocks until all videos are processed. No job queue or polling mechanism.
 
 **"Add Associated Videos" button:**
 - New sidebar button, opens `FilePickerModal` with `accept: ['.json']` and `single-select: true`
@@ -92,42 +93,46 @@ On success, for each pair: extract video metadata from the associated file, crea
 
 No segmentation tools, no point prompts, no training data marking. This is a read-only review screen.
 
+**Data flow:** The route uses the main video's ID (`/project/:id/video/:videoId/associated`). On mount, the component calls `GET /videos/{mainVideoId}/associated` to fetch the associated video's data (including its own `id`). It then uses the associated video's ID for all subsequent API calls — video streaming (`GET /videos/{assocId}/stream`), mask loading, score fetching, etc.
+
 The associated video's scores (SAM2 predicted IoU from the depth propagation) are displayed in the data track timeline, same as the main video detail screen.
 
 ### Inference Workflow — Associated Video Propagation
 
-**New method: `propagate_with_associated()` in StreamingSegmentor**
+**No new method on StreamingSegmentor.** The orchestration logic (threshold checking, deciding when to prompt) lives entirely in the command handler (`handle_propagate_with_associated` in `segmentation_commands.py`), calling existing segmentor primitives: `add_box_prompt()` for initialization and re-conditioning, `_propagate_single_frame()` for forward propagation, and `_backtrack_reprop()` for gap re-propagation. This keeps the segmentor storage-agnostic — it has no knowledge of "main video scores" or "associated video" concepts.
 
-Follows the same structural pattern as `propagate_with_detector()` but uses pre-computed data from the main video as the prompt source rather than running live detection.
+**Inputs to the command handler:**
+- `video_id` (associated/depth video), `main_video_id`, `project_path`, `confidence_threshold`
+- `main_video_scores` dict (`{frame_idx: float}` — `FrameData.score` field, which is SAM2 predicted IoU, loaded from DB by FastAPI side and passed via TCP params). For very long videos (~100K frames), this dict is 1-2MB of JSON in the TCP message — acceptable but worth noting.
+- The depth video's H5 files are accessed through the existing `_video_resources[video_id]` pattern (session must already be initialized)
+- The main video's tracker_masks are opened directly via `tracker_masks(project_path, main_video_id, "r")` as a context manager for the duration of the propagation — this is a new pattern for command handlers, since normally they only access files for the video they have a session for, but it's straightforward since we only need read access to the main video's masks
+- Bboxes computed on-the-fly by the command handler via `array_storage.compute_bbox_from_mask()` — trivial computation (find min/max nonzero pixels), avoids adding storage to the main segmentation workflow
+- Output targets: `tracker_masks` and `final_masks`. Logits are NOT written — they are only persisted during interactive operations (point prompts, refine_mask), not during batch propagation. This matches the existing `propagate_with_detector` pattern.
 
-**Inputs:**
-- Depth video frames (via `VideoFrameSource`)
-- Main video's scores dict (`{frame_idx: float}` — predicted IoU per frame, loaded from DB by FastAPI side and passed via TCP params)
-- Main video's tracker masks H5 dataset handle (opened via `array_storage.tracker_masks()`, bboxes computed on-the-fly via `_bbox_from_mask()`)
-- Confidence threshold (default 0.9)
-- Output targets: `tracker_masks`, `tracker_logits`, and `final_masks` (like `propagate_with_detector`)
-
-**Algorithm:**
+**Algorithm (implemented in the command handler):**
 1. Scan forward to find the first frame where the main video's score > threshold. Frames before this point are skipped (no masks produced) — reverse-temporal propagation is not implemented. This matches `propagate_with_detector` behavior.
-2. Initialize SAM2 on the depth video at that frame using the main video's bbox as a box prompt
+2. Initialize SAM2 on the depth video at that frame using the main video's bbox as a box prompt (via `add_box_prompt()`)
 3. Propagate forward frame by frame on the depth video:
    - Look up the main video's score for the current frame
    - If main score >= threshold → provide main video's bbox as a box prompt (re-condition SAM2)
-   - If main score < threshold → propagate without a prompt (SAM2 coasts on depth)
+   - If main score < threshold → propagate without a prompt via `_propagate_single_frame()` (SAM2 coasts on depth)
    - Track `last_anchor_frame` — the last frame where a bbox prompt was provided
    - Write masks to both `tracker_masks` (original predictions) and `final_masks` (corrected predictions)
 4. When main score transitions from < threshold back to >= threshold → new anchor. Call `_backtrack_reprop()` to re-propagate the gap frames (from `last_anchor_frame + 1` to `current_frame - 1`), then continue forward. `_backtrack_reprop` only updates `final_masks` — `tracker_masks` retains the original forward-pass predictions so the user can compare before/after correction.
-5. Store results: depth masks to `tracker_masks.h5` and `final_masks.h5` (as described above), `tracker_logits.h5`, depth SAM2 scores to DB via `frame_data_service`
+5. Store results: depth masks to `tracker_masks.h5` and `final_masks.h5` (as described above), depth SAM2 scores to DB via `frame_data_service`
 6. Update `has_tracker_mask` and `has_final_mask` flags on the associated video's FrameData rows
 7. Set `segmentation_status = "segmented"` on the associated Video row
-
-**Why compute bboxes on-the-fly from masks (not pre-stored):**
-The bbox computation from a mask is trivial (`_bbox_from_mask()` — find min/max nonzero pixels). Computing on-the-fly avoids adding storage to the main segmentation workflow. The main video's H5 file is already on disk.
 
 **Service-layer / worker separation:**
 The FastAPI service layer loads the main video's scores from DB and passes them as a dict in the TCP command params. The worker never touches the database. The worker reads the main video's H5 masks directly (H5 files are accessible from any process). Only the associated (depth) video needs a SAM2 session — the main video's data is read from storage only.
 
-**TCP command:** `handle_propagate_with_associated` in `segmentation_commands.py`. Receives `video_id` (associated/depth), `main_video_id`, `main_video_scores` (dict), `project_path`, and `confidence_threshold`. Opens depth video resources and main video's H5 masks, then drives the segmentor.
+**Edge case — unsegmented main video:** If the main video's tracker_masks are all zeros (video added but not segmented), no frames will pass the confidence threshold. The handler should detect this early (check that at least one frame in `main_video_scores` exceeds the threshold) and raise a clear error: "Main video has no segmentation data above confidence threshold."
+
+**SAM2 session lifecycle:** The service layer (in `segmentation_service.py`) manages init_session → propagate_with_associated → close_session per depth video, same as `segment_all_videos` does for normal propagation. The handler assumes an existing session for the depth video.
+
+**delete_frame_data / reset_video on associated videos:** These functions open detector_masks.h5, which doesn't exist for associated videos. This is not a concern because no code path invokes them on associated videos: the associated video detail screen is read-only (no reset/delete buttons), and main video deletion cascades via `shutil.rmtree` on the entire `array_data/` directory. Auditing all Video queries for associated-safety is out of scope — operations by video ID work correctly on associated videos if ever invoked directly.
+
+**Gap frame behavior during backtrack:** During the forward pass, frames where SAM2 "coasts" (no bbox prompt) get masks written to both tracker_masks and final_masks. When `_backtrack_reprop` runs after a confidence recovery, it re-propagates the gap frames with the new anchor context and overwrites only final_masks. The coasting masks in tracker_masks are preserved as-is. The existing coasting masks in final_masks serve as context for `_set_memory_frame` during re-propagation — they are not zeroed before backtracking. This matches the existing `propagate_with_detector` behavior.
 
 **Progress reporting:** Same pattern as propagate-with-detector — periodic callbacks with frame index, streamed to frontend.
 
@@ -138,8 +143,8 @@ The FastAPI service layer loads the main video's scores from DB and passes them 
 - Takes a project directory path as CLI argument
 - Connects directly to `<project_dir>/vidseq.db` with plain `sqlite3` (no SQLAlchemy, no app startup)
 - Checks if columns already exist via `PRAGMA table_info(videos)` (idempotent)
-- Runs `ALTER TABLE videos ADD COLUMN is_associated BOOLEAN DEFAULT 0`
-- Runs `ALTER TABLE videos ADD COLUMN associated_with_id INTEGER`
+- Runs `ALTER TABLE videos ADD COLUMN is_associated INTEGER NOT NULL DEFAULT 0` (SQLite stores BOOLEAN as INTEGER; matches SQLAlchemy `Mapped[bool]` with `default=False`)
+- Runs `ALTER TABLE videos ADD COLUMN associated_with_id INTEGER DEFAULT NULL` (matches SQLAlchemy `Mapped[int | None]` with `default=None`)
 - Prints what it did, exits
 
 Usage: `uv run python scripts/migrate_associated_videos.py /path/to/project`
@@ -153,9 +158,8 @@ Backend:
 - `vidseq/schemas/video.py` — add `is_associated`, `associated_with_id` to VideoResponse
 - `vidseq/services/video_service.py` — filter `get_all_videos()`, associated video ingestion, cascade delete
 - `vidseq/api/routes/videos.py` — new `POST /videos/associated`, `GET /videos/{id}/associated` endpoints
-- `vidseq/services/segmentation_model/streaming_segmentor.py` — new `propagate_with_associated()` method
-- `vidseq/services/segmentation_commands.py` — new `handle_propagate_with_associated` TCP handler
-- `vidseq/services/segmentation_service.py` — orchestrate batch co-segmentation
+- `vidseq/services/segmentation_commands.py` — new `handle_propagate_with_associated` TCP handler (orchestrates existing segmentor primitives; no changes to streaming_segmentor.py)
+- `vidseq/services/segmentation_service.py` — orchestrate batch co-segmentation (alongside existing `segment_all_videos`)
 - `vidseq/services/segmentation_tcp_client.py` — new client method for associated propagation
 - `vidseq/api/routes/segmentation/` — new `POST /videos/associated/segmentation` endpoint
 
