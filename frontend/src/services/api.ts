@@ -194,8 +194,15 @@ export interface DirectoryEntry {
     isDirectory: boolean
 }
 
-export async function getDirectoryListing(path: string): Promise<DirectoryEntry[]> {
-    const response = await fetch(`${API_BASE}/filesystem/list?path=${encodeURIComponent(path)}`)
+export async function getDirectoryListing(
+    path: string,
+    accept?: string[],
+): Promise<DirectoryEntry[]> {
+    let url = `${API_BASE}/filesystem/list?path=${encodeURIComponent(path)}`
+    if (accept && accept.length > 0) {
+        url += `&accept=${encodeURIComponent(accept.join(','))}`
+    }
+    const response = await fetch(url)
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to fetch directory listing'))
     }

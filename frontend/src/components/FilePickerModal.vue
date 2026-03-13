@@ -4,6 +4,8 @@ import { getDirectoryListing, type DirectoryEntry } from '@/services/api'
 
 const props = defineProps<{
   initialPath?: string
+  accept?: string[]
+  singleSelect?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +22,7 @@ const isLoading = ref(false)
 const loadDirectory = async (path: string) => {
   isLoading.value = true
   try {
-    entries.value = await getDirectoryListing(path)
+    entries.value = await getDirectoryListing(path, props.accept)
     currentPath.value = path
     pathInput.value = path
   } catch (error) {
@@ -56,11 +58,15 @@ const canGoUp = () => {
 }
 
 const handleEntrySelect = (path: string) => {
-  const index = selectedPaths.value.indexOf(path)
-  if (index === -1) {
-    selectedPaths.value.push(path)
+  if (props.singleSelect) {
+    selectedPaths.value = [path]
   } else {
-    selectedPaths.value.splice(index, 1)
+    const index = selectedPaths.value.indexOf(path)
+    if (index === -1) {
+      selectedPaths.value.push(path)
+    } else {
+      selectedPaths.value.splice(index, 1)
+    }
   }
 }
 
