@@ -9,6 +9,13 @@ class VideoSelectionRequest(BaseModel):
     video_ids: list[int]
 
 
+class CoSegmentationRequest(BaseModel):
+    """Request body for co-segmentation of associated videos."""
+
+    video_ids: list[int]
+    confidence_threshold: float = 0.9
+
+
 class AlignmentTrainingRequest(BaseModel):
     """Request body for alignment training."""
 

@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
-from vidseq.api.schemas import VideoSelectionRequest
+from vidseq.api.schemas import CoSegmentationRequest, VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.services import segmentation_service, segmentation_tcp_client
 
@@ -34,6 +34,31 @@ async def create_videos_segmentation(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"job_ids": job_ids}
+
+
+@router.post("/projects/{project_id}/videos/associated/segmentation")
+async def co_segment_associated_videos(
+    project_id: int,
+    request: CoSegmentationRequest,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Start co-segmentation for associated videos of selected main videos."""
+    if not request.video_ids:
+        raise HTTPException(status_code=400, detail="No video IDs provided")
+
+    try:
+        await segmentation_service.co_segment_videos(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
+            confidence_threshold=request.confidence_threshold,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"status": "ok"}
 
 
 @router.get("/segmentation/status")
