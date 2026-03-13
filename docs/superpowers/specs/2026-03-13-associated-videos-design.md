@@ -108,7 +108,7 @@ Follows the same structural pattern as `propagate_with_detector()` but uses pre-
 - Output targets: `tracker_masks`, `tracker_logits`, and `final_masks` (like `propagate_with_detector`)
 
 **Algorithm:**
-1. Scan forward to find the first frame where the main video's score > threshold
+1. Scan forward to find the first frame where the main video's score > threshold. Frames before this point are skipped (no masks produced) — reverse-temporal propagation is not implemented. This matches `propagate_with_detector` behavior.
 2. Initialize SAM2 on the depth video at that frame using the main video's bbox as a box prompt
 3. Propagate forward frame by frame on the depth video:
    - Look up the main video's score for the current frame
