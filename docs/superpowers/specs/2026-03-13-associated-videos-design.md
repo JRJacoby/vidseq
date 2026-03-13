@@ -27,7 +27,7 @@ The existing `get_all_videos()` adds a filter for `WHERE is_associated = False`.
 
 **VideoResponse schema** (`vidseq/schemas/video.py`) adds `is_associated: bool` and `associated_with_id: int | None` so the frontend can render associations.
 
-**Fetching associated videos:** The existing `GET /projects/{project_id}/videos` endpoint (which uses `get_main_videos` for the pipeline) does not return associated videos. A new `GET /projects/{project_id}/videos/{video_id}/associated` endpoint returns the associated video (or 404 if none). The frontend fetches this for each main video to know whether to show the expand toggle.
+**Fetching associated videos:** The existing `GET /projects/{project_id}/videos` endpoint does not return associated videos (filtered out by `get_all_videos`). A new `GET /projects/{project_id}/videos/{video_id}/associated` endpoint returns the associated video (or 404 if none). The frontend fetches this for each main video to know whether to show the expand toggle.
 
 Associated videos get their own `array_data/{video_id}/` directory with the standard H5 files (tracker_masks, tracker_logits, detector_masks, final_masks), created at ingestion time just like any other video.
 
