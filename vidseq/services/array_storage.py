@@ -256,15 +256,16 @@ def create_video_segmentation_arrays(
     height: int,
     width: int,
     logits_size: int = 256,
+    is_associated: bool = False,
 ) -> None:
     """Create all segmentation arrays for a video upfront.
 
     Creates tracker, detector, and final mask arrays with pre-allocated datasets.
     Arrays are stored in array_data/{video_id}/ directory:
-      - tracker_masks.h5
-      - tracker_logits.h5
-      - detector_masks.h5
-      - final_masks.h5
+      - tracker_masks.h5 (always)
+      - tracker_logits.h5 (skipped for associated videos)
+      - detector_masks.h5 (skipped for associated videos)
+      - final_masks.h5 (always)
 
     Args:
         project_path: Path to the project folder
@@ -273,12 +274,13 @@ def create_video_segmentation_arrays(
         height: Video height in pixels
         width: Video width in pixels
         logits_size: Size of low-res logits (SAM2=256)
+        is_associated: If True, skip tracker_logits and detector_masks creation
     """
     # Create video directory under array_data
     video_dir = project_path / "array_data" / str(video_id)
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Tracker masks: tracker_masks.h5
+    # 1. Tracker masks: tracker_masks.h5 (always created)
     tracker_masks_path = _construct_h5_path(project_path, video_id, "tracker_masks.h5")
     with open_h5_with_lock(tracker_masks_path, mode="w") as f:
         f.create_dataset(
@@ -289,30 +291,31 @@ def create_video_segmentation_arrays(
             fillvalue=0,
         )
 
-    # 2. Tracker logits: tracker_logits.h5
-    tracker_logits_path = _construct_h5_path(project_path, video_id, "tracker_logits.h5")
-    with open_h5_with_lock(tracker_logits_path, mode="w") as f:
-        f.create_dataset(
-            "data",
-            shape=(num_frames, logits_size, logits_size),
-            dtype=np.float32,
-            chunks=(1, logits_size, logits_size),
-            fillvalue=0.0,
-        )
+    if not is_associated:
+        # 2. Tracker logits: tracker_logits.h5
+        tracker_logits_path = _construct_h5_path(project_path, video_id, "tracker_logits.h5")
+        with open_h5_with_lock(tracker_logits_path, mode="w") as f:
+            f.create_dataset(
+                "data",
+                shape=(num_frames, logits_size, logits_size),
+                dtype=np.float32,
+                chunks=(1, logits_size, logits_size),
+                fillvalue=0.0,
+            )
 
-    # 3. Detector: detector_masks.h5 (compressed)
-    detector_masks_path = _construct_h5_path(project_path, video_id, "detector_masks.h5")
-    with open_h5_with_lock(detector_masks_path, mode="w") as f:
-        f.create_dataset(
-            "data",
-            shape=(num_frames, height, width),
-            dtype=np.uint8,
-            chunks=(1, height, width),
-            compression="gzip",
-            fillvalue=0,
-        )
+        # 3. Detector: detector_masks.h5 (compressed)
+        detector_masks_path = _construct_h5_path(project_path, video_id, "detector_masks.h5")
+        with open_h5_with_lock(detector_masks_path, mode="w") as f:
+            f.create_dataset(
+                "data",
+                shape=(num_frames, height, width),
+                dtype=np.uint8,
+                chunks=(1, height, width),
+                compression="gzip",
+                fillvalue=0,
+            )
 
-    # 4. Final: final_masks.h5
+    # 4. Final: final_masks.h5 (always created)
     final_masks_path = _construct_h5_path(project_path, video_id, "final_masks.h5")
     with open_h5_with_lock(final_masks_path, mode="w") as f:
         f.create_dataset(
@@ -369,6 +372,7 @@ def reset_video_segmentation_arrays(
     height: int,
     width: int,
     logits_size: int = 256,
+    is_associated: bool = False,
 ) -> None:
     """Reset all segmentation arrays by deleting and recreating with zeros.
 
@@ -382,9 +386,13 @@ def reset_video_segmentation_arrays(
         height: Video height in pixels
         width: Video width in pixels
         logits_size: Size of low-res logits (SAM2=256)
+        is_associated: If True, skip tracker_logits and detector_masks creation
     """
     delete_video_segmentation_arrays(project_path, video_id)
-    create_video_segmentation_arrays(project_path, video_id, num_frames, height, width, logits_size)
+    create_video_segmentation_arrays(
+        project_path, video_id, num_frames, height, width, logits_size,
+        is_associated=is_associated,
+    )
 
 
 # ----- Pipeline H5 file creation -----
