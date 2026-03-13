@@ -29,7 +29,7 @@ The existing `get_all_videos()` adds a filter for `WHERE is_associated = False`.
 
 **Fetching associated videos:** The existing `GET /projects/{project_id}/videos` endpoint does not return associated videos (filtered out by `get_all_videos`). A new `GET /projects/{project_id}/videos/{video_id}/associated` endpoint returns the associated video (or 404 if none). The frontend fetches this for each main video to know whether to show the expand toggle.
 
-Associated videos get their own `array_data/{video_id}/` directory with the standard H5 files (tracker_masks, tracker_logits, detector_masks, final_masks), created at ingestion time just like any other video.
+Associated videos get their own `array_data/{video_id}/` directory with H5 files created at ingestion time. Only tracker_masks, tracker_logits, and final_masks are created — no detector_masks, since there is no detector workflow for associated videos. The `create_video_segmentation_arrays()` function gets a `skip_detector: bool = False` param; the associated video ingestion path passes `skip_detector=True`. The absence of detector_masks.h5 acts as a safety net: any accidental detector operation on an associated video crashes immediately rather than silently succeeding with empty data.
 
 **Cascade on deletion:** When a main video is deleted via `delete_videos()`, its associated video is also deleted (DB row, H5 directory, all data). The delete function queries for associated videos before deleting and includes them in the batch.
 
