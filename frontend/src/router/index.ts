@@ -5,6 +5,7 @@ import VideoPipeline from '../components/VideoPipeline.vue'
 import VideoDetail from '../components/VideoDetail.vue'
 import CroppedVideoDetail from '../components/CroppedVideoDetail.vue'
 import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
+import AssociatedVideoDetail from '../components/AssociatedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
 import PCAView from '../components/PCAView.vue'
 import Alignment from '../components/Alignment.vue'
@@ -47,6 +48,11 @@ const router = createRouter({
           path: 'video/:videoId/aligned',
           name: 'alignedVideo',
           component: AlignedVideoDetail
+        },
+        {
+          path: 'video/:videoId/associated',
+          name: 'associatedVideo',
+          component: AssociatedVideoDetail
         },
         {
           path: 'pca',
