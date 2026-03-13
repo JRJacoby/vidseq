@@ -30,6 +30,7 @@ from vidseq.services.segmentation_commands import (
     handle_init_session,
     handle_load_model,
     handle_propagate,
+    handle_propagate_with_associated,
     handle_propagate_with_detector,
     handle_refine_mask,
     handle_reset_frame,
@@ -345,6 +346,15 @@ class SegmentationTCPServer:
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
                 result = handle_segment_videos_batch(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
+
+            elif cmd_type == "propagate_with_associated":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
+                result = handle_propagate_with_associated(
                     cmd,
                     self._segmentor,
                     response_callback,

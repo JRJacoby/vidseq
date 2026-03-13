@@ -772,6 +772,34 @@ class SegmentationService:
         scores = result.get("scores", [])
         return frame_indices, scores
 
+    def propagate_with_associated(
+        self,
+        video_id: int,
+        main_video_id: int,
+        project_path: Path,
+        num_frames: int,
+        confidence_threshold: float,
+        main_height: int,
+        main_width: int,
+        main_video_scores: dict[int, float],
+        cond_frame_interval: int = 50,
+        max_cond_frames: int = 32,
+    ) -> dict:
+        """Run associated video propagation via TCP."""
+        return self._send_streaming({
+            "type": "propagate_with_associated",
+            "video_id": video_id,
+            "main_video_id": main_video_id,
+            "project_path": str(project_path),
+            "num_frames": num_frames,
+            "confidence_threshold": confidence_threshold,
+            "main_height": main_height,
+            "main_width": main_width,
+            "main_video_scores": main_video_scores,
+            "cond_frame_interval": cond_frame_interval,
+            "max_cond_frames": max_cond_frames,
+        }, timeout=3600.0)  # 1 hour for long videos
+
     async def segment_all_videos(
         self,
         project_id: int,
@@ -1061,4 +1089,31 @@ async def segment_all_videos(
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
         project_id, project_path, videos, cond_frames_by_video, training_frames_by_video
+    )
+
+
+def propagate_with_associated(
+    video_id: int,
+    main_video_id: int,
+    project_path: Path,
+    num_frames: int,
+    confidence_threshold: float,
+    main_height: int,
+    main_width: int,
+    main_video_scores: dict[int, float],
+    cond_frame_interval: int = 50,
+    max_cond_frames: int = 32,
+) -> dict:
+    """Module-level wrapper for associated video propagation."""
+    return SegmentationService.get_instance().propagate_with_associated(
+        video_id=video_id,
+        main_video_id=main_video_id,
+        project_path=project_path,
+        num_frames=num_frames,
+        confidence_threshold=confidence_threshold,
+        main_height=main_height,
+        main_width=main_width,
+        main_video_scores=main_video_scores,
+        cond_frame_interval=cond_frame_interval,
+        max_cond_frames=max_cond_frames,
     )
