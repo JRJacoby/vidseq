@@ -103,9 +103,9 @@ Follows the same structural pattern as `propagate_with_detector()` but uses pre-
 **Inputs:**
 - Depth video frames (via `VideoFrameSource`)
 - Main video's scores dict (`{frame_idx: float}` — predicted IoU per frame, loaded from DB by FastAPI side and passed via TCP params)
-- Main video's tracker masks in H5 (bboxes computed on-the-fly via `_bbox_from_mask()`)
+- Main video's tracker masks H5 dataset handle (opened via `array_storage.tracker_masks()`, bboxes computed on-the-fly via `_bbox_from_mask()`)
 - Confidence threshold (default 0.9)
-- Output targets: both `tracker_masks` and `final_masks` (like `propagate_with_detector`)
+- Output targets: `tracker_masks`, `tracker_logits`, and `final_masks` (like `propagate_with_detector`)
 
 **Algorithm:**
 1. Scan forward to find the first frame where the main video's score > threshold
