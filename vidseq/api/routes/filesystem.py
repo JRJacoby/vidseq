@@ -5,7 +5,10 @@ from vidseq.schemas.filesystem import DirectoryEntry
 router = APIRouter()
 
 @router.get("/filesystem/list", response_model=list[DirectoryEntry])
-async def list_directory(path: str = Query(..., description="Directory path to list")):
+async def list_directory(
+    path: str = Query(..., description="Directory path to list"),
+    accept: str | None = Query(None, description="Comma-separated file extensions to filter (e.g., '.json')"),
+):
     dir_path = Path(path)
     
     if not dir_path.exists():
@@ -26,6 +29,21 @@ async def list_directory(path: str = Query(..., description="Directory path to l
         raise HTTPException(status_code=403, detail=f"Permission denied accessing directory: {path}")
     
     entries.sort(key=lambda x: (not x.is_directory, x.name.lower()))
-    
+
+    if accept:
+        # Parse comma-separated extensions, normalize to lowercase with dot prefix
+        accepted_exts = set()
+        for ext in accept.split(","):
+            ext = ext.strip().lower()
+            if not ext.startswith("."):
+                ext = "." + ext
+            accepted_exts.add(ext)
+
+        # Filter: keep directories (for navigation) + files matching extensions
+        entries = [
+            e for e in entries
+            if e.is_directory or Path(e.name).suffix.lower() in accepted_exts
+        ]
+
     return entries
 
