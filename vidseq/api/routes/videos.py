@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
@@ -18,7 +19,23 @@ router = APIRouter()
 async def get_videos(
     session: AsyncSession = Depends(get_project_session),
 ):
-    return await video_service.get_all_videos(session)
+    videos = await video_service.get_all_videos(session)
+
+    # Build associated_video_id lookup in a single query (avoids N+1)
+    assoc_result = await session.execute(
+        select(Video.associated_with_id, Video.id)
+        .where(Video.is_associated == True)
+    )
+    assoc_lookup = {row[0]: row[1] for row in assoc_result.all()}
+
+    # Enrich VideoResponse with the reverse-lookup field
+    responses = []
+    for video in videos:
+        resp = VideoResponse.model_validate(video)
+        resp.associated_video_id = assoc_lookup.get(video.id)
+        responses.append(resp)
+
+    return responses
 
 
 @router.post("/projects/{project_id}/videos", response_model=list[VideoResponse], status_code=201)

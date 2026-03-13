@@ -179,9 +179,11 @@ async def get_video_by_id(session: AsyncSession, video_id: int) -> Video:
 
 
 async def get_all_videos(session: AsyncSession) -> list[Video]:
-    """Get all videos in the project."""
+    """Get all main videos (excludes associated videos)."""
     result = await session.execute(
-        select(Video).order_by(Video.id)
+        select(Video)
+        .where(Video.is_associated == False)
+        .order_by(Video.id)
     )
     return list(result.scalars().all())
 
