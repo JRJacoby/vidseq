@@ -64,6 +64,10 @@ export interface Video {
     min_confidence?: number
     p50_confidence?: number
     p95_confidence?: number
+    // Associated video fields
+    is_associated: boolean
+    associated_with_id: number | null
+    associated_video_id: number | null
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {
@@ -130,6 +134,58 @@ export async function getFrameImage(
         throw new Error(await getErrorMessage(response, 'Failed to fetch frame image'))
     }
     return response.blob()
+}
+
+export async function getAssociatedVideo(
+    projectId: number,
+    videoId: number,
+): Promise<Video> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/associated`,
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get associated video'))
+    }
+    return response.json()
+}
+
+export async function addAssociatedVideos(
+    projectId: number,
+    jsonPath: string,
+): Promise<Video[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/associated`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ json_path: jsonPath }),
+        },
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to add associated videos'))
+    }
+    return response.json()
+}
+
+export async function coSegmentVideos(
+    projectId: number,
+    videoIds: number[],
+    confidenceThreshold: number = 0.9,
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/associated/segmentation`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                video_ids: videoIds,
+                confidence_threshold: confidenceThreshold,
+            }),
+        },
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to co-segment videos'))
+    }
 }
 
 export interface DirectoryEntry {
