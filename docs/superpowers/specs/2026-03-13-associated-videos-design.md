@@ -115,9 +115,9 @@ Follows the same structural pattern as `propagate_with_detector()` but uses pre-
    - If main score >= threshold → provide main video's bbox as a box prompt (re-condition SAM2)
    - If main score < threshold → propagate without a prompt (SAM2 coasts on depth)
    - Track `last_anchor_frame` — the last frame where a bbox prompt was provided
-   - Write masks to both `tracker_masks` and `final_masks`
-4. When main score transitions from < threshold back to >= threshold → new anchor. Call `_backtrack_reprop()` to re-propagate the gap frames (from `last_anchor_frame + 1` to `current_frame - 1`), then continue forward
-5. Store results: depth masks to `tracker_masks.h5` and `final_masks.h5`, depth SAM2 scores to DB via `frame_data_service`
+   - Write masks to both `tracker_masks` (original predictions) and `final_masks` (corrected predictions)
+4. When main score transitions from < threshold back to >= threshold → new anchor. Call `_backtrack_reprop()` to re-propagate the gap frames (from `last_anchor_frame + 1` to `current_frame - 1`), then continue forward. `_backtrack_reprop` only updates `final_masks` — `tracker_masks` retains the original forward-pass predictions so the user can compare before/after correction.
+5. Store results: depth masks to `tracker_masks.h5` and `final_masks.h5` (as described above), `tracker_logits.h5`, depth SAM2 scores to DB via `frame_data_service`
 6. Update `has_tracker_mask` and `has_final_mask` flags on the associated video's FrameData rows
 7. Set `segmentation_status = "segmented"` on the associated Video row
 
