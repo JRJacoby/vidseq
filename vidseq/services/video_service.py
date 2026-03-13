@@ -429,6 +429,53 @@ async def reset_video(
         )
 
 
+async def delete_videos_segmentation(
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+    session: AsyncSession,
+) -> None:
+    """Delete all segmentation data for multiple videos.
+
+    Resets H5 files, clears DB records, closes SAM sessions,
+    and sets segmentation_status back to None.
+
+    Args:
+        project_id: ID of the project
+        project_path: Path to the project folder
+        video_ids: List of video IDs to clear
+        session: Async database session
+    """
+    videos: list[Video] = []
+    for vid in video_ids:
+        result = await session.execute(select(Video).where(Video.id == vid))
+        video = result.scalar_one_or_none()
+        if video is None:
+            raise DBRecordNotFoundError("Video", vid)
+        videos.append(video)
+
+    for video in videos:
+        segmentation_tcp_client.close_session(project_id, video.id)
+
+    for video in videos:
+        reset_video_segmentation_arrays(
+            project_path=project_path,
+            video_id=video.id,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+        )
+        await session.execute(
+            delete(ConditioningFrame).where(ConditioningFrame.video_id == video.id)
+        )
+        await session.execute(
+            delete(FrameData).where(FrameData.video_id == video.id)
+        )
+        video.segmentation_status = None
+
+    await session.commit()
+
+
 async def delete_videos(
     project_id: int,
     project_path: Path,

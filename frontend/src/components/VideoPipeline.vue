@@ -6,6 +6,7 @@ import {
   getVideos,
   addVideos,
   deleteVideos,
+  deleteVideosSegmentation,
   createVideosSegmentation,
   createVideosExtraction,
   getCroppedVideoExists,
@@ -215,6 +216,24 @@ const handleSegmentAll = async () => {
     alert(e.message || 'Failed to start segmentation')
   } finally {
     isSegmenting.value = false
+  }
+}
+
+const isDeletingSegmentations = ref(false)
+
+const handleDeleteSegmentations = async () => {
+  if (!projectStore.currentProjectId || isDeletingSegmentations.value || selectedCount.value === 0) return
+  const count = selectedCount.value
+  if (!confirm(`Delete segmentations for ${count} video(s)? This will remove all masks, conditioning frames, and frame data.`)) return
+  isDeletingSegmentations.value = true
+  try {
+    await deleteVideosSegmentation(projectStore.currentProjectId, selectedVideoIdsList.value)
+    await loadVideos()
+  } catch (e: any) {
+    console.error('Failed to delete segmentations:', e)
+    alert(e.message || 'Failed to delete segmentations')
+  } finally {
+    isDeletingSegmentations.value = false
   }
 }
 
@@ -530,6 +549,13 @@ const formatScore = (score: number | undefined) => {
           >
             <span class="button-label">{{ isSegmenting ? 'Starting...' : `Segment ${selectedCount} Videos` }}</span>
           </button>
+          <button
+            class="sidebar-button delete-button"
+            @click="handleDeleteSegmentations"
+            :disabled="isDeletingSegmentations || selectedCount === 0"
+          >
+            <span class="button-label">{{ isDeletingSegmentations ? 'Deleting...' : 'Delete Segmentations' }}</span>
+          </button>
 
           <h4 class="sidebar-section-title">Cropped Videos</h4>
           <button
@@ -649,8 +675,8 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">View Detector Training</span>
           </button>
 
-          <div v-if="isDeleting || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
-            {{ isDeleting ? 'Deleting videos...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
+          <div v-if="isDeleting || isDeletingSegmentations || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining" class="status-indicator">
+            {{ isDeleting ? 'Deleting videos...' : isDeletingSegmentations ? 'Deleting segmentations...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : 'Training detector...' }}
           </div>
         </aside>
       </div>

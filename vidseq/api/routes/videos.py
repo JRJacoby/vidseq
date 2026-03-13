@@ -176,6 +176,26 @@ async def delete_video_segmentation(
     return None
 
 
+@router.delete("/projects/{project_id}/videos/segmentation", status_code=204)
+async def delete_videos_segmentation(
+    project_id: int,
+    body: VideoSelectionRequest,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Delete all segmentation data for selected videos.
+
+    Resets masks, clears DB records, and removes segmented status.
+    """
+    await video_service.delete_videos_segmentation(
+        project_id=project_id,
+        project_path=project_path,
+        video_ids=body.video_ids,
+        session=session,
+    )
+    return None
+
+
 @router.delete("/projects/{project_id}/videos", status_code=204)
 async def delete_videos(
     project_id: int,
