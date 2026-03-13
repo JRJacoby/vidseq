@@ -1,6 +1,6 @@
 """Video model for per-project database."""
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, Float, Integer
+from sqlalchemy import String, Float, Integer, ForeignKey
 
 from vidseq.models.project_db import Base
 
@@ -20,3 +20,7 @@ class Video(Base):
     min_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     p50_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     p95_confidence: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    is_associated: Mapped[bool] = mapped_column(default=False)
+    associated_with_id: Mapped[int | None] = mapped_column(
+        ForeignKey("videos.id"), default=None
+    )
