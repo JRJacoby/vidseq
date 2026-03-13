@@ -23,9 +23,15 @@ A new propagation workflow segments the depth video by:
 - `is_associated: bool = False` — hides video from pipeline list
 - `associated_with_id: int | None = None` — FK to the main Video's ID
 
-The pipeline list query filters to `WHERE is_associated = False`. A separate query fetches the associated video for a given main video ID.
+A new `get_main_videos()` function returns only videos where `is_associated = False`. The existing `get_all_videos()` remains unchanged for callers like ARHMM that need all videos. The pipeline list uses `get_main_videos()`.
+
+**VideoResponse schema** (`vidseq/schemas/video.py`) adds `is_associated: bool` and `associated_with_id: int | None` so the frontend can render associations.
+
+**Fetching associated videos:** The existing `GET /projects/{project_id}/videos` endpoint (which uses `get_main_videos` for the pipeline) does not return associated videos. A new `GET /projects/{project_id}/videos/{video_id}/associated` endpoint returns the associated video (or 404 if none). The frontend fetches this for each main video to know whether to show the expand toggle.
 
 Associated videos get their own `array_data/{video_id}/` directory with the standard H5 files (tracker_masks, tracker_logits, detector_masks, final_masks), created at ingestion time just like any other video.
+
+**Cascade on deletion:** When a main video is deleted via `delete_videos()`, its associated video is also deleted (DB row, H5 directory, all data). The delete function queries for associated videos before deleting and includes them in the batch.
 
 ### JSON Ingestion
 
@@ -45,6 +51,7 @@ The JSON file format is a flat object mapping main video filepaths to associated
 - Every key matches an existing video's `path` in the project
 - Every value is a valid, readable video file on disk
 - No duplicate associations (main video doesn't already have an associated video)
+- Associated video has the same `num_frames` as the main video (required for frame-aligned propagation)
 - On any error → 400 with specific message (e.g., "Main video not found: /path/to/ir.avi")
 
 On success, for each pair: extract video metadata from the associated file, create a Video row with `is_associated=True` and `associated_with_id` pointing to the main video, and create H5 files.
@@ -62,7 +69,8 @@ On success, for each pair: extract video metadata from the associated file, crea
 **"Co-Segment" batch action:**
 - New sidebar button: "Co-Segment N Videos"
 - Active only when selected main videos have associated videos
-- Triggers the associated video propagation workflow for each selected video's associated video
+- Confidence threshold input (default 0.9) next to the button, like the alignment epochs input
+- Triggers `POST /projects/{project_id}/videos/associated/segmentation` with `{video_ids: [...], confidence_threshold: 0.9}`
 - Fire-and-forget with progress polling, similar to "Segment N Videos"
 
 **"Add Associated Videos" button:**
@@ -78,39 +86,48 @@ On success, for each pair: extract video metadata from the associated file, crea
 **Layout:**
 - Video player + overlay canvas + data track (scores/confidence timeline)
 - Simplified action bar with only a view mode switcher:
-  - **Main BBox** — bounding box from the main video's segmentation overlaid on the depth video
+  - **Main BBox** — bounding box from the main video's segmentation overlaid on the depth video (shows nothing on frames where main video had no mask)
   - **Tracker Mask** — the depth video's SAM2 tracking mask
   - **Final Mask** — corrected final mask
 
 No segmentation tools, no point prompts, no training data marking. This is a read-only review screen.
 
+The associated video's scores (SAM2 predicted IoU from the depth propagation) are displayed in the data track timeline, same as the main video detail screen.
+
 ### Inference Workflow — Associated Video Propagation
 
-**New method: `propagate_with_associated_video()` in StreamingSegmentor**
+**New method: `propagate_with_associated()` in StreamingSegmentor**
 
 Follows the same structural pattern as `propagate_with_detector()` but uses pre-computed data from the main video as the prompt source rather than running live detection.
 
 **Inputs:**
 - Depth video frames (via `VideoFrameSource`)
-- Main video's stored predicted IoU scores (per frame, from DB)
+- Main video's scores dict (`{frame_idx: float}` — predicted IoU per frame, loaded from DB by FastAPI side and passed via TCP params)
 - Main video's tracker masks in H5 (bboxes computed on-the-fly via `_bbox_from_mask()`)
 - Confidence threshold (default 0.9)
+- Output targets: both `tracker_masks` and `final_masks` (like `propagate_with_detector`)
 
 **Algorithm:**
-1. Scan forward to find the first frame where the main video's predicted IoU > threshold
+1. Scan forward to find the first frame where the main video's score > threshold
 2. Initialize SAM2 on the depth video at that frame using the main video's bbox as a box prompt
 3. Propagate forward frame by frame on the depth video:
    - Look up the main video's score for the current frame
-   - If main IoU >= threshold → provide main video's bbox as a box prompt (re-condition SAM2)
-   - If main IoU < threshold → propagate without a prompt (SAM2 coasts on depth)
+   - If main score >= threshold → provide main video's bbox as a box prompt (re-condition SAM2)
+   - If main score < threshold → propagate without a prompt (SAM2 coasts on depth)
    - Track `last_anchor_frame` — the last frame where a bbox prompt was provided
-4. When main IoU transitions from < threshold back to >= threshold → new anchor. Call `_backtrack_reprop()` to re-propagate the gap frames (from `last_anchor_frame + 1` to `current_frame - 1`), then continue forward
-5. Store results: depth masks to `tracker_masks.h5`, scores to DB via `frame_data_service`
+   - Write masks to both `tracker_masks` and `final_masks`
+4. When main score transitions from < threshold back to >= threshold → new anchor. Call `_backtrack_reprop()` to re-propagate the gap frames (from `last_anchor_frame + 1` to `current_frame - 1`), then continue forward
+5. Store results: depth masks to `tracker_masks.h5` and `final_masks.h5`, depth SAM2 scores to DB via `frame_data_service`
+6. Update `has_tracker_mask` and `has_final_mask` flags on the associated video's FrameData rows
+7. Set `segmentation_status = "segmented"` on the associated Video row
 
 **Why compute bboxes on-the-fly from masks (not pre-stored):**
 The bbox computation from a mask is trivial (`_bbox_from_mask()` — find min/max nonzero pixels). Computing on-the-fly avoids adding storage to the main segmentation workflow. The main video's H5 file is already on disk.
 
-**TCP command:** `handle_propagate_with_associated` in `segmentation_commands.py`. Receives `video_id` (associated/depth), `main_video_id`, `project_path`, and `confidence_threshold`. Opens both videos' resources, reads main scores from DB, and drives the segmentor.
+**Service-layer / worker separation:**
+The FastAPI service layer loads the main video's scores from DB and passes them as a dict in the TCP command params. The worker never touches the database. The worker reads the main video's H5 masks directly (H5 files are accessible from any process). Only the associated (depth) video needs a SAM2 session — the main video's data is read from storage only.
+
+**TCP command:** `handle_propagate_with_associated` in `segmentation_commands.py`. Receives `video_id` (associated/depth), `main_video_id`, `main_video_scores` (dict), `project_path`, and `confidence_threshold`. Opens depth video resources and main video's H5 masks, then drives the segmentor.
 
 **Progress reporting:** Same pattern as propagate-with-detector — periodic callbacks with frame index, streamed to frontend.
 
@@ -133,13 +150,14 @@ Usage: `uv run python scripts/migrate_associated_videos.py /path/to/project`
 
 Backend:
 - `vidseq/models/video.py` — add `is_associated`, `associated_with_id` columns
-- `vidseq/services/video_service.py` — add associated video ingestion, update pipeline list query
-- `vidseq/api/routes/videos.py` — new `POST /videos/associated` endpoint
-- `vidseq/services/segmentation_model/streaming_segmentor.py` — new `propagate_with_associated_video()` method
+- `vidseq/schemas/video.py` — add `is_associated`, `associated_with_id` to VideoResponse
+- `vidseq/services/video_service.py` — add `get_main_videos()`, associated video ingestion, cascade delete
+- `vidseq/api/routes/videos.py` — new `POST /videos/associated`, `GET /videos/{id}/associated` endpoints; use `get_main_videos()` for pipeline list
+- `vidseq/services/segmentation_model/streaming_segmentor.py` — new `propagate_with_associated()` method
 - `vidseq/services/segmentation_commands.py` — new `handle_propagate_with_associated` TCP handler
 - `vidseq/services/segmentation_service.py` — orchestrate batch co-segmentation
 - `vidseq/services/segmentation_tcp_client.py` — new client method for associated propagation
-- `vidseq/api/routes/segmentation/` — new endpoint to trigger co-segmentation
+- `vidseq/api/routes/segmentation/` — new `POST /videos/associated/segmentation` endpoint
 
 Frontend:
 - `frontend/src/components/VideoPipeline.vue` — expand/collapse on cards, new sidebar buttons
