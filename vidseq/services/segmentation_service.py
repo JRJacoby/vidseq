@@ -559,6 +559,66 @@ async def co_segment_videos(
     await session.commit()
 
 
+def get_tracker_mask_bbox(
+    project_path: Path,
+    video_id: int,
+    frame_idx: int,
+) -> dict | None:
+    """Get bounding box of tracker mask for a single frame.
+
+    Returns {x1, y1, x2, y2} dict or None if mask is empty.
+    Coordinates are in native video pixel space.
+    """
+    from vidseq.services.array_storage import compute_bbox_from_mask
+
+    try:
+        with tracker_masks(project_path, video_id, "r") as masks:
+            mask = np.asarray(masks[frame_idx])
+            bbox = compute_bbox_from_mask(mask)
+    except FileNotFoundError:
+        return None
+
+    if bbox is None:
+        return None
+    return {"x1": float(bbox[0]), "y1": float(bbox[1]), "x2": float(bbox[2]), "y2": float(bbox[3])}
+
+
+def get_tracker_mask_bboxes_batch(
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    count: int,
+    num_frames: int,
+) -> list[dict]:
+    """Get bounding boxes for a range of tracker mask frames.
+
+    Returns list of {frame_idx, x1, y1, x2, y2} dicts, only for non-empty masks.
+    Uses batch H5 read for performance.
+    """
+    from vidseq.services.array_storage import compute_bbox_from_mask
+
+    end_frame = min(start_frame + count, num_frames)
+    bboxes = []
+
+    try:
+        with tracker_masks(project_path, video_id, "r") as masks:
+            masks_arr = np.asarray(masks[start_frame:end_frame])
+            for i, mask in enumerate(masks_arr):
+                bbox = compute_bbox_from_mask(mask)
+                if bbox is not None:
+                    bboxes.append({
+                        "frame_idx": start_frame + i,
+                        "x1": float(bbox[0]),
+                        "y1": float(bbox[1]),
+                        "x2": float(bbox[2]),
+                        "y2": float(bbox[3]),
+                    })
+    except FileNotFoundError:
+        pass
+
+    return bboxes
+
+
 def shutdown() -> None:
     """Shutdown the SAM2 worker, freeing GPU memory.
 

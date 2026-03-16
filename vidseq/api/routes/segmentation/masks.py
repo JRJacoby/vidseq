@@ -59,6 +59,45 @@ async def get_tracker_masks(
     return {"masks": masks}
 
 
+# ----- Tracker mask bboxes -----
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-mask-bboxes/{frame_idx}",
+)
+async def get_tracker_mask_bbox(
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Get bounding box of the tracker mask for a specific frame."""
+    bbox = segmentation_service.get_tracker_mask_bbox(
+        project_path=project_path,
+        video_id=video.id,
+        frame_idx=frame_idx,
+    )
+    return {"bbox": bbox}
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/segmentation/tracker-mask-bboxes",
+)
+async def get_tracker_mask_bboxes(
+    start_frame: int,
+    count: int = 100,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Get bounding boxes for a range of tracker mask frames."""
+    bboxes = segmentation_service.get_tracker_mask_bboxes_batch(
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        count=count,
+        num_frames=video.num_frames,
+    )
+    return {"bboxes": bboxes}
+
+
 # ----- Final masks -----
 # Final masks are the tracker-detector fusion result
 
