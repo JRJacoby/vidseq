@@ -1,16 +1,21 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getAssociatedVideo,
   getVideoStreamUrl,
+  getTrackerMaskBbox,
+  getTrackerMaskBboxes,
+  type BboxResult,
   type Video,
 } from '@/services/api'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
+import { useSegmentation } from '@/composables/useSegmentation'
 import { useVideo } from '@/composables/useVideo'
 import VideoTimeline from './VideoTimeline.vue'
 import TimelineSystem from './TimelineSystem.vue'
 import DataTrack from './DataTrack.vue'
+import VideoOverlay from './VideoOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,6 +34,19 @@ const error = ref<string | null>(null)
 type ViewMode = 'main_bbox' | 'tracker_mask' | 'final_mask'
 const viewMode = ref<ViewMode>('final_mask')
 
+// Map local view modes to useSegmentation's maskViewMode
+// In main_bbox mode, useSegmentation stays on 'tracker' — it will fetch masks from
+// the associated video but we won't display them. This is a minor waste but avoids
+// complexity of conditionally initializing the composable.
+const segMaskViewMode = computed<'tracker' | 'detector' | 'final'>(() => {
+    if (viewMode.value === 'final_mask') return 'final'
+    return 'tracker'
+})
+
+// Associated video ID as a ref for useSegmentation
+const assocVideoId = computed(() => associatedVideo.value?.id ?? null)
+const assocFps = computed(() => associatedVideo.value?.fps ?? 30)
+
 const viewStart = ref(0)
 const viewEnd = ref(0)
 
@@ -37,12 +55,15 @@ const {
   currentTime,
   duration,
   isPlaying,
+  videoWidth,
+  videoHeight,
   onTimeUpdate,
   onLoadedMetadata,
   onPlay,
   onPause,
   seek,
   togglePlay: handleTogglePlay,
+  setMetadataCallback,
 } = useVideoPlayback()
 
 watch(duration, (d) => {
@@ -61,8 +82,182 @@ const videoStreamUrl = computed(() => {
   return getVideoStreamUrl(projectId.value, associatedVideo.value.id)
 })
 
+const {
+    currentMask,
+    seekToFrame,
+    loadFrameData,
+} = useSegmentation(
+    projectId,
+    assocVideoId,
+    currentFrameIdx,
+    isPlaying,
+    videoRef,
+    assocFps,
+    segMaskViewMode,
+)
+
+// Trigger first mask load when video metadata is ready
+setMetadataCallback(() => {
+    if (viewMode.value !== 'main_bbox') {
+        loadFrameData(0)
+    }
+})
+
+// ---- Main bbox mode state ----
+const bboxCache = new Map<number, BboxResult | null>()
+const currentBbox = ref<BboxResult | null>(null)
+let bboxPrefetchedUpTo = -1
+let bboxAnimFrameId: number | null = null
+let bboxPrefetching = false
+
+const BBOX_PREFETCH_BATCH = 100
+const BBOX_PREFETCH_THRESHOLD = 100
+
+// Rescale bbox from main video native coords to associated video native coords
+const rescaledBbox = computed(() => {
+    if (!currentBbox.value || !mainVideo.value || !associatedVideo.value) return null
+    const xScale = associatedVideo.value.width / mainVideo.value.width
+    const yScale = associatedVideo.value.height / mainVideo.value.height
+    if (xScale === 1 && yScale === 1) return currentBbox.value
+    return {
+        x1: currentBbox.value.x1 * xScale,
+        y1: currentBbox.value.y1 * yScale,
+        x2: currentBbox.value.x2 * xScale,
+        y2: currentBbox.value.y2 * yScale,
+    }
+})
+
+// Effective overlay props — mask or bbox depending on mode
+const overlayMask = computed(() =>
+    viewMode.value !== 'main_bbox' ? currentMask.value : null
+)
+// Reuse detectorBbox prop to render main video bbox on associated video
+const overlayBbox = computed(() =>
+    viewMode.value === 'main_bbox' ? rescaledBbox.value : null
+)
+
+async function prefetchBboxes(startFrame: number) {
+    if (bboxPrefetching || !projectId.value || !mainVideoId.value) return
+    bboxPrefetching = true
+    try {
+        const items = await getTrackerMaskBboxes(
+            projectId.value, mainVideoId.value, startFrame, BBOX_PREFETCH_BATCH,
+        )
+        // Fill cache — frames not in response have empty masks (null)
+        const endFrame = startFrame + BBOX_PREFETCH_BATCH
+        for (let i = startFrame; i < endFrame; i++) {
+            if (!bboxCache.has(i)) bboxCache.set(i, null)
+        }
+        for (const item of items) {
+            bboxCache.set(item.frame_idx, {
+                x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2,
+            })
+        }
+        if (endFrame - 1 > bboxPrefetchedUpTo) {
+            bboxPrefetchedUpTo = endFrame - 1
+        }
+    } catch (e) {
+        console.error('Failed to prefetch bboxes:', e)
+    } finally {
+        bboxPrefetching = false
+    }
+}
+
+async function loadBboxForFrame(frameIdx: number) {
+    if (bboxCache.has(frameIdx)) {
+        currentBbox.value = bboxCache.get(frameIdx) ?? null
+        return
+    }
+    if (!projectId.value || !mainVideoId.value) return
+    try {
+        const bbox = await getTrackerMaskBbox(projectId.value, mainVideoId.value, frameIdx)
+        bboxCache.set(frameIdx, bbox)
+        currentBbox.value = bbox
+    } catch {
+        currentBbox.value = null
+    }
+}
+
+let lastBboxFrame = -1
+
+function syncBboxToVideo() {
+    if (!isPlaying.value || !videoRef.value || viewMode.value !== 'main_bbox') return
+    const fps = associatedVideo.value?.fps ?? 30
+    const frameIdx = Math.floor(videoRef.value.currentTime * fps)
+    if (frameIdx !== lastBboxFrame) {
+        const cached = bboxCache.get(frameIdx)
+        if (cached !== undefined) {
+            currentBbox.value = cached
+            lastBboxFrame = frameIdx
+        }
+        const framesAhead = bboxPrefetchedUpTo - frameIdx
+        if (framesAhead < BBOX_PREFETCH_THRESHOLD) {
+            prefetchBboxes(bboxPrefetchedUpTo + 1)
+        }
+    }
+    bboxAnimFrameId = requestAnimationFrame(syncBboxToVideo)
+}
+
+// Cleanup rAF on unmount
+onUnmounted(() => {
+    if (bboxAnimFrameId !== null) {
+        cancelAnimationFrame(bboxAnimFrameId)
+        bboxAnimFrameId = null
+    }
+})
+
+// View mode switch handler
+watch(viewMode, async (mode) => {
+    if (mode === 'main_bbox') {
+        // Entering bbox mode: clear stale cache, load bbox for current frame
+        bboxCache.clear()
+        bboxPrefetchedUpTo = -1
+        currentBbox.value = null
+        lastBboxFrame = -1
+        await loadBboxForFrame(currentFrameIdx.value)
+        if (isPlaying.value) {
+            await prefetchBboxes(currentFrameIdx.value)
+            syncBboxToVideo()
+        }
+    } else {
+        // Leaving bbox mode: stop bbox sync loop
+        if (bboxAnimFrameId !== null) {
+            cancelAnimationFrame(bboxAnimFrameId)
+            bboxAnimFrameId = null
+        }
+        currentBbox.value = null
+    }
+})
+
+// Bbox playback start/stop
+watch(isPlaying, async (playing) => {
+    if (viewMode.value !== 'main_bbox') return
+    if (playing) {
+        await prefetchBboxes(currentFrameIdx.value)
+        prefetchBboxes(currentFrameIdx.value + BBOX_PREFETCH_BATCH)
+        lastBboxFrame = -1
+        syncBboxToVideo()
+    } else {
+        if (bboxAnimFrameId !== null) {
+            cancelAnimationFrame(bboxAnimFrameId)
+            bboxAnimFrameId = null
+        }
+    }
+})
+
+// Bbox scrub sync (when paused)
+watch(currentFrameIdx, (frameIdx) => {
+    if (viewMode.value === 'main_bbox' && !isPlaying.value) {
+        loadBboxForFrame(frameIdx)
+    }
+})
+
 const handleSeek = (time: number) => {
   seek(time)
+  if (viewMode.value !== 'main_bbox') {
+      const frameIdx = Math.floor(time * (associatedVideo.value?.fps ?? 30))
+      seekToFrame(frameIdx)
+  }
 }
 
 const handleViewChange = (start: number, end: number) => {
@@ -114,17 +309,29 @@ watch([projectId, mainVideoId], loadAssociatedVideo, { immediate: true })
         </div>
         <div v-else-if="associatedVideo" class="video-with-timeline">
           <div class="video-container">
-            <video
-              ref="videoRef"
-              class="video-player"
-              :src="videoStreamUrl"
-              @timeupdate="onTimeUpdate"
-              @loadedmetadata="onLoadedMetadata"
-              @play="onPlay"
-              @pause="onPause"
-            >
-              Your browser does not support the video tag.
-            </video>
+            <div class="video-wrapper">
+              <video
+                ref="videoRef"
+                class="video-player"
+                :src="videoStreamUrl"
+                @timeupdate="onTimeUpdate"
+                @loadedmetadata="onLoadedMetadata"
+                @play="onPlay"
+                @pause="onPause"
+              >
+                Your browser does not support the video tag.
+              </video>
+              <VideoOverlay
+                v-if="videoWidth > 0 && videoHeight > 0"
+                :video-width="videoWidth"
+                :video-height="videoHeight"
+                :active-tool="'none'"
+                :mask="overlayMask"
+                :prompts="[]"
+                :show-mask="viewMode !== 'main_bbox'"
+                :detector-bbox="overlayBbox"
+              />
+            </div>
           </div>
           <TimelineSystem>
             <VideoTimeline
@@ -267,6 +474,13 @@ watch([projectId, mainVideoId], loadAssociatedVideo, { immediate: true })
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.video-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .video-player {
