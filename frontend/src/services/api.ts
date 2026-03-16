@@ -281,6 +281,52 @@ export async function getTrackerMasks(
     return response.json()
 }
 
+export interface BboxResult {
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+}
+
+export async function getTrackerMaskBbox(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+): Promise<BboxResult | null> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-mask-bboxes/${frameIdx}`,
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch tracker mask bbox'))
+    }
+    const data = await response.json()
+    return data.bbox
+}
+
+export interface BboxBatchItem {
+    frame_idx: number
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+}
+
+export async function getTrackerMaskBboxes(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    count: number = 100,
+): Promise<BboxBatchItem[]> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/tracker-mask-bboxes?start_frame=${startFrame}&count=${count}`,
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to fetch tracker mask bboxes'))
+    }
+    const data = await response.json()
+    return data.bboxes
+}
+
 export async function getScores(
     projectId: number,
     videoId: number,
