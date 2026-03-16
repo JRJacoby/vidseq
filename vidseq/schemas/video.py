@@ -8,6 +8,9 @@ class VideoResponse(BaseModel):
     name: str
     path: str
     fps: float
+    width: int = 0
+    height: int = 0
+    num_frames: int = 0
     segmentation_status: str | None = None
     # New fields for associated video support
     is_associated: bool = False

@@ -60,6 +60,9 @@ export interface Video {
     name: string
     path: string
     fps: number
+    width: number
+    height: number
+    num_frames: number
     segmentation_status: 'in_progress' | 'segmented' | null
     min_confidence?: number
     p50_confidence?: number
