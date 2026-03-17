@@ -236,6 +236,41 @@ async def delete_videos(
     return None
 
 
+@router.delete(
+    "/projects/{project_id}/videos/{video_id}/associated-segmentation",
+    status_code=204,
+)
+async def reset_associated_segmentation(
+    project_id: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Reset co-segmentation results for an associated video."""
+    if not video.is_associated:
+        raise HTTPException(status_code=400, detail="Video is not an associated video")
+
+    from vidseq.services.array_storage import reset_video_segmentation_arrays
+    from vidseq.models.frame_data import FrameData
+    from sqlalchemy import delete
+
+    reset_video_segmentation_arrays(
+        project_path=project_path,
+        video_id=video.id,
+        num_frames=video.num_frames,
+        height=video.height,
+        width=video.width,
+        is_associated=True,
+    )
+
+    await session.execute(
+        delete(FrameData).where(FrameData.video_id == video.id)
+    )
+    video.segmentation_status = None
+    await session.commit()
+    return None
+
+
 @router.get(
     "/projects/{project_id}/videos/{video_id}/associated",
     response_model=VideoResponse,
