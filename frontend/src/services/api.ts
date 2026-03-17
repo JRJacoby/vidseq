@@ -191,6 +191,19 @@ export async function coSegmentVideos(
     }
 }
 
+export async function resetAssociatedSegmentation(
+    projectId: number,
+    videoId: number,
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/associated-segmentation`,
+        { method: 'DELETE' },
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to reset associated segmentation'))
+    }
+}
+
 export interface DirectoryEntry {
     name: string
     path: string

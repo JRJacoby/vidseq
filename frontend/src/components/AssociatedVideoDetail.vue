@@ -6,6 +6,7 @@ import {
   getVideoStreamUrl,
   getTrackerMaskBbox,
   getTrackerMaskBboxes,
+  resetAssociatedSegmentation,
   type BboxResult,
   type Video,
 } from '@/services/api'
@@ -269,6 +270,26 @@ const handleBack = () => {
   router.push(`/project/${projectId.value}`)
 }
 
+const isResetting = ref(false)
+
+const handleReset = async () => {
+    if (!projectId.value || !associatedVideo.value || isResetting.value) return
+    isResetting.value = true
+    try {
+        await resetAssociatedSegmentation(projectId.value, associatedVideo.value.id)
+        // Reload associated video metadata to get updated segmentation_status
+        await loadAssociatedVideo()
+        // Clear bbox cache
+        bboxCache.clear()
+        bboxPrefetchedUpTo = -1
+        currentBbox.value = null
+    } catch (e: any) {
+        alert(e.message || 'Reset failed')
+    } finally {
+        isResetting.value = false
+    }
+}
+
 // Load associated video on mount via watcher (mainVideoId may resolve asynchronously)
 const loadAssociatedVideo = async () => {
   if (!projectId.value || !mainVideoId.value) return
@@ -395,6 +416,17 @@ watch([projectId, mainVideoId], loadAssociatedVideo, { immediate: true })
           <p v-if="mainVideo" class="video-info">
             Main video: {{ mainVideo.name }}
           </p>
+        </template>
+
+        <template v-if="associatedVideo">
+          <h4 class="action-bar-title">Actions</h4>
+          <button
+            class="reset-button"
+            :disabled="!associatedVideo.segmentation_status || isResetting"
+            @click="handleReset"
+          >
+            {{ isResetting ? 'Resetting...' : 'Reset Segmentation' }}
+          </button>
         </template>
       </div>
     </aside>
@@ -557,5 +589,25 @@ watch([projectId, mainVideoId], loadAssociatedVideo, { immediate: true })
   margin: 0 0 0.25rem 0;
   font-size: 0.85rem;
   color: #666;
+}
+
+.reset-button {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #e57373;
+  border-radius: 4px;
+  background-color: #fff;
+  color: #e57373;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.reset-button:hover:not(:disabled) {
+  background-color: #ffebee;
+}
+
+.reset-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
