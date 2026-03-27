@@ -412,12 +412,14 @@ def handle_propagate(
 def handle_generate_training_masks(
     params: dict,
     segmentor: StreamingSegmentor,
+    response_callback: Callable | None = None,
 ) -> dict:
     """Generate training masks by propagating through video.
 
     Args:
         params: Command params with video_id, start_frame_idx, max_frames
         segmentor: StreamingSegmentor instance
+        response_callback: Optional callback to send progress messages
 
     Returns:
         Response dict with frames_processed, frame_indices
@@ -435,14 +437,23 @@ def handle_generate_training_masks(
     resources = _video_resources[video_id]
 
     scores: list[list] = []
+    frames_propagated = 0
 
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Callback to write each result to HDF5
         def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray, score: float) -> None:
+            nonlocal frames_propagated
             mask_data[frame_idx] = mask
             logits_data[frame_idx] = logits
             scores.append([frame_idx, score])
+            frames_propagated += 1
+            if response_callback and frames_propagated % 50 == 0:
+                response_callback({
+                    "type": "progress",
+                    "frame_idx": frames_propagated,
+                    "total": max_frames,
+                })
 
         frame_indices = segmentor.propagate_sequential(
             video_id=str(video_id),
@@ -461,6 +472,88 @@ def handle_generate_training_masks(
         "frame_indices": frame_indices,
         "scores": scores,
     }
+
+
+def handle_apply_detector(
+    params: dict,
+    segmentor: StreamingSegmentor,
+    response_callback: Callable | None = None,
+) -> dict:
+    """Run trained detector on every frame of given videos (no SAM2).
+
+    Loads the detector on GPU, iterates videos in batches of 32 frames,
+    and returns bboxes + scores grouped by video ID.
+    """
+    import torch
+    from vidseq.services.detector_model import load_finetuned, DETECTION_CONF_THRESHOLD
+
+    video_ids = params["video_ids"]
+    project_path = Path(params["project_path"])
+    video_paths = params["video_paths"]
+
+    model_path = project_path / "models" / "detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained detector model found. Train first.")
+
+    detector = None
+    try:
+        detector = load_finetuned(model_path, device="cuda")
+
+        all_scores: dict[str, list[list]] = {}
+        all_bboxes: dict[str, list[list]] = {}
+
+        for video_id, video_path in zip(video_ids, video_paths):
+            vid_key = str(video_id)
+            scores: list[list] = []
+            bboxes: list[list] = []
+
+            frame_source = VideoFrameSource(video_path)
+            num_frames = frame_source.frame_count
+            batch_size = 32
+            frames_done = 0
+
+            for batch_start in range(0, num_frames, batch_size):
+                batch_end = min(batch_start + batch_size, num_frames)
+                batch_frames = [frame_source[i] for i in range(batch_start, batch_end)]
+                batch_indices = list(range(batch_start, batch_end))
+
+                results = detector(batch_frames, conf=DETECTION_CONF_THRESHOLD, verbose=False)
+
+                for idx, result in zip(batch_indices, results):
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        # Take highest confidence detection
+                        best_i = result.boxes.conf.argmax()
+                        x1, y1, x2, y2 = result.boxes.xyxy[best_i].cpu().tolist()
+                        conf = result.boxes.conf[best_i].item()
+                        scores.append([idx, conf])
+                        bboxes.append([idx, x1, y1, x2, y2])
+                    else:
+                        scores.append([idx, 0.0])
+
+                frames_done += len(batch_frames)
+                if response_callback and frames_done % 50 < batch_size:
+                    response_callback({
+                        "type": "progress",
+                        "frame_idx": frames_done,
+                        "total": num_frames,
+                        "video_id": video_id,
+                    })
+
+            frame_source.close()
+            all_scores[vid_key] = scores
+            all_bboxes[vid_key] = bboxes
+
+        return {
+            "type": "apply_detector_result",
+            "status": "ok",
+            "detector_scores": all_scores,
+            "detector_bboxes": all_bboxes,
+        }
+
+    finally:
+        if detector is not None:
+            del detector
+            torch.cuda.empty_cache()
 
 
 def handle_propagate_with_detector(
@@ -638,12 +731,14 @@ def handle_propagate_with_associated(
                 bbox[2] * x_scale, bbox[3] * y_scale,
             ], dtype=np.float32)
 
-        # Initialize with box prompt (always conditioning)
+        # Initialize with box prompt (always conditioning).
+        # First frame must use fresh segmentation (no memory exists yet).
         frame = frame_source[start_frame]
         mask, _, score = segmentor.propagate_with_box(
             str(video_id), start_frame, frame,
             box_prompt=tuple(bbox),
             add_as_conditioning=True,
+            use_memory_with_prompt=False,
         )
         depth_trk[start_frame] = mask
         depth_fin[start_frame] = mask
@@ -661,53 +756,91 @@ def handle_propagate_with_associated(
             })
 
         # 3. Main loop: propagate forward
+        import time as _time
+        import json as _json
+        _timing_file = open("/tmp/coseg_timing.jsonl", "w")
+
         for frame_idx in range(start_frame + 1, num_frames):
+            _t_total = _time.perf_counter()
+
+            _t0 = _time.perf_counter()
             frame = frame_source[frame_idx]
+            _t_frame_read = _time.perf_counter() - _t0
+
             main_score = main_scores.get(frame_idx, -1.0)
             is_above = main_score > 0 and main_score >= confidence_threshold
 
+            _t_h5_read = 0.0
+            _t_bbox_compute = 0.0
+            _t_bbox_rescale = 0.0
+            _t_propagate = 0.0
+            _t_h5_write = 0.0
+            _t_backtrack = 0.0
+            _frame_type = "coast"
+
             if is_above:
                 # Get bbox from main video
+                _t0 = _time.perf_counter()
                 main_mask = np.asarray(main_masks[frame_idx])
+                _t_h5_read = _time.perf_counter() - _t0
+
+                _t0 = _time.perf_counter()
                 bbox = compute_bbox_from_mask(main_mask)
+                _t_bbox_compute = _time.perf_counter() - _t0
 
                 if bbox is not None:
                     if needs_rescale:
+                        _t0 = _time.perf_counter()
                         bbox = np.array([
                             bbox[0] * x_scale, bbox[1] * y_scale,
                             bbox[2] * x_scale, bbox[3] * y_scale,
                         ], dtype=np.float32)
+                        _t_bbox_rescale = _time.perf_counter() - _t0
 
                     # 4. Check for confidence recovery (backtrack)
                     if was_below_threshold:
-                        # Re-condition with new anchor
+                        _frame_type = "recovery"
+                        _t0 = _time.perf_counter()
                         mask, _, score = segmentor.propagate_with_box(
                             str(video_id), frame_idx, frame,
                             box_prompt=tuple(bbox),
                             add_as_conditioning=True,
+                            use_memory_with_prompt=True,
                         )
+                        _t_propagate = _time.perf_counter() - _t0
+
+                        _t0 = _time.perf_counter()
                         depth_fin[frame_idx] = mask
+                        _t_h5_write = _time.perf_counter() - _t0
+
                         depth_scores[frame_idx] = score
                         cond_lru.append(frame_idx)
 
                         # Backtrack gap frames
                         if last_anchor_frame + 1 <= frame_idx - 1:
+                            _t0 = _time.perf_counter()
                             segmentor.backtrack_reprop(
                                 str(video_id), frame_source, depth_fin,
                                 last_anchor_frame + 1, frame_idx - 1,
                                 scores=depth_scores,
                             )
+                            _t_backtrack = _time.perf_counter() - _t0
 
                         was_below_threshold = False
                     else:
+                        _frame_type = "prompted"
                         # Normal prompted frame
                         prompted_count += 1
                         add_cond = (prompted_count % cond_frame_interval) == 0
+
+                        _t0 = _time.perf_counter()
                         mask, _, score = segmentor.propagate_with_box(
                             str(video_id), frame_idx, frame,
                             box_prompt=tuple(bbox),
                             add_as_conditioning=add_cond,
+                            use_memory_with_prompt=True,
                         )
+                        _t_propagate = _time.perf_counter() - _t0
 
                         if add_cond:
                             cond_lru.append(frame_idx)
@@ -718,28 +851,61 @@ def handle_propagate_with_associated(
                                     str(video_id), oldest
                                 )
 
+                    _t0 = _time.perf_counter()
                     depth_trk[frame_idx] = mask
                     depth_fin[frame_idx] = mask
+                    _t_h5_write += _time.perf_counter() - _t0
+
                     depth_scores[frame_idx] = score
                     last_anchor_frame = frame_idx
                 else:
+                    _frame_type = "empty_mask"
                     # Main mask is empty despite score above threshold
+                    _t0 = _time.perf_counter()
                     mask, _, score = segmentor.propagate_frame(
                         str(video_id), frame_idx, frame
                     )
+                    _t_propagate = _time.perf_counter() - _t0
+
+                    _t0 = _time.perf_counter()
                     depth_trk[frame_idx] = mask
                     depth_fin[frame_idx] = mask
+                    _t_h5_write = _time.perf_counter() - _t0
+
                     depth_scores[frame_idx] = score
                     was_below_threshold = True
             else:
                 # Coast: propagate without prompt
+                _frame_type = "coast"
+                _t0 = _time.perf_counter()
                 mask, _, score = segmentor.propagate_frame(
                     str(video_id), frame_idx, frame
                 )
+                _t_propagate = _time.perf_counter() - _t0
+
+                _t0 = _time.perf_counter()
                 depth_trk[frame_idx] = mask
                 depth_fin[frame_idx] = mask
+                _t_h5_write = _time.perf_counter() - _t0
+
                 depth_scores[frame_idx] = score
                 was_below_threshold = True
+
+            _t_total_ms = (_time.perf_counter() - _t_total) * 1000
+            _timing_file.write(_json.dumps({
+                "f": frame_idx,
+                "type": _frame_type,
+                "total_ms": round(_t_total_ms, 2),
+                "frame_read_ms": round(_t_frame_read * 1000, 2),
+                "h5_read_ms": round(_t_h5_read * 1000, 2),
+                "bbox_compute_ms": round(_t_bbox_compute * 1000, 2),
+                "bbox_rescale_ms": round(_t_bbox_rescale * 1000, 2),
+                "propagate_ms": round(_t_propagate * 1000, 2),
+                "h5_write_ms": round(_t_h5_write * 1000, 2),
+                "backtrack_ms": round(_t_backtrack * 1000, 2),
+            }) + "\n")
+            if frame_idx % 50 == 0:
+                _timing_file.flush()
 
             # Progress callback
             if response_callback and (frame_idx % 50 == 0 or frame_idx == num_frames - 1):
@@ -748,6 +914,8 @@ def handle_propagate_with_associated(
                     "frame_idx": frame_idx,
                     "total": num_frames,
                 })
+
+        _timing_file.close()
 
     return {
         "type": "propagate_with_associated_result",

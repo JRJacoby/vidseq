@@ -25,6 +25,7 @@ from vidseq.models.video import Video
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.segmentation_commands import (
     handle_add_prompt,
+    handle_apply_detector,
     handle_close_session,
     handle_generate_training_masks,
     handle_init_session,
@@ -321,7 +322,18 @@ class SegmentationTCPServer:
             elif cmd_type == "generate_training_masks":
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
-                result = handle_generate_training_masks(cmd, self._segmentor)
+                result = handle_generate_training_masks(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
+
+            elif cmd_type == "apply_detector":
+                result = handle_apply_detector(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
 
             elif cmd_type == "propagate_with_detector":
                 if self._segmentor is None:
