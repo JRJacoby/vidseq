@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
+from vidseq.api.schemas import VideoSelectionRequest
 from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService, read_detector_config, write_detector_config
 from vidseq.services import frame_data_service, segmentation_service
@@ -273,3 +274,24 @@ async def get_detector_bboxes_endpoint(
         session, video.id, start_frame, count
     )
     return {"bboxes": bboxes}
+
+
+@router.post("/projects/{project_id}/videos/detection")
+async def apply_detector(
+    project_id: int,
+    request: VideoSelectionRequest,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Run trained detector on every frame of selected videos."""
+    try:
+        videos_processed = await segmentation_service.apply_detector(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"videos_processed": videos_processed}
