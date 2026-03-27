@@ -254,19 +254,6 @@ async def submit_prompt(
         )
     else:
         # Create new mask on blank frame (single point only, validated above)
-        # First, create conditioning frame record if not exists
-        from sqlalchemy import select
-        from vidseq.models.conditioning_frame import ConditioningFrame
-
-        existing = await session.execute(
-            select(ConditioningFrame)
-            .where(ConditioningFrame.video_id == video_id)
-            .where(ConditioningFrame.frame_idx == frame_idx)
-        )
-        if existing.scalar_one_or_none() is None:
-            session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
-            await session.commit()
-
         p = points[0]
         label = labels[0]
         mask, score = segmentation_tcp_client.add_point_prompt(
@@ -277,6 +264,21 @@ async def submit_prompt(
             y=p["y"],
             label=label,
         )
+
+    # Ensure conditioning frame DB record exists — both new prompts and
+    # refinements create conditioning frames in SAM2's in-memory state,
+    # so the DB needs to match for session reconstruction on reopen.
+    from sqlalchemy import select
+    from vidseq.models.conditioning_frame import ConditioningFrame
+
+    existing = await session.execute(
+        select(ConditioningFrame)
+        .where(ConditioningFrame.video_id == video_id)
+        .where(ConditioningFrame.frame_idx == frame_idx)
+    )
+    if existing.scalar_one_or_none() is None:
+        session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
+        await session.commit()
 
     # Update mask presence index and save confidence score
     has_content = bool(np.any(mask > 0))
@@ -358,6 +360,55 @@ async def propagate(
     await frame_data_service.save_scores_batch(session, video_id, scores)
 
     return len(frame_indices)
+
+
+async def apply_detector(
+    session: "AsyncSession",
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+) -> int:
+    """Run trained detector on all frames of selected videos.
+
+    Returns the number of videos processed.
+    """
+    from sqlalchemy import select
+    from vidseq.models.video import Video
+
+    # Fetch video objects
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids))
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise RuntimeError("No videos found")
+
+    # Validate detector model exists
+    model_path = project_path / "models" / "detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained detector model found. Train first.")
+
+    # Run detector via TCP (blocking call to GPU worker)
+    scores_by_video, bboxes_by_video = segmentation_tcp_client.apply_detector(
+        project_path=project_path,
+        videos=videos,
+    )
+
+    # Save results to database
+    for video in videos:
+        vid_scores = scores_by_video.get(video.id, [])
+        vid_bboxes = bboxes_by_video.get(video.id, [])
+        if vid_scores:
+            await frame_data_service.save_detector_scores_batch(
+                session, video.id, vid_scores
+            )
+        if vid_bboxes:
+            await frame_data_service.save_detector_bboxes_batch(
+                session, video.id, vid_bboxes
+            )
+
+    await session.commit()
+    return len(videos)
 
 
 async def segment_all_videos(
@@ -550,7 +601,9 @@ async def co_segment_videos(
             segmentation_tcp_client.close_session(project_id, assoc_video.id)
 
         except Exception as e:
+            import traceback
             print(f"[Co-Segment] Error for video {main_video.id}: {e}")
+            traceback.print_exc()
             try:
                 segmentation_tcp_client.close_session(project_id, assoc_video.id)
             except Exception:
