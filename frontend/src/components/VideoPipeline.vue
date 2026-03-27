@@ -20,6 +20,7 @@ import {
   createPCA,
   addAssociatedVideos,
   coSegmentVideos,
+  applyDetector,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -99,6 +100,7 @@ const alignmentEpochs = ref(100)
 const pcaStatus = ref<PCAStatus | null>(null)
 const isRunningPCA = ref(false)
 const pcaComponents = ref(20)
+const isApplyingDetector = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -421,6 +423,20 @@ const handleTrainDetector = async () => {
   }
 }
 
+const handleApplyDetector = async () => {
+  if (!projectId.value || isApplyingDetector.value) return
+  isApplyingDetector.value = true
+  try {
+    await applyDetector(projectId.value, selectedVideoIdsList.value)
+    await loadVideos()
+  } catch (e: any) {
+    console.error('Failed to apply detector:', e)
+    alert(e.message || 'Failed to apply detector')
+  } finally {
+    isApplyingDetector.value = false
+  }
+}
+
 const handleCoSegment = async () => {
   if (!projectId.value || isCoSegmenting.value) return
   isCoSegmenting.value = true
@@ -550,6 +566,11 @@ const formatScore = (score: number | undefined) => {
                     <div class="video-info">
                       <p class="video-name">{{ video.name }}</p>
                       <p class="video-path">{{ video.path }}</p>
+                      <div v-if="video.training_frame_count" class="video-stats">
+                        <span class="stat-item" title="Training Frames">
+                          Training frames: <strong>{{ video.training_frame_count.toLocaleString() }}</strong>
+                        </span>
+                      </div>
                       <div v-if="hasStats(video)" class="video-stats">
                         <span class="stat-item" title="Minimum Confidence">
                           Min: <strong>{{ formatScore(video.min_confidence) }}</strong>
@@ -747,6 +768,14 @@ const formatScore = (score: number | undefined) => {
             @click="router.push(`/project/${projectId}/detector`)"
           >
             <span class="button-label">View Detector Training</span>
+          </button>
+          <button
+            v-if="detectorModelExists"
+            class="sidebar-button"
+            @click="handleApplyDetector"
+            :disabled="isApplyingDetector || isDetectorTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isApplyingDetector ? 'Applying...' : 'Apply Detector' }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Associated Videos</h4>
