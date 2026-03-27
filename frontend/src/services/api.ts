@@ -71,6 +71,7 @@ export interface Video {
     is_associated: boolean
     associated_with_id: number | null
     associated_video_id: number | null
+    training_frame_count: number | null
 }
 
 export async function getVideos(projectId: number): Promise<Video[]> {
@@ -1339,6 +1340,21 @@ export async function createDetectionTraining(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to start detection training'))
     }
+}
+
+export async function applyDetector(projectId: number, videoIds: number[]): Promise<{ videos_processed: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/detection`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to apply detector'))
+    }
+    return response.json()
 }
 
 export async function deleteDetectionTraining(projectId: number): Promise<void> {
