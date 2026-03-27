@@ -754,7 +754,7 @@ class SegmentationService:
         if not session.has_object:
             raise RuntimeError("No object tracked. Add a point prompt first.")
 
-        result = self._send_and_wait({
+        result = self._send_streaming({
             "type": "generate_training_masks",
             "video_id": video_id,
             "start_frame_idx": start_frame_idx,
@@ -771,6 +771,38 @@ class SegmentationService:
         frame_indices = result.get("frame_indices", [])
         scores = result.get("scores", [])
         return frame_indices, scores
+
+    def apply_detector(
+        self,
+        project_path: Path,
+        videos: list,
+    ) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
+        """Run trained detector on all frames of given videos.
+
+        Args:
+            project_path: Path to the project folder
+            videos: List of Video objects with .id, .path, .num_frames
+
+        Returns:
+            Tuple of (scores_by_video, bboxes_by_video) where each is
+            {video_id: [[frame_idx, ...], ...]}
+        """
+        result = self._send_streaming({
+            "type": "apply_detector",
+            "video_ids": [v.id for v in videos],
+            "video_paths": [v.path for v in videos],
+            "project_path": str(project_path),
+        }, timeout=3600.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to apply detector"))
+
+        raw_scores = result.get("detector_scores", {})
+        raw_bboxes = result.get("detector_bboxes", {})
+
+        scores_by_video = {int(k): v for k, v in raw_scores.items()}
+        bboxes_by_video = {int(k): v for k, v in raw_bboxes.items()}
+        return scores_by_video, bboxes_by_video
 
     def propagate_with_associated(
         self,
@@ -1072,6 +1104,14 @@ def generate_training_masks(
     return SegmentationService.get_instance().generate_training_masks(
         project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
     )
+
+
+def apply_detector(
+    project_path: Path,
+    videos: list,
+) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
+    """Run trained detector on all frames of given videos."""
+    return SegmentationService.get_instance().apply_detector(project_path, videos)
 
 
 def shutdown_worker() -> None:
