@@ -44,6 +44,20 @@ class FrameData(Base):
     has_detector_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     has_final_mask: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
 
+    # OBB (Oriented Bounding Box) corner coordinates (NULL = no OBB detection)
+    # 4 corners in clockwise order, absolute pixel coordinates
+    obb_x1: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_y1: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_x2: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_y2: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_x3: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_y3: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_x4: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    obb_y4: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+    # OBB confidence score (-1.0 = not computed)
+    obb_score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
+
     __table_args__ = (
         # Primary lookup: video + frame (unique constraint)
         Index("ix_frame_data_video_frame", "video_id", "frame_idx", unique=True),
