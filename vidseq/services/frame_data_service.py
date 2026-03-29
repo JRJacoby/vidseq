@@ -700,6 +700,45 @@ async def get_detector_scores_downsampled(
     return {"scores": downsampled, "total_count": len(scores)}
 
 
+async def load_obb_scores_in_range(
+    session: AsyncSession,
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+) -> list[dict]:
+    """Load OBB scores for a frame range."""
+    result = await session.execute(
+        select(FrameData.frame_idx, FrameData.obb_score)
+        .where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx >= start_frame,
+            FrameData.frame_idx <= end_frame,
+            FrameData.obb_score > -1.0,
+        )
+        .order_by(FrameData.frame_idx)
+    )
+    return [{"frame_idx": row[0], "score": row[1]} for row in result.all()]
+
+
+async def get_obb_scores_downsampled(
+    session: AsyncSession,
+    video_id: int,
+    num_frames: int,
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> dict:
+    """Get LTTB-downsampled OBB confidence scores for visualization."""
+    from vidseq.services import lttb
+
+    if end_frame is None:
+        end_frame = num_frames - 1
+
+    scores = await load_obb_scores_in_range(session, video_id, start_frame, end_frame)
+    downsampled = lttb.downsample_scores(scores, max_samples)
+    return {"scores": downsampled, "total_count": len(scores)}
+
+
 # =============================================================================
 # DETECTOR BBOX OPERATIONS
 # =============================================================================
@@ -732,6 +771,50 @@ async def save_detector_bboxes_batch(
     ]
     await _chunked_upsert(session, rows, ["video_id", "frame_idx"],
         ["detector_bbox_x1", "detector_bbox_y1", "detector_bbox_x2", "detector_bbox_y2"])
+
+
+async def save_obb_bboxes_batch(
+    session: AsyncSession,
+    video_id: int,
+    bboxes: list[list],
+) -> None:
+    """Batch insert/update OBB bounding boxes.
+
+    Args:
+        session: Async database session.
+        video_id: Video ID.
+        bboxes: List of [frame_idx, x1, y1, x2, y2, x3, y3, x4, y4] lists.
+    """
+    if not bboxes:
+        return
+    rows = [
+        {
+            "video_id": video_id,
+            "frame_idx": int(b[0]),
+            "obb_x1": float(b[1]), "obb_y1": float(b[2]),
+            "obb_x2": float(b[3]), "obb_y2": float(b[4]),
+            "obb_x3": float(b[5]), "obb_y3": float(b[6]),
+            "obb_x4": float(b[7]), "obb_y4": float(b[8]),
+        }
+        for b in bboxes
+    ]
+    await _chunked_upsert(session, rows, ["video_id", "frame_idx"],
+        ["obb_x1", "obb_y1", "obb_x2", "obb_y2", "obb_x3", "obb_y3", "obb_x4", "obb_y4"])
+
+
+async def save_obb_scores_batch(
+    session: AsyncSession,
+    video_id: int,
+    scores: list[list],
+) -> None:
+    """Batch insert/update OBB confidence scores."""
+    if not scores:
+        return
+    values = [
+        {"video_id": video_id, "frame_idx": int(frame_idx), "obb_score": float(score)}
+        for frame_idx, score in scores
+    ]
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"], ["obb_score"])
 
 
 async def get_detector_bbox(
@@ -791,6 +874,88 @@ async def get_detector_bboxes_batch(
         {"frame_idx": row[0], "x1": row[1], "y1": row[2], "x2": row[3], "y2": row[4]}
         for row in result.all()
     ]
+
+
+async def get_obb_bbox(
+    session: AsyncSession,
+    video_id: int,
+    frame_idx: int,
+) -> dict | None:
+    """Get OBB bbox for a single frame.
+
+    Returns:
+        Dict with corners key containing [[x1,y1],[x2,y2],[x3,y3],[x4,y4]], or None.
+    """
+    result = await session.execute(
+        select(
+            FrameData.obb_x1, FrameData.obb_y1,
+            FrameData.obb_x2, FrameData.obb_y2,
+            FrameData.obb_x3, FrameData.obb_y3,
+            FrameData.obb_x4, FrameData.obb_y4,
+        ).where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx == frame_idx,
+            FrameData.obb_x1.isnot(None),
+        )
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return {
+        "corners": [
+            [row[0], row[1]], [row[2], row[3]],
+            [row[4], row[5]], [row[6], row[7]],
+        ]
+    }
+
+
+async def get_obb_bboxes_batch(
+    session: AsyncSession,
+    video_id: int,
+    start_frame: int,
+    count: int = 100,
+) -> list[dict]:
+    """Get OBB bboxes for a range of frames."""
+    result = await session.execute(
+        select(
+            FrameData.frame_idx,
+            FrameData.obb_x1, FrameData.obb_y1,
+            FrameData.obb_x2, FrameData.obb_y2,
+            FrameData.obb_x3, FrameData.obb_y3,
+            FrameData.obb_x4, FrameData.obb_y4,
+        ).where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx >= start_frame,
+            FrameData.frame_idx < start_frame + count,
+            FrameData.obb_x1.isnot(None),
+        ).order_by(FrameData.frame_idx)
+    )
+    return [
+        {
+            "frame_idx": row[0],
+            "corners": [
+                [row[1], row[2]], [row[3], row[4]],
+                [row[5], row[6]], [row[7], row[8]],
+            ],
+        }
+        for row in result.all()
+    ]
+
+
+async def obb_bboxes_exist(
+    session: AsyncSession,
+    video_id: int,
+) -> bool:
+    """Check if any OBB bbox data exists for a video."""
+    result = await session.execute(
+        select(FrameData.id)
+        .where(
+            FrameData.video_id == video_id,
+            FrameData.obb_x1.isnot(None),
+        )
+        .limit(1)
+    )
+    return result.first() is not None
 
 
 # =============================================================================
