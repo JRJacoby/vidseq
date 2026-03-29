@@ -18,6 +18,7 @@ const props = defineProps<{
   showMask?: boolean
   showPrompts?: boolean
   detectorBbox?: { x1: number; y1: number; x2: number; y2: number } | null
+  obbBbox?: { corners: [number, number][] } | null
 }>()
 
 const emit = defineEmits<{
@@ -79,6 +80,23 @@ function render() {
       bbox.x1 * scaleX, bbox.y1 * scaleY,
       (bbox.x2 - bbox.x1) * scaleX, (bbox.y2 - bbox.y1) * scaleY,
     )
+  }
+
+  // Draw OBB if provided
+  if (props.obbBbox && props.obbBbox.corners.length === 4) {
+    ctx.strokeStyle = 'rgba(0, 188, 212, 0.8)'  // cyan
+    ctx.lineWidth = 3
+    const scaleX = canvas.width / props.videoWidth
+    const scaleY = canvas.height / props.videoHeight
+    const corners = props.obbBbox.corners
+
+    ctx.beginPath()
+    ctx.moveTo(corners[0][0] * scaleX, corners[0][1] * scaleY)
+    ctx.lineTo(corners[1][0] * scaleX, corners[1][1] * scaleY)
+    ctx.lineTo(corners[2][0] * scaleX, corners[2][1] * scaleY)
+    ctx.lineTo(corners[3][0] * scaleX, corners[3][1] * scaleY)
+    ctx.closePath()
+    ctx.stroke()
   }
 
   // Draw prompts (points only)
@@ -144,7 +162,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts, props.detectorBbox, props.showMask, props.showPrompts], () => {
+watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts], () => {
   pendingPoint.value = null
   render()
 }, { deep: true })
