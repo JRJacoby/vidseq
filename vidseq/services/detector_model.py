@@ -16,6 +16,7 @@ DETECTION_CONF_THRESHOLD = 0.25
 PRETRAINED_MODELS = {
     "rtdetr": "rtdetr-x.pt",
     "yolo": "yolo11n.pt",
+    "obb": "yolo11n-obb.pt",
 }
 
 
@@ -72,6 +73,37 @@ def detect(
                 "cls": int(boxes.cls[i].item()),
             })
     # Sort by confidence descending
+    detections.sort(key=lambda d: d["conf"], reverse=True)
+    return detections
+
+
+def detect_obb(
+    model,
+    frame: np.ndarray,
+    conf: float = DETECTION_CONF_THRESHOLD,
+) -> list[dict]:
+    """Run OBB detection on a single BGR frame.
+
+    Args:
+        model: Ultralytics OBB model instance.
+        frame: BGR uint8 numpy array (H, W, 3).
+        conf: Confidence threshold.
+
+    Returns:
+        List of detections sorted by confidence (descending).
+        Each detection: {"corners": [[x1,y1],[x2,y2],[x3,y3],[x4,y4]], "conf": float}
+        Corner coordinates are in pixel space of the original frame.
+    """
+    results = model(frame, conf=conf, verbose=False)
+    detections = []
+    if len(results) > 0 and results[0].obb is not None:
+        obb = results[0].obb
+        for i in range(len(obb)):
+            corners = obb.xyxyxyxy[i].cpu().tolist()
+            detections.append({
+                "corners": corners,
+                "conf": obb.conf[i].item(),
+            })
     detections.sort(key=lambda d: d["conf"], reverse=True)
     return detections
 
