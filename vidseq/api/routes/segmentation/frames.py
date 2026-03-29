@@ -169,3 +169,19 @@ async def get_detector_scores_downsampled(
     return await frame_data_service.get_detector_scores_downsampled(
         session, video.id, video.num_frames, max_samples, start_frame, end_frame
     )
+
+
+@router.get(
+    "/projects/{project_id}/videos/{video_id}/segmentation/obb-scores-downsampled",
+)
+async def get_obb_scores_downsampled(
+    max_samples: int = 800,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get LTTB-downsampled OBB confidence scores for visualization."""
+    return await frame_data_service.get_obb_scores_downsampled(
+        session, video.id, video.num_frames, max_samples, start_frame, end_frame
+    )

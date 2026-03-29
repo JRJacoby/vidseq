@@ -53,6 +53,13 @@ class DetectorMasksExistsResponse(BaseModel):
     exists: bool
 
 
+class ObbStatusResponse(BaseModel):
+    """Response for OBB detector status."""
+
+    model_exists: bool
+    is_training: bool
+
+
 @router.put("/projects/{project_id}/detection/config")
 async def update_detection_config(
     body: DetectorConfigRequest,
@@ -271,6 +278,144 @@ async def get_detector_bboxes_endpoint(
 ):
     """Get detector bboxes for a range of frames."""
     bboxes = await frame_data_service.get_detector_bboxes_batch(
+        session, video.id, start_frame, count
+    )
+    return {"bboxes": bboxes}
+
+
+@router.get(
+    "/projects/{project_id}/detection/obb/status",
+    response_model=ObbStatusResponse,
+)
+async def get_obb_detection_status(
+    project_path: Path = Depends(get_project_folder),
+):
+    """Get OBB detector model status."""
+    service = DetectorService.get_instance()
+    return ObbStatusResponse(
+        model_exists=service.obb_model_exists(project_path),
+        is_training=service.is_training() and service._training_type == "obb",
+    )
+
+
+@router.post("/projects/{project_id}/detection/obb/training")
+async def create_obb_training(
+    request: TrainRequest,
+    project_path: Path = Depends(get_project_folder),
+):
+    """Start OBB detector training."""
+    service = DetectorService.get_instance()
+    if service.is_training():
+        raise HTTPException(status_code=409, detail="Training already in progress")
+
+    try:
+        service.train(
+            project_path=project_path,
+            video_ids=request.video_ids,
+            max_epochs=request.max_epochs,
+            batch_size=request.batch_size,
+            lr=request.lr,
+            early_stop_patience=request.early_stop_patience,
+            training_type="obb",
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"status": "started"}
+
+
+@router.delete("/projects/{project_id}/detection/obb/training", status_code=204)
+async def delete_obb_training():
+    """Stop OBB detector training."""
+    service = DetectorService.get_instance()
+    if not service.is_training():
+        raise HTTPException(status_code=400, detail="No training in progress")
+    service.stop_training()
+    return None
+
+
+@router.get("/projects/{project_id}/detection/obb/training")
+async def get_obb_training_progress():
+    """Get OBB training progress."""
+    service = DetectorService.get_instance()
+    return service.get_training_progress().to_dict()
+
+
+@router.get("/projects/{project_id}/detection/obb/training/stream")
+async def stream_obb_training():
+    """SSE stream for OBB training updates."""
+    async def event_generator():
+        service = DetectorService.get_instance()
+        last_progress_str = None
+        while True:
+            progress = service.get_training_progress()
+            progress_dict = progress.to_dict()
+            progress_str = json.dumps(progress_dict)
+            if progress_str != last_progress_str:
+                yield f"data: {progress_str}\n\n"
+                last_progress_str = progress_str
+            if progress.status in ("completed", "failed", "stopped", "idle"):
+                if not progress.is_training:
+                    break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/projects/{project_id}/videos/obb-detection")
+async def apply_obb_detector(
+    project_id: int,
+    request: VideoSelectionRequest,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Run OBB detector on every frame of selected videos."""
+    try:
+        videos_processed = await segmentation_service.apply_obb_detector(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"videos_processed": videos_processed}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/obb-bboxes/exists")
+async def obb_bboxes_exist_endpoint(
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Check if OBB bbox data exists for a video."""
+    exists = await frame_data_service.obb_bboxes_exist(session, video.id)
+    return {"exists": exists}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/obb-bboxes/{frame_idx}")
+async def get_obb_bbox_endpoint(
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get OBB bbox for a single frame."""
+    bbox = await frame_data_service.get_obb_bbox(session, video.id, frame_idx)
+    return {"bbox": bbox}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/obb-bboxes")
+async def get_obb_bboxes_endpoint(
+    start_frame: int,
+    count: int = 100,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Get OBB bboxes for a range of frames."""
+    bboxes = await frame_data_service.get_obb_bboxes_batch(
         session, video.id, start_frame, count
     )
     return {"bboxes": bboxes}
