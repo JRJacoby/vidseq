@@ -411,6 +411,51 @@ async def apply_detector(
     return len(videos)
 
 
+async def apply_obb_detector(
+    session: "AsyncSession",
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+) -> int:
+    """Run OBB detector on all frames of selected videos.
+
+    Returns the number of videos processed.
+    """
+    from sqlalchemy import select
+    from vidseq.models.video import Video
+
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids))
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise RuntimeError("No videos found")
+
+    model_path = project_path / "models" / "obb_detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained OBB detector model found. Train first.")
+
+    scores_by_video, bboxes_by_video = segmentation_tcp_client.apply_obb_detector(
+        project_path=project_path,
+        videos=videos,
+    )
+
+    for video in videos:
+        vid_scores = scores_by_video.get(video.id, [])
+        vid_bboxes = bboxes_by_video.get(video.id, [])
+        if vid_scores:
+            await frame_data_service.save_obb_scores_batch(
+                session, video.id, vid_scores
+            )
+        if vid_bboxes:
+            await frame_data_service.save_obb_bboxes_batch(
+                session, video.id, vid_bboxes
+            )
+
+    await session.commit()
+    return len(videos)
+
+
 async def segment_all_videos(
     session: "AsyncSession",
     project_id: int,

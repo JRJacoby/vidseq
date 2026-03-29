@@ -776,12 +776,14 @@ class SegmentationService:
         self,
         project_path: Path,
         videos: list,
+        detector_type: str = "detector",
     ) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
         """Run trained detector on all frames of given videos.
 
         Args:
             project_path: Path to the project folder
             videos: List of Video objects with .id, .path, .num_frames
+            detector_type: "detector" for axis-aligned boxes, "obb" for oriented boxes
 
         Returns:
             Tuple of (scores_by_video, bboxes_by_video) where each is
@@ -792,13 +794,16 @@ class SegmentationService:
             "video_ids": [v.id for v in videos],
             "video_paths": [v.path for v in videos],
             "project_path": str(project_path),
+            "detector_type": detector_type,
         }, timeout=3600.0)
 
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Failed to apply detector"))
 
-        raw_scores = result.get("detector_scores", {})
-        raw_bboxes = result.get("detector_bboxes", {})
+        score_key = "obb_scores" if detector_type == "obb" else "detector_scores"
+        bbox_key = "obb_bboxes" if detector_type == "obb" else "detector_bboxes"
+        raw_scores = result.get(score_key, {})
+        raw_bboxes = result.get(bbox_key, {})
 
         scores_by_video = {int(k): v for k, v in raw_scores.items()}
         bboxes_by_video = {int(k): v for k, v in raw_bboxes.items()}
@@ -1112,6 +1117,14 @@ def apply_detector(
 ) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
     """Run trained detector on all frames of given videos."""
     return SegmentationService.get_instance().apply_detector(project_path, videos)
+
+
+def apply_obb_detector(
+    project_path: Path,
+    videos: list,
+) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
+    """Run OBB detector on all frames of given videos."""
+    return SegmentationService.get_instance().apply_detector(project_path, videos, detector_type="obb")
 
 
 def shutdown_worker() -> None:
