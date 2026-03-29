@@ -16,6 +16,8 @@ const props = withDefaults(defineProps<{
   confidenceScores: { frame_idx: number; score: number }[]
   showDetectorConfidence?: boolean
   detectorScores?: { frame_idx: number; score: number }[]
+  showObbConfidence?: boolean
+  obbScores?: { frame_idx: number; score: number }[]
   // Alignment label frames (individual frame indices)
   alignmentLabelFrames?: number[]
   showAlignmentLabels?: boolean
@@ -31,6 +33,8 @@ const props = withDefaults(defineProps<{
   showPCAPlot: false,
   showDetectorConfidence: false,
   detectorScores: () => [],
+  showObbConfidence: false,
+  obbScores: () => [],
 })
 
 const emit = defineEmits<{
@@ -253,6 +257,14 @@ const hoverScores = computed(() => {
     }
   }
 
+  // Find nearest OBB confidence score
+  if (props.showObbConfidence && props.obbScores && props.obbScores.length > 0) {
+    const nearest = findNearestScore(props.obbScores, frame)
+    if (nearest !== null) {
+      results.push({ label: 'OBB', value: nearest.score, color: 'rgba(0, 188, 212, 0.8)' })
+    }
+  }
+
   return results
 })
 
@@ -425,6 +437,16 @@ const drawPlot = () => {
     }
   }
 
+  // Draw OBB confidence scores (cyan line)
+  let obbRange: { min: number; max: number } | null = null
+  if (props.showObbConfidence && props.obbScores && props.obbScores.length > 0) {
+    const validScores = props.obbScores.filter(s => s.score >= 0)
+    if (validScores.length > 0) {
+      obbRange = drawScoreLine(ctx, validScores, 'rgba(0, 188, 212, 0.8)', width, height)
+      if (obbRange && !activeRange) activeRange = obbRange
+    }
+  }
+
   // Draw PCA scores (multiple colored lines)
   if (props.showPCAPlot && props.pcaScores && props.visiblePCs.length > 0) {
     for (const pcIdx of props.visiblePCs) {
@@ -459,6 +481,8 @@ watch([() => props.viewStart, () => props.viewEnd], drawPlot)
 watch(() => props.showConfidencePlot, drawPlot)
 watch(() => props.detectorScores, drawPlot, { deep: true })
 watch(() => props.showDetectorConfidence, drawPlot)
+watch(() => props.obbScores, drawPlot, { deep: true })
+watch(() => props.showObbConfidence, drawPlot)
 watch(() => props.pcaScores, drawPlot, { deep: true })
 watch(() => props.visiblePCs, drawPlot, { deep: true })
 watch(() => props.showPCAPlot, drawPlot)
