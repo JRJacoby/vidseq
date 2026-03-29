@@ -63,6 +63,41 @@ def _mask_to_yolo_bbox(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
     return f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
 
 
+def _mask_to_obb_label(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
+    """Convert a binary mask to YOLO OBB label format.
+
+    Uses cv2.minAreaRect to find the minimum-area rotated rectangle,
+    then outputs 4 normalized corner points.
+
+    Args:
+        mask: Binary mask (H, W) with values 0 or 255.
+        img_h: Image height in pixels.
+        img_w: Image width in pixels.
+
+    Returns:
+        YOLO OBB format string "class x1 y1 x2 y2 x3 y3 x4 y4" (normalized),
+        or None if mask is empty.
+    """
+    contours, _ = cv2.findContours(
+        (mask > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+
+    # Merge all contours into one point set
+    all_points = np.concatenate(contours)
+    rect = cv2.minAreaRect(all_points)
+    corners = cv2.boxPoints(rect)  # 4 corner points
+
+    # Normalize to [0, 1]
+    parts = []
+    for cx, cy in corners:
+        parts.append(f"{cx / img_w:.6f}")
+        parts.append(f"{cy / img_h:.6f}")
+
+    return f"0 {' '.join(parts)}"
+
+
 VALID_DETECTOR_TYPES = ("rtdetr", "yolo")
 DEFAULT_DETECTOR_TYPE = "rtdetr"
 
@@ -110,6 +145,7 @@ class DetectorService:
 
         self._is_training = False
         self._stop_requested = False
+        self._training_type: str | None = None
         self._training_thread: Optional[threading.Thread] = None
         self._training_progress = DetectorTrainingProgress()
 
@@ -139,6 +175,10 @@ class DetectorService:
         """Check if trained model exists."""
         return (project_path / "models" / "detector.pt").exists()
 
+    def obb_model_exists(self, project_path: Path) -> bool:
+        """Check if trained OBB model exists."""
+        return (project_path / "models" / "obb_detector.pt").exists()
+
     def train(
         self,
         project_path: Path,
@@ -147,6 +187,7 @@ class DetectorService:
         batch_size: int = 2,
         lr: float = 1e-4,
         early_stop_patience: int = 20,
+        training_type: str = "detector",
     ) -> bool:
         """Start training in background thread.
 
@@ -157,6 +198,7 @@ class DetectorService:
 
         self._is_training = True
         self._stop_requested = False
+        self._training_type = training_type
 
         def _train_thread():
             try:
@@ -167,6 +209,7 @@ class DetectorService:
                     batch_size,
                     lr,
                     early_stop_patience,
+                    training_type=training_type,
                 )
             except Exception as e:
                 logger.exception("Training failed")
@@ -174,6 +217,7 @@ class DetectorService:
                 self._training_progress.error_message = str(e)
             finally:
                 self._is_training = False
+                self._training_type = None
 
         self._training_thread = threading.Thread(target=_train_thread, daemon=True)
         self._training_thread.start()
@@ -187,6 +231,7 @@ class DetectorService:
         batch_size: int,
         lr: float,
         early_stop_patience: int,
+        training_type: str = "detector",
     ) -> None:
         """Synchronous training implementation using Ultralytics."""
         from vidseq.services.detector_model import load_pretrained
@@ -197,7 +242,10 @@ class DetectorService:
         segmentation_service.shutdown()
 
         # Read detector type from config
-        detector_type = read_detector_config(project_path)
+        if training_type == "obb":
+            detector_type = "obb"
+        else:
+            detector_type = read_detector_config(project_path)
 
         logger.info(
             f"Starting {detector_type.upper()} training: max_epochs={max_epochs}, "
@@ -246,11 +294,11 @@ class DetectorService:
 
             # Write frames and labels
             self._write_yolo_dataset(
-                train_frames, "train", tmp_path, project_path
+                train_frames, "train", tmp_path, project_path, detector_type
             )
             if val_frames:
                 self._write_yolo_dataset(
-                    val_frames, "val", tmp_path, project_path
+                    val_frames, "val", tmp_path, project_path, detector_type
                 )
 
             # Write dataset.yaml
@@ -301,7 +349,11 @@ class DetectorService:
             model_save_dir.mkdir(exist_ok=True)
 
             # Per-model training hyperparameters
-            if detector_type == "yolo":
+            if detector_type == "obb":
+                train_workers = 4
+                train_batch = max(batch_size, 8)
+                train_name = "obb_train"
+            elif detector_type == "yolo":
                 train_workers = 4
                 train_batch = max(batch_size, 8)
                 train_name = "yolo_train"
@@ -310,7 +362,7 @@ class DetectorService:
                 train_batch = batch_size
                 train_name = "rtdetr_train"
 
-            model.train(
+            train_kwargs = dict(
                 data=str(yaml_path),
                 epochs=max_epochs,
                 imgsz=640,
@@ -327,12 +379,17 @@ class DetectorService:
                 exist_ok=True,
                 verbose=False,
             )
+            if detector_type == "obb":
+                train_kwargs["task"] = "obb"
+
+            model.train(**train_kwargs)
 
             # Copy best weights to standard location
+            weights_dest = "obb_detector.pt" if training_type == "obb" else "detector.pt"
             best_pt = model_save_dir / train_name / "weights" / "best.pt"
             if best_pt.exists():
-                shutil.copy2(best_pt, model_save_dir / "detector.pt")
-                logger.info(f"Best weights saved to {model_save_dir / 'detector.pt'}")
+                shutil.copy2(best_pt, model_save_dir / weights_dest)
+                logger.info(f"Best weights saved to {model_save_dir / weights_dest}")
             else:
                 logger.warning("best.pt not found after training")
 
@@ -342,7 +399,7 @@ class DetectorService:
                 logger.info("Training stopped by user")
             else:
                 self._training_progress.status = "applying"
-                self._apply_to_training_data(project_path, video_ids)
+                self._apply_to_training_data(project_path, video_ids, training_type)
                 self._training_progress.status = "completed"
 
         finally:
@@ -358,6 +415,7 @@ class DetectorService:
         split: str,
         tmp_path: Path,
         project_path: Path,
+        detector_type: str = "rtdetr",
     ) -> None:
         """Write frames and YOLO labels to the dataset directory.
 
@@ -366,6 +424,7 @@ class DetectorService:
             split: "train" or "val".
             tmp_path: Root of the temporary dataset directory.
             project_path: Project folder path for accessing mask files.
+            detector_type: "rtdetr", "yolo", or "obb".
         """
         images_dir = tmp_path / "images" / split
         labels_dir = tmp_path / "labels" / split
@@ -389,8 +448,11 @@ class DetectorService:
             with tracker_masks(project_path, video_id) as masks:
                 mask = np.asarray(masks[frame_idx])
 
-            # Convert mask to YOLO bbox
-            yolo_line = _mask_to_yolo_bbox(mask, img_h, img_w)
+            # Convert mask to label format
+            if detector_type == "obb":
+                yolo_line = _mask_to_obb_label(mask, img_h, img_w)
+            else:
+                yolo_line = _mask_to_yolo_bbox(mask, img_h, img_w)
             if yolo_line is None:
                 continue
 
@@ -446,9 +508,10 @@ class DetectorService:
         self,
         project_path: Path,
         video_ids: list[int],
+        training_type: str = "detector",
     ) -> None:
         """Apply trained detector to all training frames and save bboxes/scores to DB."""
-        from vidseq.services.detector_model import detect, load_finetuned
+        from vidseq.services.detector_model import detect, detect_obb, load_finetuned
         from vidseq.services.frame_data_service import _chunked_upsert_sync
 
         logger.info("Applying detector to training data...")
@@ -457,7 +520,8 @@ class DetectorService:
         self._training_progress.apply_total = len(all_frames)
         self._training_progress.apply_current = 0
 
-        weights_path = project_path / "models" / "detector.pt"
+        weights_name = "obb_detector.pt" if training_type == "obb" else "detector.pt"
+        weights_path = project_path / "models" / weights_name
         detector = load_finetuned(weights_path)
 
         # Group frames by video for efficient batch processing
@@ -468,7 +532,7 @@ class DetectorService:
             frames_by_video[video_id].append((video_path, frame_idx))
 
         # Collect bboxes and scores to batch-insert
-        bboxes_to_save: dict[int, list[tuple[int, float, float, float, float]]] = {}
+        bboxes_to_save: dict[int, list] = {}
         scores_to_save: dict[int, list[tuple[int, float]]] = {}
 
         for video_id, frame_list in frames_by_video.items():
@@ -487,18 +551,28 @@ class DetectorService:
                     continue
 
                 # Run detection
-                detections = detect(detector, frame)
-
-                if detections:
-                    best = detections[0]  # Highest confidence
-                    x1, y1, x2, y2 = best["bbox"]
-                    conf = best["conf"]
-                    bboxes_to_save[video_id].append(
-                        (frame_idx, x1, y1, x2, y2)
-                    )
-                    scores_to_save[video_id].append((frame_idx, conf))
+                if training_type == "obb":
+                    detections = detect_obb(detector, frame)
+                    if detections:
+                        best = detections[0]
+                        corners = best["corners"]
+                        conf = best["conf"]
+                        bboxes_to_save[video_id].append(
+                            (frame_idx, *corners[0], *corners[1], *corners[2], *corners[3])
+                        )
+                        scores_to_save[video_id].append((frame_idx, conf))
+                    else:
+                        scores_to_save[video_id].append((frame_idx, 0.0))
                 else:
-                    scores_to_save[video_id].append((frame_idx, 0.0))
+                    detections = detect(detector, frame)
+                    if detections:
+                        best = detections[0]
+                        x1, y1, x2, y2 = best["bbox"]
+                        conf = best["conf"]
+                        bboxes_to_save[video_id].append((frame_idx, x1, y1, x2, y2))
+                        scores_to_save[video_id].append((frame_idx, conf))
+                    else:
+                        scores_to_save[video_id].append((frame_idx, 0.0))
 
                 self._training_progress.apply_current += 1
 
@@ -510,20 +584,38 @@ class DetectorService:
             for video_id, bbox_list in bboxes_to_save.items():
                 if not bbox_list:
                     continue
-                rows = [
-                    {
-                        "video_id": video_id,
-                        "frame_idx": int(fi),
-                        "detector_bbox_x1": float(x1),
-                        "detector_bbox_y1": float(y1),
-                        "detector_bbox_x2": float(x2),
-                        "detector_bbox_y2": float(y2),
-                    }
-                    for fi, x1, y1, x2, y2 in bbox_list
-                ]
-                _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"],
-                    ["detector_bbox_x1", "detector_bbox_y1", "detector_bbox_x2", "detector_bbox_y2"])
+                if training_type == "obb":
+                    rows = [
+                        {
+                            "video_id": video_id,
+                            "frame_idx": int(fi),
+                            "obb_x1": float(vals[0]), "obb_y1": float(vals[1]),
+                            "obb_x2": float(vals[2]), "obb_y2": float(vals[3]),
+                            "obb_x3": float(vals[4]), "obb_y3": float(vals[5]),
+                            "obb_x4": float(vals[6]), "obb_y4": float(vals[7]),
+                        }
+                        for fi, *vals in bbox_list
+                    ]
+                    _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"],
+                        ["obb_x1", "obb_y1", "obb_x2", "obb_y2",
+                         "obb_x3", "obb_y3", "obb_x4", "obb_y4"])
+                else:
+                    rows = [
+                        {
+                            "video_id": video_id,
+                            "frame_idx": int(fi),
+                            "detector_bbox_x1": float(x1),
+                            "detector_bbox_y1": float(y1),
+                            "detector_bbox_x2": float(x2),
+                            "detector_bbox_y2": float(y2),
+                        }
+                        for fi, x1, y1, x2, y2 in bbox_list
+                    ]
+                    _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"],
+                        ["detector_bbox_x1", "detector_bbox_y1",
+                         "detector_bbox_x2", "detector_bbox_y2"])
 
+            score_col = "obb_score" if training_type == "obb" else "detector_score"
             for video_id, score_list in scores_to_save.items():
                 if not score_list:
                     continue
@@ -531,11 +623,11 @@ class DetectorService:
                     {
                         "video_id": video_id,
                         "frame_idx": int(fi),
-                        "detector_score": float(score),
+                        score_col: float(score),
                     }
                     for fi, score in score_list
                 ]
-                _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"], ["detector_score"])
+                _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"], [score_col])
 
             session.commit()
 
