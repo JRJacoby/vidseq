@@ -1366,6 +1366,107 @@ export async function deleteDetectionTraining(projectId: number): Promise<void> 
     }
 }
 
+// ----- OBB Detector -----
+
+export interface ObbBbox {
+    corners: [number, number][]
+}
+
+export interface ObbDetectorStatus {
+    model_exists: boolean
+    is_training: boolean
+}
+
+export async function getObbDetectionStatus(projectId: number): Promise<ObbDetectorStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/obb/status`)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get OBB status'))
+    }
+    return response.json()
+}
+
+export async function createObbTraining(
+    projectId: number,
+    maxEpochs: number,
+    videoIds: number[],
+    lrPatience: number = 10,
+    earlyStopPatience: number = 20,
+): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/obb/training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            video_ids: videoIds,
+            max_epochs: maxEpochs,
+            lr_patience: lrPatience,
+            early_stop_patience: earlyStopPatience,
+        }),
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to start OBB training'))
+    }
+}
+
+export async function deleteObbTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/obb/training`, {
+        method: 'DELETE',
+    })
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to stop OBB training'))
+    }
+}
+
+export async function applyObbDetector(projectId: number, videoIds: number[]): Promise<{ videos_processed: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/obb-detection`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to apply OBB detector'))
+    }
+    return response.json()
+}
+
+export async function getObbBbox(projectId: number, videoId: number, frameIdx: number): Promise<{ bbox: ObbBbox | null }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/obb-bboxes/${frameIdx}`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get OBB bbox'))
+    }
+    return response.json()
+}
+
+export async function obbBboxesExist(projectId: number, videoId: number): Promise<{ exists: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/obb-bboxes/exists`
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to check OBB bboxes'))
+    }
+    return response.json()
+}
+
+export async function getObbScoresDownsampled(
+    projectId: number,
+    videoId: number,
+    maxSamples: number = 800,
+    startFrame: number = 0,
+    endFrame?: number,
+): Promise<{ scores: { frame_idx: number; score: number }[]; total_count: number }> {
+    let url = `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/obb-scores-downsampled?max_samples=${maxSamples}&start_frame=${startFrame}`
+    if (endFrame !== undefined) url += `&end_frame=${endFrame}`
+    const response = await fetch(url)
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to get OBB scores'))
+    }
+    return response.json()
+}
+
 export async function getDetectionTraining(projectId: number): Promise<DetectorTrainingProgress> {
     const response = await fetch(`${API_BASE}/projects/${projectId}/detection/training`)
     if (!response.ok) {
