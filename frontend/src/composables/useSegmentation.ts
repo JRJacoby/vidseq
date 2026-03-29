@@ -47,7 +47,7 @@ export function useSegmentation(
     isPlaying: Ref<boolean> = ref(false),
     videoRef: Ref<HTMLVideoElement | null> = ref(null),
     fps: Ref<number> = ref(30),
-    maskViewMode: Ref<'tracker' | 'detector' | 'final'> = ref('tracker'),
+    maskViewMode: Ref<'tracker' | 'detector' | 'final' | 'obb'> = ref('tracker'),
 ): UseSegmentationReturn {
 
     // ========================================================================

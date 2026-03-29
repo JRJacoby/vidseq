@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, type Video, type MaskScore } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, type Video, type MaskScore, type ObbBbox } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -34,10 +34,14 @@ const showDetectorConfidence = ref(true)
 const detectorScores = ref<MaskScore[]>([])
 
 // Mask view mode
-type MaskViewMode = 'tracker' | 'detector' | 'final'
+type MaskViewMode = 'tracker' | 'detector' | 'final' | 'obb'
 const maskViewMode = ref<MaskViewMode>('tracker')
 const hasDetectorMasks = ref(false)
 const hasFinalMasks = ref(false)
+const hasObbBboxes = ref(false)
+const obbBbox = ref<ObbBbox | null>(null)
+const obbScores = ref<{ frame_idx: number; score: number }[]>([])
+const showObbConfidence = ref(true)
 
 const checkDetectorMasks = async () => {
   if (!projectId.value || !videoId.value) return
@@ -56,6 +60,16 @@ const checkFinalMasks = async () => {
     hasFinalMasks.value = result.exists
   } catch {
     hasFinalMasks.value = false
+  }
+}
+
+const checkObbBboxes = async () => {
+  if (!projectId.value || !videoId.value) return
+  try {
+    const result = await obbBboxesExist(projectId.value, videoId.value)
+    hasObbBboxes.value = result.exists
+  } catch {
+    hasObbBboxes.value = false
   }
 }
 
@@ -171,10 +185,31 @@ const fetchDetectorScoresForView = async () => {
 
 const fetchDetectorScores = useDebounceFn(fetchDetectorScoresForView, 150)
 
+const fetchObbScoresForView = async () => {
+  if (!projectId.value || !videoId.value || !video.value) return
+  try {
+    const startFrame = Math.floor(viewStart.value * video.value.fps)
+    const endFrame = Math.ceil(viewEnd.value * video.value.fps)
+    const response = await getObbScoresDownsampled(
+      projectId.value,
+      videoId.value,
+      800,
+      startFrame,
+      endFrame
+    )
+    obbScores.value = response.scores
+  } catch (e) {
+    console.error('Failed to fetch OBB scores:', e)
+  }
+}
+
+const fetchObbScores = useDebounceFn(fetchObbScoresForView, 150)
+
 // Re-fetch scores when view range changes
 watch([viewStart, viewEnd], () => {
   fetchScores()
   fetchDetectorScores()
+  fetchObbScores()
 }, { flush: 'post' })
 
 const isPropagating = ref(false)
@@ -196,6 +231,7 @@ const handlePropagateMask = async () => {
     // Refresh scores immediately (no debounce)
     await fetchScoresForView()
     await fetchDetectorScoresForView()
+    await fetchObbScoresForView()
   } catch (e) {
     console.error('Failed to propagate mask:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate mask')
@@ -255,13 +291,29 @@ setMetadataCallback(() => {
   loadFrameData(0)
 })
 
+// Fetch OBB bbox when frame changes in OBB mode
+watch([currentFrameIdx, maskViewMode], async ([frameIdx, mode]) => {
+  if (mode !== 'obb' || !projectId.value || !videoId.value) {
+    if (mode !== 'obb') obbBbox.value = null
+    return
+  }
+  try {
+    const result = await getObbBbox(projectId.value, videoId.value, frameIdx)
+    obbBbox.value = result.bbox
+  } catch {
+    obbBbox.value = null
+  }
+})
+
 onMounted(async () => {
   await refreshFrameRanges()
   await checkDetectorMasks()
   await checkFinalMasks()
+  await checkObbBboxes()
   // Initial fetch without debounce
   await fetchScoresForView()
   await fetchDetectorScoresForView()
+  await fetchObbScoresForView()
 })
 </script>
 
@@ -304,6 +356,7 @@ onMounted(async () => {
                 :show-mask="showMask"
                 :show-prompts="showPrompts"
                 :detector-bbox="detectorBbox"
+                :obb-bbox="obbBbox"
                 @point-complete="handlePointCompleteWithRefresh"
               />
             </div>
@@ -335,6 +388,8 @@ onMounted(async () => {
               :confidence-scores="confidenceScores"
               :show-detector-confidence="showDetectorConfidence"
               :detector-scores="detectorScores"
+              :show-obb-confidence="showObbConfidence"
+              :obb-scores="obbScores"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @view-change="handleViewChange"
@@ -432,6 +487,9 @@ onMounted(async () => {
             </option>
             <option value="final" :disabled="!hasFinalMasks">
               Final {{ hasFinalMasks ? '' : '(not available)' }}
+            </option>
+            <option value="obb" :disabled="!hasObbBboxes">
+              OBB {{ hasObbBboxes ? '' : '(not available)' }}
             </option>
           </select>
         </div>
