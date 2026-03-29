@@ -21,6 +21,7 @@ import {
   addAssociatedVideos,
   coSegmentVideos,
   applyDetector,
+  applyObbDetector,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -29,6 +30,7 @@ import {
 import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useDetector } from '@/composables/useDetector'
+import { useObbDetector } from '@/composables/useObbDetector'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -101,6 +103,7 @@ const pcaStatus = ref<PCAStatus | null>(null)
 const isRunningPCA = ref(false)
 const pcaComponents = ref(20)
 const isApplyingDetector = ref(false)
+const isApplyingObb = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -124,6 +127,13 @@ const {
   checkStatus: checkDetectorStatus,
   setDetectorType,
 } = useDetector(projectId)
+
+const {
+  isTraining: isObbTraining,
+  modelExists: obbModelExists,
+  startTraining: startObbTraining,
+  checkStatus: checkObbStatus,
+} = useObbDetector(projectId)
 
 const loadProject = async () => {
   if (!projectStore.currentProjectId) return
@@ -434,6 +444,30 @@ const handleApplyDetector = async () => {
     alert(e.message || 'Failed to apply detector')
   } finally {
     isApplyingDetector.value = false
+  }
+}
+
+const handleTrainObb = async () => {
+  if (!projectId.value || isObbTraining.value) return
+  try {
+    await startObbTraining(1000, selectedVideoIdsList.value)
+    router.push(`/project/${projectId.value}/detector`)
+  } catch (e: any) {
+    alert(e.message || 'Failed to start OBB training')
+  }
+}
+
+const handleApplyObb = async () => {
+  if (!projectId.value || isApplyingObb.value) return
+  isApplyingObb.value = true
+  try {
+    await applyObbDetector(projectId.value, selectedVideoIdsList.value)
+    await loadVideos()
+  } catch (e: any) {
+    console.error('Failed to apply OBB detector:', e)
+    alert(e.message || 'Failed to apply OBB detector')
+  } finally {
+    isApplyingObb.value = false
   }
 }
 
@@ -776,6 +810,23 @@ const formatScore = (score: number | undefined) => {
             :disabled="isApplyingDetector || isDetectorTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isApplyingDetector ? 'Applying...' : 'Apply Detector' }}</span>
+          </button>
+
+          <h4 class="sidebar-section-title">OBB Detector</h4>
+          <button
+            class="sidebar-button"
+            @click="handleTrainObb"
+            :disabled="isObbTraining || isDetectorTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isObbTraining ? 'Training...' : 'Train OBB Detector' }}</span>
+          </button>
+          <button
+            v-if="obbModelExists"
+            class="sidebar-button"
+            @click="handleApplyObb"
+            :disabled="isApplyingObb || isObbTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isApplyingObb ? 'Applying...' : 'Apply OBB Detector' }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Associated Videos</h4>
