@@ -90,11 +90,12 @@ function render() {
     const scaleY = canvas.height / props.videoHeight
     const corners = props.obbBbox.corners
 
+    const [c0, c1, c2, c3] = corners as [[number, number], [number, number], [number, number], [number, number]]
     ctx.beginPath()
-    ctx.moveTo(corners[0][0] * scaleX, corners[0][1] * scaleY)
-    ctx.lineTo(corners[1][0] * scaleX, corners[1][1] * scaleY)
-    ctx.lineTo(corners[2][0] * scaleX, corners[2][1] * scaleY)
-    ctx.lineTo(corners[3][0] * scaleX, corners[3][1] * scaleY)
+    ctx.moveTo(c0[0] * scaleX, c0[1] * scaleY)
+    ctx.lineTo(c1[0] * scaleX, c1[1] * scaleY)
+    ctx.lineTo(c2[0] * scaleX, c2[1] * scaleY)
+    ctx.lineTo(c3[0] * scaleX, c3[1] * scaleY)
     ctx.closePath()
     ctx.stroke()
   }
