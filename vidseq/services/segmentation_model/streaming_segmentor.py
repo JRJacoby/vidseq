@@ -837,6 +837,7 @@ class SAM2StreamingSegmentor:
         frame: np.ndarray,
         box_prompt: tuple,
         add_as_conditioning: bool = True,
+        use_memory_with_prompt: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Propagate with a box prompt, controlling conditioning storage.
 
@@ -847,6 +848,9 @@ class SAM2StreamingSegmentor:
             box_prompt: Bounding box as (x1, y1, x2, y2).
             add_as_conditioning: If True, store in cond_frame_outputs (permanent).
                 If False, box guides prediction but result goes to non_cond_frame_outputs.
+            use_memory_with_prompt: If True, use memory cross-attention even on
+                prompted frames (guidance mode). If False (default), prompted frames
+                get fresh segmentation without memory (correction mode).
 
         Returns:
             Tuple of (mask, logits, score).
@@ -855,6 +859,7 @@ class SAM2StreamingSegmentor:
             video_id, frame_idx, frame,
             box_prompt=box_prompt,
             store_as_cond=add_as_conditioning,
+            use_memory_with_prompt=use_memory_with_prompt,
         )
 
     def propagate_frame(
@@ -1231,6 +1236,7 @@ class SAM2StreamingSegmentor:
         mask_prompt: np.ndarray | None = None,
         box_prompt: tuple[float, float, float, float] | None = None,
         store_as_cond: bool | None = None,
+        use_memory_with_prompt: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Propagate to a single frame, optionally with a mask or box prompt.
 
@@ -1258,20 +1264,28 @@ class SAM2StreamingSegmentor:
 
         is_prompted = mask_prompt is not None or box_prompt is not None
 
+        import time as _time
+        _pt = {}  # propagate sub-timings
+
         # Get image features and prepare backbone features
         try:
+            _t0 = _time.perf_counter()
             _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
+            _pt["image_features_ms"] = round((_time.perf_counter() - _t0) * 1000, 2)
         except Exception as e:
             raise RuntimeError(f"Failed to get image features for frame {frame_idx}: {e}") from e
 
         try:
+            _t0 = _time.perf_counter()
             current_vision_feats, current_vision_pos_embeds, feat_sizes = (
                 self._prepare_backbone_features(backbone_out)
             )
+            _pt["prepare_backbone_ms"] = round((_time.perf_counter() - _t0) * 1000, 2)
         except Exception as e:
             raise RuntimeError(f"Failed to prepare backbone features for frame {frame_idx}: {e}") from e
 
         # Prepare prompt inputs (mask_prompt and box_prompt are mutually exclusive)
+        _t0 = _time.perf_counter()
         mask_inputs = None
         point_inputs = None
 
@@ -1308,13 +1322,15 @@ class SAM2StreamingSegmentor:
                 "point_coords": point_coords,
                 "point_labels": point_labels,
             }
+        _pt["prompt_prep_ms"] = round((_time.perf_counter() - _t0) * 1000, 2)
 
         # Call track_step
         try:
+            _t0 = _time.perf_counter()
             with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
                     frame_idx=frame_idx,
-                    is_init_cond_frame=is_prompted,
+                    is_init_cond_frame=is_prompted and not use_memory_with_prompt,
                     current_vision_feats=current_vision_feats,
                     current_vision_pos_embeds=current_vision_pos_embeds,
                     feat_sizes=feat_sizes,
@@ -1324,10 +1340,12 @@ class SAM2StreamingSegmentor:
                     num_frames=session["num_frames"],
                     run_mem_encoder=True,
                 )
+            _pt["track_step_ms"] = round((_time.perf_counter() - _t0) * 1000, 2)
         except Exception as e:
             raise RuntimeError(f"track_step failed for frame {frame_idx}: {e}") from e
 
         # Extract mask from pred_masks_high_res
+        _t0 = _time.perf_counter()
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
 
         # Threshold at 0, convert to uint8 * 255, resize to original dims
@@ -1340,6 +1358,15 @@ class SAM2StreamingSegmentor:
 
         # Get logits
         pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+        _pt["postprocess_ms"] = round((_time.perf_counter() - _t0) * 1000, 2)
+
+        # Write sub-timings to file (append mode, same file as handler)
+        try:
+            with open("/tmp/coseg_propagate_timing.jsonl", "a") as _pf:
+                import json as _json
+                _pf.write(_json.dumps({"f": frame_idx, **_pt}) + "\n")
+        except Exception:
+            pass
 
         # Determine storage destination
         # store_as_cond overrides default is_prompted logic when explicitly set
@@ -1735,4 +1762,134 @@ class SAM2StreamingSegmentor:
                         searching = True
 
             if on_progress:
+                on_progress(frame_idx)
+
+    def simple_propagate_with_detector(
+        self,
+        video_id: str,
+        num_frames: int,
+        frames,
+        get_detector_bbox,
+        tracker_masks,
+        final_masks,
+        on_progress=None,
+        reprompt_interval: int = 30,
+        scores: dict | None = None,
+        detector_bboxes: dict | None = None,
+        detector_scores: dict | None = None,
+    ) -> None:
+        """Simple batch segmentation: propagate forward, re-prompt with detector every N frames.
+
+        No drift detection, no search mode, no backtracking. Just forward propagation
+        with periodic detector re-prompting to keep the tracker on target.
+
+        Args:
+            video_id: Video session ID (string).
+            num_frames: Total frames in video.
+            frames: Indexable frame source, frames[idx] -> np.ndarray BGR.
+            get_detector_bbox: Callable(frame_idx, frame) -> (bbox|None, confidence).
+            tracker_masks: MutableSequence to write tracker masks.
+            final_masks: MutableSequence to write final masks.
+            on_progress: Optional callback(frame_idx) for progress reporting.
+            reprompt_interval: Re-prompt with detector every N frames.
+            scores: Optional dict to collect {frame_idx: sam2_score}.
+            detector_bboxes: Optional dict to collect {frame_idx: bbox}.
+            detector_scores: Optional dict to collect {frame_idx: confidence}.
+        """
+        session = self.sessions.get(video_id)
+        if session is None:
+            raise RuntimeError(f"No session for video {video_id}")
+
+        orig_h, orig_w = session["orig_h"], session["orig_w"]
+        cond_frame_indices = set(session.get("cond_frame_indices", []))
+        empty_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+
+        if scores is None:
+            scores = {}
+        if detector_bboxes is None:
+            detector_bboxes = {}
+        if detector_scores is None:
+            detector_scores = {}
+
+        # Bootstrap: scan for first detector bbox
+        start_frame = None
+        for frame_idx in range(num_frames):
+            if frame_idx in cond_frame_indices:
+                continue
+            frame = frames[frame_idx]
+            det_bbox, det_conf = get_detector_bbox(frame_idx, frame)
+            if det_bbox is not None:
+                # Initialize with box prompt
+                # _propagate_single_frame already returns mask in original (orig_h, orig_w) resolution
+                mask, logits, score = self._propagate_single_frame(
+                    video_id, frame_idx, frame, box_prompt=det_bbox
+                )
+                tracker_masks[frame_idx] = mask
+                final_masks[frame_idx] = mask
+                scores[frame_idx] = score
+                detector_bboxes[frame_idx] = det_bbox
+                detector_scores[frame_idx] = det_conf
+                start_frame = frame_idx
+                # Write empty masks for skipped frames
+                for i in range(frame_idx):
+                    if i not in cond_frame_indices:
+                        tracker_masks[i] = empty_mask
+                        final_masks[i] = empty_mask
+                break
+            else:
+                tracker_masks[frame_idx] = empty_mask
+                final_masks[frame_idx] = empty_mask
+
+        if start_frame is None:
+            # No detection found in any frame
+            print(f"[Simple Propagate] No object detected in video {video_id}")
+            return
+
+        if on_progress:
+            on_progress(start_frame)
+
+        # Track conditioning frames added by reprompting for eviction
+        reprompt_cond_frames: list[int] = [start_frame]
+
+        # Forward propagation
+        for frame_idx in range(start_frame + 1, num_frames):
+            if frame_idx in cond_frame_indices:
+                # User conditioning frame, already in memory
+                continue
+
+            frame = frames[frame_idx]
+            is_reprompt = (frame_idx - start_frame) % reprompt_interval == 0
+
+            if is_reprompt:
+                det_bbox, det_conf = get_detector_bbox(frame_idx, frame)
+                if det_bbox is not None:
+                    # Re-prompt with detector bbox
+                    # _propagate_single_frame already returns mask in original (orig_h, orig_w) resolution
+                    mask, logits, score = self._propagate_single_frame(
+                        video_id, frame_idx, frame, box_prompt=det_bbox
+                    )
+                    detector_bboxes[frame_idx] = det_bbox
+                    detector_scores[frame_idx] = det_conf
+
+                    # Evict oldest reprompt conditioning frame if over limit
+                    reprompt_cond_frames.append(frame_idx)
+                    while len(reprompt_cond_frames) > self.MEM_WINDOW:
+                        old_idx = reprompt_cond_frames.pop(0)
+                        self.evict_conditioning_frame(video_id, old_idx)
+                else:
+                    # No detection, normal tracking
+                    mask, logits, score = self._propagate_single_frame(
+                        video_id, frame_idx, frame
+                    )
+            else:
+                # Normal tracking
+                mask, logits, score = self._propagate_single_frame(
+                    video_id, frame_idx, frame
+                )
+
+            tracker_masks[frame_idx] = mask
+            final_masks[frame_idx] = mask
+            scores[frame_idx] = score
+
+            if on_progress and (frame_idx % 50 == 0 or frame_idx == num_frames - 1):
                 on_progress(frame_idx)
