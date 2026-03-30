@@ -659,6 +659,87 @@ def handle_propagate_with_detector(
             torch.cuda.empty_cache()
 
 
+def handle_simple_propagate_with_detector(
+    params: dict,
+    segmentor: StreamingSegmentor,
+    response_callback: Callable[[dict], None],
+) -> dict:
+    """Simple propagate: forward SAM2 with periodic detector re-prompting."""
+    import torch
+    from vidseq.services.detector_model import load_finetuned, detect, pick_best_detection
+
+    video_id = params["video_id"]
+    num_frames = params["num_frames"]
+    project_path = Path(params["project_path"])
+    reprompt_interval = params.get("reprompt_interval", 30)
+
+    if segmentor is None:
+        raise RuntimeError("Model not loaded")
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+
+    model_path = project_path / "models" / "detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained detector model found. Train first.")
+
+    detector = None
+    try:
+        detector = load_finetuned(model_path, device="cuda")
+
+        detector_scores: dict[int, float] = {}
+        detector_bboxes: dict[int, tuple[float, float, float, float]] = {}
+
+        def get_detector_bbox(
+            frame_idx: int, frame: np.ndarray,
+        ) -> tuple[tuple[float, float, float, float] | None, float]:
+            detections = detect(detector, frame)
+            bbox, conf = pick_best_detection(detections, None)
+            return bbox, conf
+
+        def on_progress(frame_idx: int) -> None:
+            if frame_idx % 50 == 0 or frame_idx == num_frames - 1:
+                response_callback({
+                    "type": "progress",
+                    "frame_idx": frame_idx,
+                    "total": num_frames,
+                })
+
+        with tracker_masks(project_path, video_id, "a") as trk_mask_data, \
+             final_masks(project_path, video_id, "a") as fin_mask_data:
+
+            scores: dict[int, float] = {}
+            segmentor.simple_propagate_with_detector(
+                video_id=str(video_id),
+                num_frames=num_frames,
+                frames=resources.frame_source,
+                get_detector_bbox=get_detector_bbox,
+                tracker_masks=trk_mask_data,
+                final_masks=fin_mask_data,
+                on_progress=on_progress,
+                reprompt_interval=reprompt_interval,
+                scores=scores,
+                detector_bboxes=detector_bboxes,
+                detector_scores=detector_scores,
+            )
+
+        return {
+            "type": "simple_propagate_with_detector_result",
+            "status": "ok",
+            "scores": [[idx, s] for idx, s in scores.items()],
+            "detector_scores": [[idx, s] for idx, s in detector_scores.items()],
+            "detector_bboxes": [
+                [idx, *bbox] for idx, bbox in detector_bboxes.items()
+            ],
+        }
+
+    finally:
+        if detector is not None:
+            del detector
+            torch.cuda.empty_cache()
+
+
 def handle_propagate_with_associated(
     params: dict,
     segmentor: StreamingSegmentor,

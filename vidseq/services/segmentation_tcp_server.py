@@ -38,6 +38,7 @@ from vidseq.services.segmentation_commands import (
     handle_reset_video,
     handle_segment_videos_batch,
     handle_shutdown,
+    handle_simple_propagate_with_detector,
 )
 from vidseq.services.segmentation_config import (
     cleanup_port_files,
@@ -339,6 +340,15 @@ class SegmentationTCPServer:
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
                 result = handle_propagate_with_detector(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
+
+            elif cmd_type == "simple_propagate_with_detector":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
+                result = handle_simple_propagate_with_detector(
                     cmd,
                     self._segmentor,
                     response_callback,
