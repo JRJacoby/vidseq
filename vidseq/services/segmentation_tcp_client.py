@@ -844,14 +844,18 @@ class SegmentationService:
         videos: list,
         cond_frames_by_video: dict[int, list[int]] | None = None,
         training_frames_by_video: dict[int, list[int]] | None = None,
+        mode: str = "full",
     ) -> tuple[list[int], dict[int, list[list]], dict[int, list[list]], dict[int, list[list]]]:
         """
         Start batch segmentation for all videos in a project using detector-tracker approach.
 
         For each video:
         1. Initialize session
-        2. Run propagate_with_detector command
+        2. Run propagate_with_detector command (or simple_propagate_with_detector in simple mode)
         3. Close session
+
+        Args:
+            mode: "full" for full propagate_with_detector, "simple" for simple forward-only mode.
 
         Returns:
             Tuple of (job_ids, scores_by_video, detector_scores_by_video,
@@ -902,15 +906,24 @@ class SegmentationService:
                     print(f"[Segmentation Service] Failed to init session for video {video.id}: {result.get('error')}")
                     continue
 
-                # Run propagate_with_detector (uses streaming for progress callbacks)
-                result = self._send_streaming({
-                    "type": "propagate_with_detector",
-                    "video_id": video.id,
-                    "project_path": str(project_path),
-                    "num_frames": video.num_frames,
-                    "iou_threshold": 0.7,
-                    "training_frame_indices": (training_frames_by_video or {}).get(video.id, []),
-                }, timeout=3600.0)  # 1 hour timeout for long videos
+                # Run propagation (uses streaming for progress callbacks)
+                if mode == "simple":
+                    result = self._send_streaming({
+                        "type": "simple_propagate_with_detector",
+                        "video_id": video.id,
+                        "project_path": str(project_path),
+                        "num_frames": video.num_frames,
+                        "reprompt_interval": int(round(video.fps)),
+                    }, timeout=3600.0)
+                else:
+                    result = self._send_streaming({
+                        "type": "propagate_with_detector",
+                        "video_id": video.id,
+                        "project_path": str(project_path),
+                        "num_frames": video.num_frames,
+                        "iou_threshold": 0.7,
+                        "training_frame_indices": (training_frames_by_video or {}).get(video.id, []),
+                    }, timeout=3600.0)  # 1 hour timeout for long videos
 
                 if result.get("status") == "ok":
                     scores_by_video[video.id] = result.get("scores", [])
@@ -1138,10 +1151,11 @@ async def segment_all_videos(
     videos: list,
     cond_frames_by_video: dict[int, list[int]] | None = None,
     training_frames_by_video: dict[int, list[int]] | None = None,
+    mode: str = "full",
 ) -> tuple[list[int], dict[int, list[list]], dict[int, list[list]], dict[int, list[list]]]:
     """Start batch segmentation for all videos using detector-tracker approach."""
     return await SegmentationService.get_instance().segment_all_videos(
-        project_id, project_path, videos, cond_frames_by_video, training_frames_by_video
+        project_id, project_path, videos, cond_frames_by_video, training_frames_by_video, mode
     )
 
 

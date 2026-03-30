@@ -461,6 +461,7 @@ async def segment_all_videos(
     project_id: int,
     project_path: Path,
     video_ids: list[int],
+    mode: str = "full",
 ) -> list[int]:
     """Segment selected videos using detector-tracker approach.
 
@@ -472,6 +473,7 @@ async def segment_all_videos(
         project_id: ID of the project
         project_path: Path to the project folder
         video_ids: List of video IDs to segment
+        mode: "full" for full propagate_with_detector, "simple" for simple forward-only mode.
 
     Returns:
         List of job IDs (empty for now - synchronous execution)
@@ -496,7 +498,7 @@ async def segment_all_videos(
     if not detector_model_path.exists():
         raise ValueError("Detector model not found. Please train the detector first.")
 
-    # Query conditioning frames and training frames for all videos
+    # Query conditioning frames for all videos
     cond_frames_by_video: dict[int, list[int]] = {}
     training_frames_by_video: dict[int, list[int]] = {}
     for video in videos:
@@ -505,9 +507,11 @@ async def segment_all_videos(
             .where(ConditioningFrame.video_id == video.id)
         )
         cond_frames_by_video[video.id] = list(result.scalars().all())
-        training_frames_by_video[video.id] = await frame_data_service.get_training_frames(
-            session, video.id
-        )
+        # Training frames are only needed in full mode
+        if mode != "simple":
+            training_frames_by_video[video.id] = await frame_data_service.get_training_frames(
+                session, video.id
+            )
 
     job_ids, scores_by_video, detector_scores_by_video, detector_bboxes_by_video = await segmentation_tcp_client.segment_all_videos(
         project_id=project_id,
@@ -515,6 +519,7 @@ async def segment_all_videos(
         videos=videos,
         cond_frames_by_video=cond_frames_by_video,
         training_frames_by_video=training_frames_by_video,
+        mode=mode,
     )
 
     # Update database flags for all frames in all videos
