@@ -36,6 +36,27 @@ async def create_videos_segmentation(
     return {"job_ids": job_ids}
 
 
+@router.post("/projects/{project_id}/videos/segmentation/simple")
+async def create_simple_segmentation(
+    project_id: int,
+    request: VideoSelectionRequest,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Start simple batch segmentation (re-prompt every second, no drift detection)."""
+    try:
+        job_ids = await segmentation_service.segment_all_videos(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
+            mode="simple",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"job_ids": job_ids}
+
+
 @router.post("/projects/{project_id}/videos/associated/segmentation")
 async def co_segment_associated_videos(
     project_id: int,

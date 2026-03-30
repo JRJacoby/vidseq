@@ -519,6 +519,21 @@ export async function createVideosSegmentation(projectId: number, videoIds: numb
     return response.json()
 }
 
+export async function createSimpleSegmentation(projectId: number, videoIds: number[]): Promise<{ job_ids: number[] }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/segmentation/simple`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to create simple segmentation'))
+    }
+    return response.json()
+}
+
 export interface PropagateResponse {
     frames_processed: number
 }

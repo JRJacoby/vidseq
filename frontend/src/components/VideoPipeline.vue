@@ -8,6 +8,7 @@ import {
   deleteVideos,
   deleteVideosSegmentation,
   createVideosSegmentation,
+  createSimpleSegmentation,
   createVideosExtraction,
   getCroppedVideoExists,
   getAlignedVideoExists,
@@ -251,6 +252,20 @@ const handleSegmentAll = async () => {
   } catch (e: any) {
     console.error('Failed to segment all videos:', e)
     alert(e.message || 'Failed to start segmentation')
+  } finally {
+    isSegmenting.value = false
+  }
+}
+
+const handleSimpleSegmentAll = async () => {
+  if (!projectId.value || isSegmenting.value) return
+  isSegmenting.value = true
+  try {
+    await createSimpleSegmentation(projectId.value, selectedVideoIdsList.value)
+    await loadVideos()
+  } catch (e: any) {
+    console.error('Failed to start simple segmentation:', e)
+    alert(e.message || 'Failed to start simple segmentation')
   } finally {
     isSegmenting.value = false
   }
@@ -677,6 +692,13 @@ const formatScore = (score: number | undefined) => {
             :disabled="isSegmenting || selectedCount === 0"
           >
             <span class="button-label">{{ isSegmenting ? 'Starting...' : `Segment ${selectedCount} Videos` }}</span>
+          </button>
+          <button
+            class="sidebar-button"
+            @click="handleSimpleSegmentAll"
+            :disabled="isSegmenting || selectedCount === 0"
+          >
+            <span class="button-label">{{ isSegmenting ? 'Segmenting...' : 'Simple Segment All' }}</span>
           </button>
           <button
             class="sidebar-button delete-button"
