@@ -456,6 +456,58 @@ async def apply_obb_detector(
     return len(videos)
 
 
+async def apply_seg_detector(
+    session: "AsyncSession",
+    project_id: int,
+    project_path: Path,
+    video_ids: list[int],
+) -> int:
+    """Run seg detector on all frames of selected videos.
+
+    Writes masks to detector_masks.h5 (via GPU worker) and scores/bboxes to DB.
+    Returns the number of videos processed.
+    """
+    from sqlalchemy import select
+    from vidseq.models.video import Video
+
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids))
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise RuntimeError("No videos found")
+
+    model_path = project_path / "models" / "seg_detector.pt"
+    if not model_path.exists():
+        raise RuntimeError("No trained seg detector model found. Train first.")
+
+    scores_by_video, bboxes_by_video = segmentation_tcp_client.apply_seg_detector(
+        project_path=project_path,
+        videos=videos,
+    )
+
+    for video in videos:
+        vid_scores = scores_by_video.get(video.id, [])
+        vid_bboxes = bboxes_by_video.get(video.id, [])
+        if vid_scores:
+            await frame_data_service.save_detector_scores_batch(
+                session, video.id, vid_scores
+            )
+        if vid_bboxes:
+            await frame_data_service.save_detector_bboxes_batch(
+                session, video.id, vid_bboxes
+            )
+        # Set has_detector_mask flags for all frames with detections
+        all_frame_indices = [int(s[0]) for s in vid_scores if len(s) >= 2 and s[1] > 0]
+        if all_frame_indices:
+            await frame_data_service.set_has_detector_mask_batch(
+                session, video.id, all_frame_indices, True
+            )
+
+    await session.commit()
+    return len(videos)
+
+
 async def segment_all_videos(
     session: "AsyncSession",
     project_id: int,

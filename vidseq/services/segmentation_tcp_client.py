@@ -1140,6 +1140,14 @@ def apply_obb_detector(
     return SegmentationService.get_instance().apply_detector(project_path, videos, detector_type="obb")
 
 
+def apply_seg_detector(
+    project_path: Path,
+    videos: list,
+) -> tuple[dict[int, list[list]], dict[int, list[list]]]:
+    """Run seg detector on all frames of given videos."""
+    return SegmentationService.get_instance().apply_detector(project_path, videos, detector_type="seg")
+
+
 def shutdown_worker() -> None:
     """Shutdown the worker process gracefully."""
     SegmentationService.get_instance().shutdown()
