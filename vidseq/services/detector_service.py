@@ -98,6 +98,48 @@ def _mask_to_obb_label(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
     return f"0 {' '.join(parts)}"
 
 
+def _mask_to_polygon_label(mask: np.ndarray, img_h: int, img_w: int) -> str | None:
+    """Convert a binary mask to YOLO segmentation polygon label format.
+
+    Args:
+        mask: Binary mask (H, W) with values 0 or 255.
+        img_h: Image height in pixels.
+        img_w: Image width in pixels.
+
+    Returns:
+        YOLO seg format string "class x1 y1 x2 y2 ..." (normalized polygon points),
+        or None if mask is empty or degenerate.
+    """
+    contours, _ = cv2.findContours(
+        (mask > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+
+    # Take the largest contour by area
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) < 1:
+        return None
+
+    # Simplify polygon
+    perimeter = cv2.arcLength(largest, True)
+    epsilon = 0.001 * perimeter
+    simplified = cv2.approxPolyDP(largest, epsilon, True)
+
+    # Need at least 3 points for a valid polygon
+    if len(simplified) < 3:
+        return None
+
+    # Normalize to [0, 1]
+    parts = []
+    for point in simplified:
+        px, py = point[0]
+        parts.append(f"{px / img_w:.6f}")
+        parts.append(f"{py / img_h:.6f}")
+
+    return f"0 {' '.join(parts)}"
+
+
 VALID_DETECTOR_TYPES = ("rtdetr", "yolo")
 DEFAULT_DETECTOR_TYPE = "rtdetr"
 
@@ -179,6 +221,10 @@ class DetectorService:
         """Check if trained OBB model exists."""
         return (project_path / "models" / "obb_detector.pt").exists()
 
+    def seg_model_exists(self, project_path: Path) -> bool:
+        """Check if trained seg detector model exists."""
+        return (project_path / "models" / "seg_detector.pt").exists()
+
     def train(
         self,
         project_path: Path,
@@ -244,6 +290,8 @@ class DetectorService:
         # Read detector type from config
         if training_type == "obb":
             detector_type = "obb"
+        elif training_type == "seg":
+            detector_type = "seg"
         else:
             detector_type = read_detector_config(project_path)
 
@@ -353,6 +401,10 @@ class DetectorService:
                 train_workers = 4
                 train_batch = max(batch_size, 8)
                 train_name = "obb_train"
+            elif detector_type == "seg":
+                train_workers = 4
+                train_batch = max(batch_size, 8)
+                train_name = "seg_train"
             elif detector_type == "yolo":
                 train_workers = 4
                 train_batch = max(batch_size, 8)
@@ -381,11 +433,13 @@ class DetectorService:
             )
             if detector_type == "obb":
                 train_kwargs["task"] = "obb"
+            elif detector_type == "seg":
+                train_kwargs["task"] = "segment"
 
             model.train(**train_kwargs)
 
             # Copy best weights to standard location
-            weights_dest = "obb_detector.pt" if training_type == "obb" else "detector.pt"
+            weights_dest = {"obb": "obb_detector.pt", "seg": "seg_detector.pt"}.get(training_type, "detector.pt")
             best_pt = model_save_dir / train_name / "weights" / "best.pt"
             if best_pt.exists():
                 shutil.copy2(best_pt, model_save_dir / weights_dest)
@@ -451,6 +505,8 @@ class DetectorService:
             # Convert mask to label format
             if detector_type == "obb":
                 yolo_line = _mask_to_obb_label(mask, img_h, img_w)
+            elif detector_type == "seg":
+                yolo_line = _mask_to_polygon_label(mask, img_h, img_w)
             else:
                 yolo_line = _mask_to_yolo_bbox(mask, img_h, img_w)
             if yolo_line is None:
@@ -511,8 +567,9 @@ class DetectorService:
         training_type: str = "detector",
     ) -> None:
         """Apply trained detector to all training frames and save bboxes/scores to DB."""
-        from vidseq.services.detector_model import detect, detect_obb, load_finetuned
-        from vidseq.services.frame_data_service import _chunked_upsert_sync
+        from vidseq.services.detector_model import detect, detect_obb, detect_seg, load_finetuned
+        from vidseq.services.frame_data_service import _chunked_upsert_sync, set_has_detector_mask_batch_sync
+        from vidseq.services.array_storage import detector_masks
 
         logger.info("Applying detector to training data...")
 
@@ -520,7 +577,7 @@ class DetectorService:
         self._training_progress.apply_total = len(all_frames)
         self._training_progress.apply_current = 0
 
-        weights_name = "obb_detector.pt" if training_type == "obb" else "detector.pt"
+        weights_name = {"obb": "obb_detector.pt", "seg": "seg_detector.pt"}.get(training_type, "detector.pt")
         weights_path = project_path / "models" / weights_name
         detector = load_finetuned(weights_path)
 
@@ -534,6 +591,7 @@ class DetectorService:
         # Collect bboxes and scores to batch-insert
         bboxes_to_save: dict[int, list] = {}
         scores_to_save: dict[int, list[tuple[int, float]]] = {}
+        masks_to_save: dict[int, list[tuple[int, np.ndarray]]] = {}
 
         for video_id, frame_list in frames_by_video.items():
             bboxes_to_save[video_id] = []
@@ -551,7 +609,22 @@ class DetectorService:
                     continue
 
                 # Run detection
-                if training_type == "obb":
+                if training_type == "seg":
+                    img_h, img_w = frame.shape[:2]
+                    detections = detect_seg(detector, frame)
+                    if detections:
+                        best = detections[0]
+                        x1, y1, x2, y2 = best["bbox"]
+                        conf = best["conf"]
+                        mask = best["mask"]
+                        mask_binary = (mask > 0.5).astype(np.uint8) * 255
+                        mask_resized = cv2.resize(mask_binary, (img_w, img_h), interpolation=cv2.INTER_LINEAR)
+                        bboxes_to_save[video_id].append((frame_idx, x1, y1, x2, y2))
+                        scores_to_save[video_id].append((frame_idx, conf))
+                        masks_to_save.setdefault(video_id, []).append((frame_idx, mask_resized))
+                    else:
+                        scores_to_save[video_id].append((frame_idx, 0.0))
+                elif training_type == "obb":
                     detections = detect_obb(detector, frame)
                     if detections:
                         best = detections[0]
@@ -630,6 +703,17 @@ class DetectorService:
                 _chunked_upsert_sync(session, rows, ["video_id", "frame_idx"], [score_col])
 
             session.commit()
+
+            # Write seg masks to H5 and set has_detector_mask flags
+            if training_type == "seg":
+                for video_id, mask_list in masks_to_save.items():
+                    if not mask_list:
+                        continue
+                    with detector_masks(project_path, video_id, "a") as mask_data:
+                        for frame_idx, mask in mask_list:
+                            mask_data[frame_idx] = mask
+                    frame_indices = [fi for fi, _ in mask_list]
+                    set_has_detector_mask_batch_sync(session, video_id, frame_indices, True)
 
         # Cleanup
         del detector
