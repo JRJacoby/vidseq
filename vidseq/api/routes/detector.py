@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.api.schemas import VideoSelectionRequest
+from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
 from vidseq.services.detector_service import DetectorService, read_detector_config, write_detector_config
 from vidseq.services import frame_data_service, segmentation_service
@@ -55,6 +57,13 @@ class DetectorMasksExistsResponse(BaseModel):
 
 class ObbStatusResponse(BaseModel):
     """Response for OBB detector status."""
+
+    model_exists: bool
+    is_training: bool
+
+
+class SegDetectorStatusResponse(BaseModel):
+    """Response for seg detector status."""
 
     model_exists: bool
     is_training: bool
@@ -440,3 +449,121 @@ async def apply_detector(
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"videos_processed": videos_processed}
+
+
+@router.get(
+    "/projects/{project_id}/detection/seg/status",
+    response_model=SegDetectorStatusResponse,
+)
+async def get_seg_detection_status(
+    project_path: Path = Depends(get_project_folder),
+):
+    """Get seg detector model status."""
+    service = DetectorService.get_instance()
+    return SegDetectorStatusResponse(
+        model_exists=service.seg_model_exists(project_path),
+        is_training=service.is_training() and service._training_type == "seg",
+    )
+
+
+@router.post("/projects/{project_id}/detection/seg/training")
+async def create_seg_training(
+    request: TrainRequest,
+    project_path: Path = Depends(get_project_folder),
+):
+    """Start seg detector training."""
+    service = DetectorService.get_instance()
+    if service.is_training():
+        raise HTTPException(status_code=409, detail="Training already in progress")
+    try:
+        service.train(
+            project_path=project_path,
+            video_ids=request.video_ids,
+            max_epochs=request.max_epochs,
+            batch_size=request.batch_size,
+            lr=request.lr,
+            early_stop_patience=request.early_stop_patience,
+            training_type="seg",
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "started"}
+
+
+@router.delete("/projects/{project_id}/detection/seg/training", status_code=204)
+async def delete_seg_training():
+    """Stop seg detector training."""
+    service = DetectorService.get_instance()
+    if not service.is_training():
+        raise HTTPException(status_code=400, detail="No training in progress")
+    service.stop_training()
+    return None
+
+
+@router.get("/projects/{project_id}/detection/seg/training")
+async def get_seg_training_progress():
+    """Get seg training progress."""
+    service = DetectorService.get_instance()
+    return service.get_training_progress().to_dict()
+
+
+@router.get("/projects/{project_id}/detection/seg/training/stream")
+async def stream_seg_training():
+    """SSE stream for seg training updates."""
+    async def event_generator():
+        service = DetectorService.get_instance()
+        last_progress_str = None
+        while True:
+            progress = service.get_training_progress()
+            progress_dict = progress.to_dict()
+            progress_str = json.dumps(progress_dict)
+            if progress_str != last_progress_str:
+                yield f"data: {progress_str}\n\n"
+                last_progress_str = progress_str
+            if progress.status in ("completed", "failed", "stopped", "idle"):
+                if not progress.is_training:
+                    break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/projects/{project_id}/videos/seg-detection")
+async def apply_seg_detector(
+    project_id: int,
+    request: VideoSelectionRequest,
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Run seg detector on every frame of selected videos."""
+    try:
+        videos_processed = await segmentation_service.apply_seg_detector(
+            session=session,
+            project_id=project_id,
+            project_path=project_path,
+            video_ids=request.video_ids,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"videos_processed": videos_processed}
+
+
+@router.get("/projects/{project_id}/videos/{video_id}/seg-detector-masks/exists")
+async def seg_detector_masks_exist(
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Check if seg detector masks exist for a video (checks DB flags, not H5)."""
+    result = await session.execute(
+        select(FrameData.id)
+        .where(
+            FrameData.video_id == video.id,
+            FrameData.has_detector_mask == 1,
+        )
+        .limit(1)
+    )
+    return {"exists": result.first() is not None}
