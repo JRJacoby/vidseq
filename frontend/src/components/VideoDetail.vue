@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, type Video, type MaskScore, type ObbBbox } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -34,11 +34,12 @@ const showDetectorConfidence = ref(true)
 const detectorScores = ref<MaskScore[]>([])
 
 // Mask view mode
-type MaskViewMode = 'tracker' | 'detector' | 'final' | 'obb'
+type MaskViewMode = 'tracker' | 'detector' | 'final' | 'obb' | 'seg'
 const maskViewMode = ref<MaskViewMode>('tracker')
 const hasDetectorMasks = ref(false)
 const hasFinalMasks = ref(false)
 const hasObbBboxes = ref(false)
+const hasSegMasks = ref(false)
 const obbBbox = ref<ObbBbox | null>(null)
 const obbScores = ref<{ frame_idx: number; score: number }[]>([])
 const showObbConfidence = ref(true)
@@ -70,6 +71,16 @@ const checkObbBboxes = async () => {
     hasObbBboxes.value = result.exists
   } catch {
     hasObbBboxes.value = false
+  }
+}
+
+const checkSegMasks = async () => {
+  if (!projectId.value || !videoId.value) return
+  try {
+    const result = await segDetectorMasksExist(projectId.value, videoId.value)
+    hasSegMasks.value = result.exists
+  } catch {
+    hasSegMasks.value = false
   }
 }
 
@@ -310,6 +321,7 @@ onMounted(async () => {
   await checkDetectorMasks()
   await checkFinalMasks()
   await checkObbBboxes()
+  await checkSegMasks()
   // Initial fetch without debounce
   await fetchScoresForView()
   await fetchDetectorScoresForView()
@@ -490,6 +502,9 @@ onMounted(async () => {
             </option>
             <option value="obb" :disabled="!hasObbBboxes">
               OBB {{ hasObbBboxes ? '' : '(not available)' }}
+            </option>
+            <option value="seg" :disabled="!hasSegMasks">
+              Seg {{ hasSegMasks ? '' : '(not available)' }}
             </option>
           </select>
         </div>

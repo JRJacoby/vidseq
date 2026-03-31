@@ -47,7 +47,7 @@ export function useSegmentation(
     isPlaying: Ref<boolean> = ref(false),
     videoRef: Ref<HTMLVideoElement | null> = ref(null),
     fps: Ref<number> = ref(30),
-    maskViewMode: Ref<'tracker' | 'detector' | 'final' | 'obb'> = ref('tracker'),
+    maskViewMode: Ref<'tracker' | 'detector' | 'final' | 'obb' | 'seg'> = ref('tracker'),
 ): UseSegmentationReturn {
 
     // ========================================================================
@@ -99,7 +99,7 @@ export function useSegmentation(
 
         isPrefetching = true
         try {
-            const batchFn = maskViewMode.value === 'detector'
+            const batchFn = maskViewMode.value === 'detector' || maskViewMode.value === 'seg'
                 ? getDetectorMasks
                 : maskViewMode.value === 'final'
                     ? getFinalMasks
@@ -169,6 +169,9 @@ export function useSegmentation(
                 const result = await getDetectorBbox(projectId.value, videoId.value, frameIdx)
                 detectorBbox.value = result.bbox
                 return null  // No mask to render
+            } else if (maskViewMode.value === 'seg') {
+                // Fetch actual mask from detector_masks.h5
+                return await getDetectorMask(projectId.value, videoId.value, frameIdx)
             } else if (maskViewMode.value === 'final') {
                 return await getFinalMask(projectId.value, videoId.value, frameIdx)
             } else {
