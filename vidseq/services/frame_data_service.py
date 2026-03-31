@@ -1230,6 +1230,22 @@ def set_has_detector_mask_batch_sync(
     _chunked_upsert_sync(session, values, ["video_id", "frame_idx"], ["has_detector_mask"])
 
 
+async def set_has_detector_mask_batch(
+    session: AsyncSession,
+    video_id: int,
+    frame_indices: list[int],
+    has_mask: bool = True,
+) -> None:
+    """Batch update has_detector_mask flag for multiple frames (async version)."""
+    if not frame_indices:
+        return
+    values = [
+        {"video_id": video_id, "frame_idx": frame_idx, "has_detector_mask": 1 if has_mask else 0}
+        for frame_idx in frame_indices
+    ]
+    await _chunked_upsert(session, values, ["video_id", "frame_idx"], ["has_detector_mask"])
+
+
 async def clear_all_has_detector_mask(
     session: AsyncSession,
     video_id: int,
