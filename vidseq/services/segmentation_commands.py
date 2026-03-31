@@ -492,7 +492,7 @@ def handle_apply_detector(
     video_paths = params["video_paths"]
     detector_type = params.get("detector_type", "detector")
 
-    weights_name = "obb_detector.pt" if detector_type == "obb" else "detector.pt"
+    weights_name = {"obb": "obb_detector.pt", "seg": "seg_detector.pt"}.get(detector_type, "detector.pt")
     model_path = project_path / "models" / weights_name
     if not model_path.exists():
         raise RuntimeError(f"No trained {'OBB ' if detector_type == 'obb' else ''}detector model found. Train first.")
@@ -511,45 +511,67 @@ def handle_apply_detector(
 
             with VideoFrameSource(video_path) as frame_source:
                 num_frames = frame_source.frame_count
+                orig_w = frame_source.width
+                orig_h = frame_source.height
                 batch_size = 32
                 frames_done = 0
 
-                for batch_start in range(0, num_frames, batch_size):
-                    batch_end = min(batch_start + batch_size, num_frames)
-                    batch_frames = [frame_source[i] for i in range(batch_start, batch_end)]
-                    batch_indices = list(range(batch_start, batch_end))
+                # Open H5 for seg mask writes
+                mask_ctx = detector_masks(project_path, video_id, "a") if detector_type == "seg" else None
+                mask_data = mask_ctx.__enter__() if mask_ctx else None
+                try:
+                    for batch_start in range(0, num_frames, batch_size):
+                        batch_end = min(batch_start + batch_size, num_frames)
+                        batch_frames = [frame_source[i] for i in range(batch_start, batch_end)]
+                        batch_indices = list(range(batch_start, batch_end))
 
-                    results = detector(batch_frames, conf=DETECTION_CONF_THRESHOLD, verbose=False)
+                        results = detector(batch_frames, conf=DETECTION_CONF_THRESHOLD, verbose=False)
 
-                    for idx, result in zip(batch_indices, results):
-                        if detector_type == "obb":
-                            if result.obb is not None and len(result.obb) > 0:
-                                best_i = result.obb.conf.argmax()
-                                corners = result.obb.xyxyxyxy[best_i].cpu().tolist()
-                                conf = result.obb.conf[best_i].item()
-                                scores.append([idx, conf])
-                                bboxes.append([idx, *corners[0], *corners[1], *corners[2], *corners[3]])
+                        for idx, result in zip(batch_indices, results):
+                            if detector_type == "seg":
+                                if result.masks is not None and len(result.masks) > 0 and result.boxes is not None and len(result.boxes) > 0:
+                                    best_i = result.boxes.conf.argmax()
+                                    mask = result.masks.data[best_i].cpu().numpy()
+                                    mask_binary = (mask > 0.5).astype(np.uint8) * 255
+                                    mask_resized = cv2.resize(mask_binary, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                                    mask_data[idx] = mask_resized
+                                    x1, y1, x2, y2 = result.boxes.xyxy[best_i].cpu().tolist()
+                                    conf = result.boxes.conf[best_i].item()
+                                    scores.append([idx, conf])
+                                    bboxes.append([idx, x1, y1, x2, y2])
+                                else:
+                                    scores.append([idx, 0.0])
+                            elif detector_type == "obb":
+                                if result.obb is not None and len(result.obb) > 0:
+                                    best_i = result.obb.conf.argmax()
+                                    corners = result.obb.xyxyxyxy[best_i].cpu().tolist()
+                                    conf = result.obb.conf[best_i].item()
+                                    scores.append([idx, conf])
+                                    bboxes.append([idx, *corners[0], *corners[1], *corners[2], *corners[3]])
+                                else:
+                                    scores.append([idx, 0.0])
                             else:
-                                scores.append([idx, 0.0])
-                        else:
-                            if result.boxes is not None and len(result.boxes) > 0:
-                                best_i = result.boxes.conf.argmax()
-                                x1, y1, x2, y2 = result.boxes.xyxy[best_i].cpu().tolist()
-                                conf = result.boxes.conf[best_i].item()
-                                scores.append([idx, conf])
-                                bboxes.append([idx, x1, y1, x2, y2])
-                            else:
-                                scores.append([idx, 0.0])
+                                if result.boxes is not None and len(result.boxes) > 0:
+                                    best_i = result.boxes.conf.argmax()
+                                    x1, y1, x2, y2 = result.boxes.xyxy[best_i].cpu().tolist()
+                                    conf = result.boxes.conf[best_i].item()
+                                    scores.append([idx, conf])
+                                    bboxes.append([idx, x1, y1, x2, y2])
+                                else:
+                                    scores.append([idx, 0.0])
 
-                    prev_done = frames_done
-                    frames_done += len(batch_frames)
-                    if response_callback and (frames_done // 50 > prev_done // 50):
-                        response_callback({
-                            "type": "progress",
-                            "frame_idx": frames_done,
-                            "total": num_frames,
-                            "video_id": video_id,
-                        })
+                        prev_done = frames_done
+                        frames_done += len(batch_frames)
+                        if response_callback and (frames_done // 50 > prev_done // 50):
+                            response_callback({
+                                "type": "progress",
+                                "frame_idx": frames_done,
+                                "total": num_frames,
+                                "video_id": video_id,
+                            })
+                finally:
+                    if mask_ctx:
+                        mask_ctx.__exit__(None, None, None)
 
             all_scores[vid_key] = scores
             all_bboxes[vid_key] = bboxes
