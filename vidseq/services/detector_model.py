@@ -17,6 +17,7 @@ PRETRAINED_MODELS = {
     "rtdetr": "rtdetr-x.pt",
     "yolo": "yolo11n.pt",
     "obb": "yolo11n-obb.pt",
+    "seg": "yolo11x-seg.pt",
 }
 
 
@@ -103,6 +104,40 @@ def detect_obb(
             detections.append({
                 "corners": corners,
                 "conf": obb.conf[i].item(),
+            })
+    detections.sort(key=lambda d: d["conf"], reverse=True)
+    return detections
+
+
+def detect_seg(
+    model,
+    frame: np.ndarray,
+    conf: float = DETECTION_CONF_THRESHOLD,
+) -> list[dict]:
+    """Run segmentation detection on a single BGR frame.
+
+    Args:
+        model: Ultralytics YOLO-seg model instance.
+        frame: BGR uint8 numpy array (H, W, 3).
+        conf: Confidence threshold.
+
+    Returns:
+        List of detections sorted by confidence (descending).
+        Each detection: {"bbox": (x1, y1, x2, y2), "mask": np.ndarray, "conf": float}
+        bbox in pixel coords. mask is at YOLO's internal resolution, needs resize.
+    """
+    results = model(frame, conf=conf, verbose=False)
+    detections = []
+    if len(results) > 0 and results[0].boxes is not None and results[0].masks is not None:
+        boxes = results[0].boxes
+        masks = results[0].masks
+        for i in range(len(boxes)):
+            x1, y1, x2, y2 = boxes.xyxy[i].cpu().tolist()
+            mask = masks.data[i].cpu().numpy()
+            detections.append({
+                "bbox": (x1, y1, x2, y2),
+                "mask": mask,
+                "conf": boxes.conf[i].item(),
             })
     detections.sort(key=lambda d: d["conf"], reverse=True)
     return detections
