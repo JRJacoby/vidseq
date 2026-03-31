@@ -23,6 +23,7 @@ import {
   coSegmentVideos,
   applyDetector,
   applyObbDetector,
+  applySegDetector,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -32,6 +33,7 @@ import FilePickerModal from '@/components/FilePickerModal.vue'
 import { useProjectStore } from '@/stores/project'
 import { useDetector } from '@/composables/useDetector'
 import { useObbDetector } from '@/composables/useObbDetector'
+import { useSegDetector } from '@/composables/useSegDetector'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -105,6 +107,7 @@ const isRunningPCA = ref(false)
 const pcaComponents = ref(20)
 const isApplyingDetector = ref(false)
 const isApplyingObb = ref(false)
+const isApplyingSeg = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -135,6 +138,12 @@ const {
   startTraining: startObbTraining,
   checkStatus: checkObbStatus,
 } = useObbDetector(projectId)
+
+const {
+  isTraining: isSegTraining,
+  modelExists: segModelExists,
+  startTraining: startSegTraining,
+} = useSegDetector(projectId)
 
 const loadProject = async () => {
   if (!projectStore.currentProjectId) return
@@ -483,6 +492,30 @@ const handleApplyObb = async () => {
     alert(e.message || 'Failed to apply OBB detector')
   } finally {
     isApplyingObb.value = false
+  }
+}
+
+const handleTrainSeg = async () => {
+  if (!projectId.value || isSegTraining.value) return
+  try {
+    await startSegTraining(1000, selectedVideoIdsList.value)
+    router.push(`/project/${projectId.value}/detector`)
+  } catch (e: any) {
+    alert(e.message || 'Failed to start seg training')
+  }
+}
+
+const handleApplySeg = async () => {
+  if (!projectId.value || isApplyingSeg.value) return
+  isApplyingSeg.value = true
+  try {
+    await applySegDetector(projectId.value, selectedVideoIdsList.value)
+    await loadVideos()
+  } catch (e: any) {
+    console.error('Failed to apply seg detector:', e)
+    alert(e.message || 'Failed to apply seg detector')
+  } finally {
+    isApplyingSeg.value = false
   }
 }
 
@@ -849,6 +882,23 @@ const formatScore = (score: number | undefined) => {
             :disabled="isApplyingObb || isObbTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isApplyingObb ? 'Applying...' : 'Apply OBB Detector' }}</span>
+          </button>
+
+          <h4 class="sidebar-section-title">Seg Detector</h4>
+          <button
+            class="sidebar-button"
+            @click="handleTrainSeg"
+            :disabled="isSegTraining || isDetectorTraining || isObbTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isSegTraining ? 'Training...' : 'Train Seg Detector' }}</span>
+          </button>
+          <button
+            v-if="segModelExists"
+            class="sidebar-button"
+            @click="handleApplySeg"
+            :disabled="isApplyingSeg || isSegTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isApplyingSeg ? 'Applying...' : 'Apply Seg Detector' }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Associated Videos</h4>
