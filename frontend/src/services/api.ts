@@ -1381,6 +1381,65 @@ export async function deleteDetectionTraining(projectId: number): Promise<void> 
     }
 }
 
+// ----- Seg Detector -----
+
+export interface SegDetectorStatus {
+    model_exists: boolean
+    is_training: boolean
+}
+
+export async function getSegDetectionStatus(projectId: number): Promise<SegDetectorStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/seg/status`)
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to get seg status'))
+    return response.json()
+}
+
+export async function createSegTraining(
+    projectId: number,
+    maxEpochs: number,
+    videoIds: number[],
+    earlyStopPatience: number = 20,
+): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/seg/training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            video_ids: videoIds,
+            max_epochs: maxEpochs,
+            early_stop_patience: earlyStopPatience,
+        }),
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to start seg training'))
+}
+
+export async function deleteSegTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/detection/seg/training`, {
+        method: 'DELETE',
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to stop seg training'))
+}
+
+export async function applySegDetector(projectId: number, videoIds: number[]): Promise<{ videos_processed: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/seg-detection`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
+    )
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to apply seg detector'))
+    return response.json()
+}
+
+export async function segDetectorMasksExist(projectId: number, videoId: number): Promise<{ exists: boolean }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/seg-detector-masks/exists`
+    )
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to check seg masks'))
+    return response.json()
+}
+
 // ----- OBB Detector -----
 
 export interface ObbBbox {
