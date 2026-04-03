@@ -24,6 +24,7 @@ import {
   applyDetector,
   applyObbDetector,
   applySegDetector,
+  exportDetectorBboxes,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -108,6 +109,7 @@ const pcaComponents = ref(20)
 const isApplyingDetector = ref(false)
 const isApplyingObb = ref(false)
 const isApplyingSeg = ref(false)
+const isExportingBboxes = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -505,6 +507,20 @@ const handleTrainSeg = async () => {
   }
 }
 
+const handleExportBboxes = async () => {
+  if (!projectId.value || isExportingBboxes.value) return
+  isExportingBboxes.value = true
+  try {
+    const result = await exportDetectorBboxes(projectId.value, selectedVideoIdsList.value)
+    alert(`Exported ${result.row_count} rows to:\n${result.path}`)
+  } catch (e: any) {
+    console.error('Failed to export detector bboxes:', e)
+    alert(e.message || 'Failed to export detector bboxes')
+  } finally {
+    isExportingBboxes.value = false
+  }
+}
+
 const handleApplySeg = async () => {
   if (!projectId.value || isApplyingSeg.value) return
   isApplyingSeg.value = true
@@ -865,6 +881,13 @@ const formatScore = (score: number | undefined) => {
             :disabled="isApplyingDetector || isDetectorTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isApplyingDetector ? 'Applying...' : 'Apply Detector' }}</span>
+          </button>
+          <button
+            class="sidebar-button"
+            @click="handleExportBboxes"
+            :disabled="isExportingBboxes || selectedCount === 0"
+          >
+            <span class="button-label">{{ isExportingBboxes ? 'Exporting...' : 'Export Bboxes' }}</span>
           </button>
 
           <h4 class="sidebar-section-title">OBB Detector</h4>

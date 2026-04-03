@@ -1432,6 +1432,24 @@ export async function applySegDetector(projectId: number, videoIds: number[]): P
     return response.json()
 }
 
+export async function exportDetectorBboxes(
+    projectId: number,
+    videoIds: number[],
+): Promise<{ path: string; row_count: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/exports/detector-bboxes`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        },
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to export detector bboxes'))
+    }
+    return response.json()
+}
+
 export async function segDetectorMasksExist(projectId: number, videoId: number): Promise<{ exists: boolean }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/seg-detector-masks/exists`
