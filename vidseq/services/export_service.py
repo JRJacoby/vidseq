@@ -1,5 +1,7 @@
 """Service for exporting data to files."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from pathlib import Path
 
@@ -60,17 +62,15 @@ async def export_detector_bboxes(
 
     # 4. Build bbox DataFrame and left-merge
     if bbox_rows:
-        bbox_df = pd.DataFrame(
-            bbox_rows, columns=["video_id", "frame_idx", "x1", "y1", "x2", "y2"]
-        )
+        bbox_df = pd.DataFrame(bbox_rows)
+        bbox_df.columns = pd.Index(["video_id", "frame_idx", "x1", "y1", "x2", "y2"])
         full_df = full_df.merge(bbox_df, on=["video_id", "frame_idx"], how="left")
     else:
         full_df[["x1", "y1", "x2", "y2"]] = np.nan
 
     # 5. Map video_id -> absolute path
-    full_df["video_full_path"] = full_df["video_id"].map(
-        {vid_id: path for vid_id, (path, _) in video_info.items()}
-    )
+    path_lookup = {vid_id: path for vid_id, (path, _) in video_info.items()}
+    full_df["video_full_path"] = full_df["video_id"].map(path_lookup.get)
 
     # 6. Reorder columns to match spec
     full_df = full_df[["video_id", "video_full_path", "frame_idx", "x1", "y1", "x2", "y2"]]
