@@ -37,6 +37,9 @@ async def export_detector_bboxes(
         raise ValueError("No videos found for the given IDs")
 
     video_info = {row.id: (row.path, row.num_frames) for row in video_rows}
+    missing_ids = set(video_ids) - set(video_info)
+    if missing_ids:
+        raise ValueError(f"Videos not found: {sorted(missing_ids)}")
 
     # 2. Query detector bboxes
     result = await session.execute(
@@ -70,7 +73,7 @@ async def export_detector_bboxes(
 
     # 5. Map video_id -> absolute path
     path_lookup = {vid_id: path for vid_id, (path, _) in video_info.items()}
-    full_df["video_full_path"] = full_df["video_id"].map(path_lookup.get)
+    full_df["video_full_path"] = full_df["video_id"].map(path_lookup)
 
     # 6. Reorder columns to match spec
     full_df = full_df[["video_id", "video_full_path", "frame_idx", "x1", "y1", "x2", "y2"]]
