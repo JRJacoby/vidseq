@@ -129,3 +129,41 @@ async def propagate(
         raise HTTPException(status_code=500, detail=str(e))
 
     return PropagateResponse(frames_processed=frames_processed)
+
+
+@router.post(
+    "/projects/{project_id}/videos/{video_id}/propagation-without-memory",
+    response_model=PropagateResponse,
+)
+async def propagate_without_memory(
+    project_id: int,
+    request: PropagateRequest,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Propagate using only conditioning frame memories (no temporal window).
+
+    Prevents drift by ignoring the sliding window of recent propagated frames.
+    Each frame is segmented independently using only user-prompted conditioning frames.
+    """
+    try:
+        frames_processed = await segmentation_service.propagate_without_memory(
+            session=session,
+            project_id=project_id,
+            video_id=video.id,
+            project_path=project_path,
+            start_frame_idx=request.start_frame_idx,
+            max_frames=request.max_frames,
+            num_frames=video.num_frames,
+            height=video.height,
+            width=video.width,
+        )
+    except RuntimeError as e:
+        logger.error(f"Propagation without memory failed: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in propagation without memory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return PropagateResponse(frames_processed=frames_processed)

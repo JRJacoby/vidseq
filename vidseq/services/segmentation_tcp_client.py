@@ -825,6 +825,47 @@ class SegmentationService:
         scores = result.get("scores", [])
         return frame_indices, scores
 
+    def propagate_without_memory(
+        self,
+        project_id: int,
+        video_id: int,
+        start_frame_idx: int,
+        max_frames: int,
+        project_path: Path,
+        num_frames: int,
+        height: int,
+        width: int,
+    ) -> tuple[list[int], list[list]]:
+        """
+        Propagate using only conditioning frame memories (no temporal window).
+
+        Same interface as generate_training_masks but uses cond-only propagation.
+        """
+        session = self.get_session(project_id, video_id)
+        if session is None:
+            raise RuntimeError("No session exists. Add a point prompt first.")
+
+        if not session.has_object:
+            raise RuntimeError("No object tracked. Add a point prompt first.")
+
+        result = self._send_streaming({
+            "type": "propagate_without_memory",
+            "video_id": video_id,
+            "start_frame_idx": start_frame_idx,
+            "max_frames": max_frames,
+            "project_path": str(project_path),
+            "num_frames": num_frames,
+            "height": height,
+            "width": width,
+        }, timeout=600.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to propagate without memory"))
+
+        frame_indices = result.get("frame_indices", [])
+        scores = result.get("scores", [])
+        return frame_indices, scores
+
     def apply_detector(
         self,
         project_path: Path,
@@ -1189,6 +1230,23 @@ def generate_training_masks(
     """Generate training masks and return frame indices and scores."""
     return SegmentationService.get_instance().generate_training_masks(
         project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
+    )
+
+
+def propagate_without_memory(
+    project_id: int,
+    video_id: int,
+    start_frame_idx: int,
+    max_frames: int,
+    project_path: Path,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> tuple[list[int], list[list]]:
+    """Propagate using only conditioning frame memories."""
+    return SegmentationService.get_instance().propagate_without_memory(
+        project_id, video_id, start_frame_idx, max_frames,
+        project_path, num_frames, height, width,
     )
 
 

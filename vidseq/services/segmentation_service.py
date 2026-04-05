@@ -421,6 +421,38 @@ async def propagate(
     return len(frame_indices)
 
 
+async def propagate_without_memory(
+    session: "AsyncSession",
+    project_id: int,
+    video_id: int,
+    project_path: Path,
+    start_frame_idx: int,
+    max_frames: int,
+    num_frames: int,
+    height: int,
+    width: int,
+) -> int:
+    """Propagate using only conditioning frame memories (no temporal window).
+
+    Same as propagate() but uses cond-only mode to prevent drift.
+    """
+    frame_indices, scores = segmentation_tcp_client.propagate_without_memory(
+        project_id=project_id,
+        video_id=video_id,
+        start_frame_idx=start_frame_idx,
+        max_frames=max_frames,
+        project_path=project_path,
+        num_frames=num_frames,
+        height=height,
+        width=width,
+    )
+
+    await frame_data_service.set_has_tracker_mask(session, video_id, frame_indices, True)
+    await frame_data_service.save_scores_batch(session, video_id, scores)
+
+    return len(frame_indices)
+
+
 async def apply_detector(
     session: "AsyncSession",
     project_id: int,
