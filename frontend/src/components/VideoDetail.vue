@@ -136,7 +136,9 @@ const {
   seekToFrame,
   togglePositivePointTool,
   toggleNegativePointTool,
+  toggleBoundingBoxTool,
   handlePointComplete,
+  handleBoxComplete,
   handleResetFrame,
   handleResetVideo,
   clearMaskCache,
@@ -292,6 +294,11 @@ const handlePointCompleteWithRefresh = async (point: { x: number; y: number; typ
   await refreshFrameRanges()
 }
 
+const handleBoxCompleteWithRefresh = async (box: { x1: number; y1: number; x2: number; y2: number }) => {
+  await handleBoxComplete(box)
+  await refreshFrameRanges()
+}
+
 const handleResetVideoWithRefresh = async () => {
   await handleResetVideo()
   await refreshFrameRanges()
@@ -370,6 +377,7 @@ onMounted(async () => {
                 :detector-bbox="detectorBbox"
                 :obb-bbox="obbBbox"
                 @point-complete="handlePointCompleteWithRefresh"
+                @box-complete="handleBoxCompleteWithRefresh"
               />
             </div>
           </div>
@@ -432,6 +440,15 @@ onMounted(async () => {
           >
             <span class="tool-icon">⊖</span>
             <span class="tool-label">Negative Point</span>
+          </button>
+          <button
+            class="tool-button bounding-box"
+            :class="{ active: activeTool === 'bounding_box' }"
+            @click="toggleBoundingBoxTool"
+            :disabled="isSegmenting || !segmentationIsReady"
+          >
+            <span class="tool-icon">▢</span>
+            <span class="tool-label">Bounding Box</span>
           </button>
           <button
             class="tool-button reset-button"
