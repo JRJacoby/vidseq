@@ -578,6 +578,26 @@ export async function createPropagation(
     return response.json()
 }
 
+export async function createPropagationWithoutMemory(
+    projectId: number,
+    videoId: number,
+    startFrameIdx: number,
+    maxFrames: number = 1000
+): Promise<PropagateResponse> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/propagation-without-memory`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to propagate without memory'))
+    }
+    return response.json()
+}
+
 export interface FrameRangesResponse {
     tracker_masked_ranges: [number, number][]
     training_ranges: [number, number][]

@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -253,6 +253,32 @@ const handlePropagateMask = async () => {
   }
 }
 
+const handlePropagateWithoutMemory = async () => {
+  if (!projectId.value || !videoId.value) return
+
+  isPropagating.value = true
+  try {
+    await createPropagationWithoutMemory(
+      projectId.value,
+      videoId.value,
+      currentFrameIdx.value,
+      maxFrames.value
+    )
+    clearMaskCache()
+    await loadFrameData(currentFrameIdx.value)
+    await refreshFrameRanges()
+    // Refresh scores immediately (no debounce)
+    await fetchScoresForView()
+    await fetchDetectorScoresForView()
+    await fetchObbScoresForView()
+  } catch (e) {
+    console.error('Failed to propagate without memory:', e)
+    alert(e instanceof Error ? e.message : 'Failed to propagate without memory')
+  } finally {
+    isPropagating.value = false
+  }
+}
+
 const handleSeek = (time: number) => {
   seek(time)
   if (video.value) {
@@ -489,8 +515,16 @@ onMounted(async () => {
             <span class="tool-icon">▶▶</span>
             <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Mask' }}</span>
           </button>
+          <button
+            class="tool-button propagate-button"
+            @click="handlePropagateWithoutMemory"
+            :disabled="isSegmenting || isPropagating || !segmentationIsReady"
+          >
+            <span class="tool-icon">▶▷</span>
+            <span class="tool-label">{{ isPropagating ? 'Propagating...' : 'Propagate Without Memory' }}</span>
+          </button>
         </div>
-        
+
         <h4 class="action-bar-title">Training Data</h4>
         <div class="tool-buttons">
           <button
