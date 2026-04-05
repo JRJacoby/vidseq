@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import type { ToolType } from '@/composables/useSegmentation'
-
-// Simple prompt type for local/ephemeral prompts
-export interface LocalPrompt {
-  x: number
-  y: number
-  type: 'positive_point' | 'negative_point'
-}
+import type { ToolType, LocalPrompt } from '@/composables/useSegmentation'
 
 const props = defineProps<{
   videoWidth: number
@@ -23,10 +16,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'point-complete', point: { x: number; y: number; type: 'positive_point' | 'negative_point' }): void
+  (e: 'box-complete', box: { x1: number; y1: number; x2: number; y2: number }): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const pendingPoint = ref<{ x: number; y: number; type: 'positive_point' | 'negative_point' } | null>(null)
+const pendingBox = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+const isDragging = ref(false)
+const dragStart = ref<{ x: number; y: number } | null>(null)
 
 function getNormalizedCoords(event: MouseEvent): { x: number; y: number } | null {
   const canvas = canvasRef.value
@@ -51,6 +48,43 @@ function onMouseDown(event: MouseEvent) {
     pendingPoint.value = { x: coords.x, y: coords.y, type: props.activeTool }
     render()
     emit('point-complete', { x: coords.x, y: coords.y, type: props.activeTool })
+  } else if (props.activeTool === 'bounding_box') {
+    isDragging.value = true
+    dragStart.value = coords
+    pendingBox.value = { x1: coords.x, y1: coords.y, x2: coords.x, y2: coords.y }
+    render()
+  }
+}
+
+function onMouseMove(event: MouseEvent) {
+  if (!isDragging.value || !dragStart.value) return
+
+  const coords = getNormalizedCoords(event)
+  if (!coords) return
+
+  pendingBox.value = {
+    x1: Math.min(dragStart.value.x, coords.x),
+    y1: Math.min(dragStart.value.y, coords.y),
+    x2: Math.max(dragStart.value.x, coords.x),
+    y2: Math.max(dragStart.value.y, coords.y),
+  }
+  render()
+}
+
+function onMouseUp(_event: MouseEvent) {
+  if (!isDragging.value || !pendingBox.value) return
+
+  isDragging.value = false
+  dragStart.value = null
+
+  const box = pendingBox.value
+  // Only emit if box has meaningful size (not a click)
+  const minSize = 0.01
+  if (Math.abs(box.x2 - box.x1) > minSize && Math.abs(box.y2 - box.y1) > minSize) {
+    emit('box-complete', { x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2 })
+  } else {
+    pendingBox.value = null
+    render()
   }
 }
 
@@ -100,32 +134,45 @@ function render() {
     ctx.stroke()
   }
 
-  // Draw prompts (points only)
+  // Draw prompts (points and boxes)
   if (props.showPrompts === false) return
   for (const prompt of props.prompts) {
-    const px = prompt.x * canvas.width
-    const py = prompt.y * canvas.height
-    const radius = 8
+    if (prompt.type === 'bounding_box') {
+      // Draw completed box prompt
+      const bx1 = prompt.x1 * canvas.width
+      const by1 = prompt.y1 * canvas.height
+      const bx2 = prompt.x2 * canvas.width
+      const by2 = prompt.y2 * canvas.height
+      ctx.strokeStyle = '#3b82f6'
+      ctx.lineWidth = 3
+      ctx.setLineDash([])
+      ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1)
+    } else {
+      // Draw point prompt (existing logic)
+      const px = prompt.x * canvas.width
+      const py = prompt.y * canvas.height
+      const radius = 8
 
-    ctx.beginPath()
-    ctx.arc(px, py, radius, 0, Math.PI * 2)
-    ctx.fillStyle = prompt.type === 'positive_point' ? '#22c55e' : '#ef4444'
-    ctx.fill()
-    ctx.strokeStyle = '#fff'
-    ctx.lineWidth = 2
-    ctx.setLineDash([])
-    ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(px, py, radius, 0, Math.PI * 2)
+      ctx.fillStyle = prompt.type === 'positive_point' ? '#22c55e' : '#ef4444'
+      ctx.fill()
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.setLineDash([])
+      ctx.stroke()
 
-    ctx.strokeStyle = '#fff'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(px - 4, py)
-    ctx.lineTo(px + 4, py)
-    if (prompt.type === 'positive_point') {
-      ctx.moveTo(px, py - 4)
-      ctx.lineTo(px, py + 4)
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(px - 4, py)
+      ctx.lineTo(px + 4, py)
+      if (prompt.type === 'positive_point') {
+        ctx.moveTo(px, py - 4)
+        ctx.lineTo(px, py + 4)
+      }
+      ctx.stroke()
     }
-    ctx.stroke()
   }
 
   // Draw pending point
@@ -161,10 +208,24 @@ function render() {
     }
     ctx.stroke()
   }
+
+  // Draw pending box (during drag)
+  if (pendingBox.value) {
+    const bx1 = pendingBox.value.x1 * canvas.width
+    const by1 = pendingBox.value.y1 * canvas.height
+    const bx2 = pendingBox.value.x2 * canvas.width
+    const by2 = pendingBox.value.y2 * canvas.height
+    ctx.strokeStyle = '#3b82f6'
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 4])
+    ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1)
+    ctx.setLineDash([])
+  }
 }
 
 watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts], () => {
   pendingPoint.value = null
+  pendingBox.value = null
   render()
 }, { deep: true })
 
@@ -177,6 +238,10 @@ watch(() => [props.videoWidth, props.videoHeight], () => {
 })
 
 watch(() => props.activeTool, () => {
+  pendingPoint.value = null
+  pendingBox.value = null
+  isDragging.value = false
+  dragStart.value = null
   render()
 })
 
@@ -195,6 +260,8 @@ onMounted(() => {
     class="video-overlay"
     :class="{ 'tool-active': activeTool !== 'none' }"
     @mousedown="onMouseDown"
+    @mousemove="onMouseMove"
+    @mouseup="onMouseUp"
   />
 </template>
 
