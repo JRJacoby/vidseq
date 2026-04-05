@@ -282,6 +282,73 @@ def handle_add_prompt(
     }
 
 
+def handle_add_box_prompt(
+    params: dict,
+    segmentor: StreamingSegmentor,
+) -> dict:
+    """Add bounding box prompt to a frame.
+
+    Args:
+        params: Command params with video_id, frame_idx, x1, y1, x2, y2
+                (all coordinates normalized [0, 1])
+        segmentor: StreamingSegmentor instance
+
+    Returns:
+        Response dict with mask_rle
+    """
+    video_id = params["video_id"]
+    frame_idx = params["frame_idx"]
+    x1 = params["x1"]  # normalized [0, 1]
+    y1 = params["y1"]
+    x2 = params["x2"]
+    y2 = params["y2"]
+
+    if segmentor is None:
+        raise RuntimeError("Model not loaded")
+
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+
+    # Convert normalized coords to pixel coords
+    px1 = x1 * resources.width
+    py1 = y1 * resources.height
+    px2 = x2 * resources.width
+    py2 = y2 * resources.height
+
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
+        mask_before = mask_data[frame_idx]
+        before_sum = int(mask_before.sum())
+
+        mask, logits, score = segmentor.add_box_prompt(
+            video_id=str(video_id),
+            frame_idx=frame_idx,
+            box=(px1, py1, px2, py2),
+            frames=resources.frame_source,
+            masks=mask_data,
+        )
+
+        # Write both mask and logits — logits are required for point refinement
+        mask_data[frame_idx] = mask
+        logits_data[frame_idx] = logits
+
+    after_sum = int(mask.sum())
+    print(f"[Segmentation Worker] add_box_prompt frame={frame_idx} "
+          f"box=({px1:.1f}, {py1:.1f}, {px2:.1f}, {py2:.1f}) "
+          f"mask_sum: {before_sum} -> {after_sum}")
+
+    return {
+        "type": "add_box_prompt_result",
+        "status": "ok",
+        "mask_rle": encode_mask_rle(mask),
+        "mask_shape": mask.shape,
+        "mask_dtype": str(mask.dtype),
+        "score": score,
+    }
+
+
 def handle_refine_mask(
     params: dict,
     segmentor: StreamingSegmentor,

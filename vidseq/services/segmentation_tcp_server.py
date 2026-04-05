@@ -24,6 +24,7 @@ from vidseq.models.registry import Project
 from vidseq.models.video import Video
 from vidseq.services.database_manager import DatabaseManager
 from vidseq.services.segmentation_commands import (
+    handle_add_box_prompt,
     handle_add_prompt,
     handle_apply_detector,
     handle_close_session,
@@ -309,6 +310,11 @@ class SegmentationTCPServer:
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
                 result = handle_add_prompt(cmd, self._segmentor)
+
+            elif cmd_type == "add_box_prompt":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
+                result = handle_add_box_prompt(cmd, self._segmentor)
 
             elif cmd_type == "refine_mask":
                 if self._segmentor is None:
