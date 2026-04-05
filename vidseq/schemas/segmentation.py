@@ -36,6 +36,17 @@ class PromptRequest(BaseModel):
         return v
 
 
+class BoxPromptRequest(BaseModel):
+    """Request to submit a bounding box prompt for segmentation.
+
+    All coordinates are normalized [0, 1].
+    """
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
 class PropagateRequest(BaseModel):
     start_frame_idx: int
     max_frames: int = 1000

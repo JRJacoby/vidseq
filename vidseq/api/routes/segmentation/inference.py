@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.models.video import Video
 from vidseq.schemas.segmentation import (
+    BoxPromptRequest,
     PromptRequest,
     PropagateRequest,
     PropagateResponse,
@@ -52,6 +53,36 @@ async def submit_prompt(
             frame_idx=frame_idx,
             points=points,
             labels=labels,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    mask_png = segmentation_service.mask_to_png(mask)
+    return Response(content=mask_png, media_type="image/png")
+
+
+@router.post("/projects/{project_id}/videos/{video_id}/box-prompt/{frame_idx}")
+async def submit_box_prompt(
+    project_id: int,
+    frame_idx: int,
+    request: BoxPromptRequest,
+    video: Video = Depends(get_video),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """Submit a bounding box prompt to create an initial segmentation mask.
+
+    Box coords should be normalized [0,1].
+    """
+    try:
+        mask = await segmentation_service.submit_box_prompt(
+            session=session,
+            project_id=project_id,
+            video_id=video.id,
+            frame_idx=frame_idx,
+            x1=request.x1,
+            y1=request.y1,
+            x2=request.x2,
+            y2=request.y2,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

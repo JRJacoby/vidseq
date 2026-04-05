@@ -310,6 +310,65 @@ async def submit_prompt(
     return mask
 
 
+async def submit_box_prompt(
+    session: "AsyncSession",
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> np.ndarray:
+    """Submit a bounding box prompt for segmentation.
+
+    Box is always an initial prompt — creates a new mask. Any existing
+    conditioning state for this frame is cleared by the segmentor.
+
+    Args:
+        session: Async database session
+        project_id: ID of the project
+        video_id: ID of the video
+        frame_idx: Frame index (0-based)
+        x1, y1: Top-left corner in normalized [0, 1] coords
+        x2, y2: Bottom-right corner in normalized [0, 1] coords
+
+    Returns:
+        Resulting mask as numpy array
+    """
+    mask, score = segmentation_tcp_client.add_box_prompt(
+        project_id=project_id,
+        video_id=video_id,
+        frame_idx=frame_idx,
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
+    )
+
+    # Ensure conditioning frame DB record exists (upsert pattern)
+    from sqlalchemy import select
+    from vidseq.models.conditioning_frame import ConditioningFrame
+
+    existing = await session.execute(
+        select(ConditioningFrame)
+        .where(ConditioningFrame.video_id == video_id)
+        .where(ConditioningFrame.frame_idx == frame_idx)
+    )
+    if existing.scalar_one_or_none() is None:
+        session.add(ConditioningFrame(video_id=video_id, frame_idx=frame_idx))
+        await session.commit()
+
+    # Update mask presence index and save confidence score
+    has_content = bool(np.any(mask > 0))
+    await frame_data_service.set_has_tracker_mask(
+        session, video_id, frame_idx, has_content
+    )
+    await frame_data_service.save_score(session, video_id, frame_idx, score)
+
+    return mask
+
+
 async def propagate(
     session: "AsyncSession",
     project_id: int,
