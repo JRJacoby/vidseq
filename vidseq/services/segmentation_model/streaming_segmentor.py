@@ -666,6 +666,115 @@ class SAM2StreamingSegmentor:
         score = self._extract_score(current_out)
         return mask_resized, pred_masks_low_res, score
 
+    def add_box_prompt(
+        self,
+        video_id: str,
+        frame_idx: int,
+        box: tuple[float, float, float, float],  # (x1, y1, x2, y2) in pixel coords
+        frames,  # Indexable frame source: frames[idx] -> np.ndarray (H, W, 3)
+        masks,   # Indexable mask source: masks[idx] -> np.ndarray (H, W)
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        """Add a bounding box prompt to a frame and generate initial mask.
+
+        Creates a new mask from the box prompt. Any existing conditioning state
+        for this frame is cleared first. For refining an existing mask with
+        additional points, use refine_mask() instead.
+
+        Args:
+            video_id: The video identifier.
+            frame_idx: Index of the frame to annotate.
+            box: (x1, y1, x2, y2) bounding box in original frame pixel coords.
+            frames: Indexable frame source returning BGR uint8 (H, W, 3).
+            masks: Indexable mask source returning uint8 (H, W).
+
+        Returns:
+            Tuple of (mask, logits, score) where:
+            - mask: Binary mask array (height, width) with dtype uint8, values 0 or 255.
+            - logits: Low-res logits array (256, 256) for potential refinement.
+            - score: Predicted IoU confidence in [0, 1].
+        """
+        # 1. Get session state
+        session = self.sessions[video_id]
+        frame_dims = session["frame_dims"]  # (height, width)
+        output_dict = session["output_dict"]
+        cond_frame_indices = session["cond_frame_indices"]
+
+        # 2. Pop existing conditioning output for this frame to avoid self-bias
+        output_dict["cond_frame_outputs"].pop(frame_idx, None)
+
+        # 3. Prepare memory for arbitrary frame access
+        self._set_memory_frame(video_id, frame_idx, frames, masks)
+
+        # 4. Get frame from source
+        frame = frames[frame_idx]
+
+        # 5. Scale box coords to INPUT_SIZE (1024) space
+        orig_h, orig_w = frame_dims
+        x1, y1, x2, y2 = box
+        scaled_x1 = x1 * self.INPUT_SIZE / orig_w
+        scaled_y1 = y1 * self.INPUT_SIZE / orig_h
+        scaled_x2 = x2 * self.INPUT_SIZE / orig_w
+        scaled_y2 = y2 * self.INPUT_SIZE / orig_h
+
+        # 6. Create point_inputs with SAM2 box convention (labels 2=TL, 3=BR)
+        point_coords = torch.tensor(
+            [[[scaled_x1, scaled_y1], [scaled_x2, scaled_y2]]],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        point_labels = torch.tensor(
+            [[2, 3]], dtype=torch.int32, device=self.device
+        )
+        point_inputs = {
+            "point_coords": point_coords,
+            "point_labels": point_labels,
+        }
+
+        # 7. Get image features and prepare backbone features
+        _, backbone_out = self._get_image_features(video_id, frame_idx, frame)
+        current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+            self._prepare_backbone_features(backbone_out)
+        )
+
+        # 8. Determine is_init_cond_frame (True if no conditioning frames exist)
+        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
+
+        # 9. Call track_step with box as point_inputs
+        with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
+            current_out = self.predictor.track_step(
+                frame_idx=frame_idx,
+                is_init_cond_frame=is_init_cond_frame,
+                current_vision_feats=current_vision_feats,
+                current_vision_pos_embeds=current_vision_pos_embeds,
+                feat_sizes=feat_sizes,
+                point_inputs=point_inputs,
+                mask_inputs=None,
+                output_dict=output_dict,
+                num_frames=session["num_frames"],
+            )
+
+        # 10. Extract high-res mask, threshold, resize to original dims
+        pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
+        mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
+        mask_resized = cv2.resize(
+            mask_binary,
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        # 11. Get low-res logits for potential refinement
+        pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+
+        # 12. Add frame_idx to cond_frame_indices
+        cond_frame_indices.add(frame_idx)
+
+        # 13. Store compact output in cond_frame_outputs
+        output_dict["cond_frame_outputs"][frame_idx] = self._make_compact_output(current_out)
+
+        # 14. Return mask, logits, and score
+        score = self._extract_score(current_out)
+        return mask_resized, pred_masks_low_res, score
+
     def refine_mask(
         self,
         video_id: str,
