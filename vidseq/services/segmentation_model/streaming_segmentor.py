@@ -1158,6 +1158,118 @@ class SAM2StreamingSegmentor:
 
         return propagated
 
+    def propagate_sequential_cond_only(
+        self,
+        video_id: str,
+        start_frame: int,
+        num_frames: int,
+        frames,
+        masks,
+        on_result: Callable | None = None,
+        progress_interval: int = 50,
+    ) -> list[int]:
+        """Propagate using only conditioning frame memories (no temporal window).
+
+        Like propagate_sequential(), but clears non_cond_frame_outputs before
+        each frame. This prevents temporal drift where propagated frames
+        reinforce segmentation errors across the sliding window.
+
+        Each frame is segmented using only the permanent conditioning frame
+        memories from user prompts.
+
+        Args:
+            video_id: The video identifier.
+            start_frame: Frame index to start propagation.
+            num_frames: Maximum number of frames to propagate.
+            frames: Indexable frame source: frames[idx] -> np.ndarray (H, W, 3).
+            masks: Indexable mask source: masks[idx] -> np.ndarray (H, W).
+            on_result: Callback called for each frame with (frame_idx, mask, logits, score).
+            progress_interval: Print progress every N frames (0 to disable).
+
+        Returns:
+            List of frame indices that were propagated.
+
+        Raises:
+            KeyError: If video_id is not open.
+            RuntimeError: If no conditioning frames exist.
+        """
+        session = self.sessions[video_id]
+        cond_frame_indices = session["cond_frame_indices"]
+        frame_dims = session["frame_dims"]
+        output_dict = session["output_dict"]
+
+        if len(output_dict["cond_frame_outputs"]) == 0:
+            raise RuntimeError(
+                "No conditioning frames exist. "
+                "Use add_point_prompt() or add_box_prompt() first."
+            )
+
+        orig_h, orig_w = frame_dims
+        propagated = []
+
+        for i in range(num_frames):
+            frame_idx = start_frame + i
+
+            # Skip conditioning frames (don't overwrite user prompts)
+            if frame_idx in cond_frame_indices:
+                continue
+
+            try:
+                frame_bgr = frames[frame_idx]
+            except (IndexError, KeyError):
+                break
+
+            # Clear non-cond memory so track_step only sees conditioning frames
+            output_dict["non_cond_frame_outputs"].clear()
+
+            # Get image features
+            _, backbone_out = self._get_image_features(video_id, frame_idx, frame_bgr)
+            current_vision_feats, current_vision_pos_embeds, feat_sizes = (
+                self._prepare_backbone_features(backbone_out)
+            )
+
+            # track_step with only conditioning memory
+            with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
+                current_out = self.predictor.track_step(
+                    frame_idx=frame_idx,
+                    is_init_cond_frame=False,
+                    current_vision_feats=current_vision_feats,
+                    current_vision_pos_embeds=current_vision_pos_embeds,
+                    feat_sizes=feat_sizes,
+                    point_inputs=None,
+                    mask_inputs=None,
+                    output_dict=output_dict,
+                    num_frames=session["num_frames"],
+                    run_mem_encoder=True,
+                )
+
+            # Extract mask
+            pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]
+            mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
+            mask_resized = cv2.resize(
+                mask_binary,
+                (orig_w, orig_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+            pred_masks_low_res = current_out["pred_masks"][0, 0].cpu().numpy()
+            score = self._extract_score(current_out)
+
+            if on_result is not None:
+                on_result(frame_idx, mask_resized, pred_masks_low_res, score)
+
+            # Store in non_cond (will be cleared next iteration)
+            output_dict["non_cond_frame_outputs"][frame_idx] = self._make_compact_output(
+                current_out
+            )
+
+            propagated.append(frame_idx)
+
+            if progress_interval > 0 and len(propagated) % progress_interval == 0:
+                print(f"  Propagated {len(propagated)} frames (cond-only)...")
+
+        return propagated
+
     def _compute_bbox_iou(
         self, mask1: np.ndarray, mask2: np.ndarray
     ) -> float:
