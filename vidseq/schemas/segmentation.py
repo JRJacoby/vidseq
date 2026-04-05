@@ -1,6 +1,6 @@
 """Pydantic schemas for segmentation API."""
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class PointPrompt(BaseModel):
@@ -41,10 +41,10 @@ class BoxPromptRequest(BaseModel):
 
     All coordinates are normalized [0, 1].
     """
-    x1: float
-    y1: float
-    x2: float
-    y2: float
+    x1: float = Field(ge=0, le=1)
+    y1: float = Field(ge=0, le=1)
+    x2: float = Field(ge=0, le=1)
+    y2: float = Field(ge=0, le=1)
 
 
 class PropagateRequest(BaseModel):
