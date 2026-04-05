@@ -4,6 +4,7 @@ import {
     getTrackerMasks,
     getDetectorMasks,
     submitPrompt,
+    submitBoxPrompt,
     deleteSegmentation,
     deleteVideoSegmentation,
     getDetectorMask,
@@ -18,19 +19,25 @@ import { LruCache } from '@/utils/LruCache'
 // Types & Constants
 // ============================================================================
 
-export type ToolType = 'none' | 'positive_point' | 'negative_point'
+export type ToolType = 'none' | 'positive_point' | 'negative_point' | 'bounding_box'
+
+export type LocalPrompt =
+    | { x: number; y: number; type: 'positive_point' | 'negative_point' }
+    | { x1: number; y1: number; x2: number; y2: number; type: 'bounding_box' }
 
 export interface UseSegmentationReturn {
     activeTool: Ref<ToolType>
     currentMask: Ref<ImageBitmap | null>
     detectorBbox: Ref<DetectorBbox | null>
-    currentPrompts: Ref<Array<{ x: number; y: number; type: 'positive_point' | 'negative_point' }>>
+    currentPrompts: Ref<LocalPrompt[]>
     isSegmenting: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
     toggleNegativePointTool: () => void
     handlePointComplete: (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => Promise<void>
+    handleBoxComplete: (box: { x1: number; y1: number; x2: number; y2: number }) => Promise<void>
+    toggleBoundingBoxTool: () => void
     handleResetFrame: () => Promise<void>
     handleResetVideo: () => Promise<void>
     clearMaskCache: (startFrame?: number, endFrame?: number) => void
@@ -61,9 +68,9 @@ export function useSegmentation(
     const intendedFrameIdx = ref(0)
 
     // Local prompts tracking (not persisted to server)
-    const localPrompts = ref<Map<number, Array<{ x: number; y: number; type: 'positive_point' | 'negative_point' }>>>(new Map())
+    const localPrompts = ref<Map<number, Array<LocalPrompt>>>(new Map())
 
-    const currentPrompts = computed(() => {
+    const currentPrompts = computed((): LocalPrompt[] => {
         return localPrompts.value.get(currentFrameIdx.value) || []
     })
 
@@ -242,6 +249,10 @@ export function useSegmentation(
         activeTool.value = activeTool.value === 'negative_point' ? 'none' : 'negative_point'
     }
 
+    const toggleBoundingBoxTool = () => {
+        activeTool.value = activeTool.value === 'bounding_box' ? 'none' : 'bounding_box'
+    }
+
     // ========================================================================
     // Segmentation Actions
     // ========================================================================
@@ -275,6 +286,38 @@ export function useSegmentation(
             if (framePrompts.length === 0) {
                 localPrompts.value.delete(currentFrameIdx.value)
             }
+        } finally {
+            isSegmenting.value = false
+        }
+    }
+
+    const handleBoxComplete = async (box: { x1: number; y1: number; x2: number; y2: number }) => {
+        if (!projectId.value || !videoId.value) return
+
+        isSegmenting.value = true
+
+        // Clear existing prompts — box always starts fresh
+        localPrompts.value.delete(currentFrameIdx.value)
+
+        // Add box to local prompts for rendering
+        const framePrompts: LocalPrompt[] = [{ ...box, type: 'bounding_box' as const }]
+        localPrompts.value.set(currentFrameIdx.value, framePrompts)
+
+        try {
+            const maskBlob = await submitBoxPrompt(
+                projectId.value,
+                videoId.value,
+                currentFrameIdx.value,
+                box
+            )
+
+            const bitmap = await createImageBitmap(maskBlob)
+            currentMask.value = bitmap
+            maskCache.set(currentFrameIdx.value, bitmap)
+        } catch (e) {
+            console.error('Failed to submit box prompt:', e)
+            // Rollback: remove the box we just added
+            localPrompts.value.delete(currentFrameIdx.value)
         } finally {
             isSegmenting.value = false
         }
@@ -410,7 +453,9 @@ export function useSegmentation(
         seekToFrame,
         togglePositivePointTool,
         toggleNegativePointTool,
+        toggleBoundingBoxTool,
         handlePointComplete,
+        handleBoxComplete,
         handleResetFrame,
         handleResetVideo,
         clearMaskCache,
