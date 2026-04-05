@@ -252,6 +252,26 @@ export async function submitPrompt(
     return response.blob()
 }
 
+export async function submitBoxPrompt(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    box: { x1: number; y1: number; x2: number; y2: number }
+): Promise<Blob> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/box-prompt/${frameIdx}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(box),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to submit box prompt'))
+    }
+    return response.blob()
+}
+
 export async function getTrackerMask(
     projectId: number,
     videoId: number,
