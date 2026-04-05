@@ -561,6 +561,59 @@ class SegmentationService:
 
         return mask, score
 
+    def add_box_prompt(
+        self,
+        project_id: int,
+        video_id: int,
+        frame_idx: int,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> tuple[np.ndarray, float]:
+        """
+        Add a bounding box prompt and return the mask and confidence score.
+
+        Requires an active session (call init_session first).
+
+        Args:
+            project_id: ID of the project
+            video_id: ID of the video
+            frame_idx: Frame index to segment
+            x1, y1: Top-left corner in normalized [0, 1] coords
+            x2, y2: Bottom-right corner in normalized [0, 1] coords
+
+        Returns:
+            Tuple of (mask, score) where mask is numpy array (height, width)
+            and score is the predicted IoU confidence.
+        """
+        session = self.get_session(project_id, video_id)
+        if session is None:
+            raise RuntimeError("No session exists. Initialize session first.")
+
+        result = self._send_and_wait({
+            "type": "add_box_prompt",
+            "video_id": video_id,
+            "frame_idx": frame_idx,
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+        }, timeout=120.0)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Failed to add box prompt"))
+
+        session.has_object = True
+
+        mask_rle = result["mask_rle"]
+        mask_shape = tuple(result["mask_shape"])
+        mask_dtype = result.get("mask_dtype", "uint8")
+        mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
+        score = result.get("score", -1.0)
+
+        return mask, score
+
     def refine_mask(
         self,
         project_id: int,
@@ -1029,6 +1082,21 @@ def add_point_prompt(
     """Add a point prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_point_prompt(
         project_id, video_id, frame_idx, x, y, label
+    )
+
+
+def add_box_prompt(
+    project_id: int,
+    video_id: int,
+    frame_idx: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> tuple[np.ndarray, float]:
+    """Add a box prompt and return the mask and confidence score."""
+    return SegmentationService.get_instance().add_box_prompt(
+        project_id, video_id, frame_idx, x1, y1, x2, y2
     )
 
 
