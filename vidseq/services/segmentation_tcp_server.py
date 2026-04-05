@@ -34,6 +34,7 @@ from vidseq.services.segmentation_commands import (
     handle_propagate,
     handle_propagate_with_associated,
     handle_propagate_with_detector,
+    handle_propagate_without_memory,
     handle_refine_mask,
     handle_reset_frame,
     handle_reset_video,
@@ -330,6 +331,15 @@ class SegmentationTCPServer:
                 if self._segmentor is None:
                     raise RuntimeError("Model not loaded")
                 result = handle_generate_training_masks(
+                    cmd,
+                    self._segmentor,
+                    response_callback,
+                )
+
+            elif cmd_type == "propagate_without_memory":
+                if self._segmentor is None:
+                    raise RuntimeError("Model not loaded")
+                result = handle_propagate_without_memory(
                     cmd,
                     self._segmentor,
                     response_callback,

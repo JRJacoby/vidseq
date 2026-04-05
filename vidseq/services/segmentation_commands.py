@@ -541,6 +541,70 @@ def handle_generate_training_masks(
     }
 
 
+def handle_propagate_without_memory(
+    params: dict,
+    segmentor: StreamingSegmentor,
+    response_callback: Callable | None = None,
+) -> dict:
+    """Propagate using only conditioning frame memories (no temporal window).
+
+    Args:
+        params: Command params with video_id, start_frame_idx, max_frames
+        segmentor: StreamingSegmentor instance
+        response_callback: Optional callback to send progress messages
+
+    Returns:
+        Response dict with frames_processed, frame_indices
+    """
+    video_id = params["video_id"]
+    start_frame_idx = params["start_frame_idx"]
+    max_frames = params["max_frames"]
+
+    if segmentor is None:
+        raise RuntimeError("Model not loaded")
+
+    if video_id not in _video_resources:
+        raise RuntimeError(f"No session for video {video_id}")
+
+    resources = _video_resources[video_id]
+
+    scores: list[list] = []
+    frames_propagated = 0
+
+    with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
+         tracker_logits(resources.project_path, video_id, "a") as logits_data:
+        def on_result(frame_idx: int, mask: np.ndarray, logits: np.ndarray, score: float) -> None:
+            nonlocal frames_propagated
+            mask_data[frame_idx] = mask
+            logits_data[frame_idx] = logits
+            scores.append([frame_idx, score])
+            frames_propagated += 1
+            if response_callback and frames_propagated % 50 == 0:
+                response_callback({
+                    "type": "progress",
+                    "frame_idx": frames_propagated,
+                    "total": max_frames,
+                })
+
+        frame_indices = segmentor.propagate_sequential_cond_only(
+            video_id=str(video_id),
+            start_frame=start_frame_idx,
+            num_frames=max_frames,
+            frames=resources.frame_source,
+            masks=mask_data,
+            on_result=on_result,
+            progress_interval=50,
+        )
+
+    return {
+        "type": "propagate_without_memory_result",
+        "status": "ok",
+        "frames_processed": len(frame_indices),
+        "frame_indices": frame_indices,
+        "scores": scores,
+    }
+
+
 def handle_apply_detector(
     params: dict,
     segmentor: StreamingSegmentor,
