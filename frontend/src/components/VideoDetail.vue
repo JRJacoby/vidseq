@@ -12,6 +12,7 @@ import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 import DataTrack from './DataTrack.vue'
 import TimelineSystem from './TimelineSystem.vue'
+import CondFrameGrid from './CondFrameGrid.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,6 +44,7 @@ const hasSegMasks = ref(false)
 const obbBbox = ref<ObbBbox | null>(null)
 const obbScores = ref<{ frame_idx: number; score: number }[]>([])
 const showObbConfidence = ref(true)
+const condFrameRefreshKey = ref(0)
 
 const checkDetectorMasks = async () => {
   if (!projectId.value || !videoId.value) return
@@ -318,11 +320,13 @@ const handleResetFrameWithRefresh = async () => {
 const handlePointCompleteWithRefresh = async (point: { x: number; y: number; type: 'positive_point' | 'negative_point' }) => {
   await handlePointComplete(point)
   await refreshFrameRanges()
+  condFrameRefreshKey.value++
 }
 
 const handleBoxCompleteWithRefresh = async (box: { x1: number; y1: number; x2: number; y2: number }) => {
   await handleBoxComplete(box)
   await refreshFrameRanges()
+  condFrameRefreshKey.value++
 }
 
 const handleResetVideoWithRefresh = async () => {
@@ -384,6 +388,7 @@ onMounted(async () => {
                 ref="videoRef"
                 class="video-player"
                 :src="videoStreamUrl"
+                preload="metadata"
                 @timeupdate="onTimeUpdate"
                 @loadedmetadata="onLoadedMetadata"
                 @play="onPlay"
@@ -441,6 +446,12 @@ onMounted(async () => {
               @view-change="handleViewChange"
             />
           </TimelineSystem>
+          <CondFrameGrid
+            v-if="video && segmentationIsReady"
+            :project-id="projectId"
+            :video-id="videoId"
+            :refresh-key="condFrameRefreshKey"
+          />
         </div>
       </div>
     </div>
