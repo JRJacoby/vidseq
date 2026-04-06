@@ -25,6 +25,7 @@ import {
   applyObbDetector,
   applySegDetector,
   exportDetectorBboxes,
+  exportDetectorMasks,
   type Video,
   type Project,
   type AlignmentStatus,
@@ -110,6 +111,7 @@ const isApplyingDetector = ref(false)
 const isApplyingObb = ref(false)
 const isApplyingSeg = ref(false)
 const isExportingBboxes = ref(false)
+const isExportingSegMasks = ref(false)
 
 const projectId = computed(() => projectStore.currentProjectId)
 
@@ -521,6 +523,20 @@ const handleExportBboxes = async () => {
   }
 }
 
+const handleExportSegMasks = async () => {
+  if (!projectId.value || isExportingSegMasks.value) return
+  isExportingSegMasks.value = true
+  try {
+    const result = await exportDetectorMasks(projectId.value, selectedVideoIdsList.value)
+    alert(`Exported ${result.row_count} frames to:\n${result.path}`)
+  } catch (e: any) {
+    console.error('Failed to export seg detector masks:', e)
+    alert(e.message || 'Failed to export seg detector masks')
+  } finally {
+    isExportingSegMasks.value = false
+  }
+}
+
 const handleApplySeg = async () => {
   if (!projectId.value || isApplyingSeg.value) return
   isApplyingSeg.value = true
@@ -922,6 +938,13 @@ const formatScore = (score: number | undefined) => {
             :disabled="isApplyingSeg || isSegTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isApplyingSeg ? 'Applying...' : 'Apply Seg Detector' }}</span>
+          </button>
+          <button
+            class="sidebar-button"
+            @click="handleExportSegMasks"
+            :disabled="isExportingSegMasks || selectedCount === 0"
+          >
+            <span class="button-label">{{ isExportingSegMasks ? 'Exporting...' : 'Export Seg Masks' }}</span>
           </button>
 
           <h4 class="sidebar-section-title">Associated Videos</h4>
