@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
+from vidseq.services.array_storage import detector_masks
 
 
 async def export_detector_bboxes(
@@ -86,3 +87,69 @@ async def export_detector_bboxes(
     full_df.to_csv(csv_path, index=False)
 
     return str(csv_path), len(full_df)
+
+
+async def export_detector_masks(
+    session: AsyncSession,
+    project_path: str | Path,
+    video_ids: list[int],
+) -> tuple[str, int]:
+    """Export detector masks for selected videos to a single H5 file.
+
+    Each video's masks are stored under its absolute path as key.
+    Masks are binarized (0/1 uint8).
+
+    Returns (absolute_h5_path, total_frame_count).
+    """
+    import h5py
+
+    project_path = Path(project_path)
+
+    # 1. Query video metadata
+    result = await session.execute(
+        select(Video.id, Video.path, Video.num_frames, Video.height, Video.width)
+        .where(Video.id.in_(video_ids))
+    )
+    video_rows = result.all()
+    if not video_rows:
+        raise ValueError("No videos found for the given IDs")
+
+    video_info = {
+        row.id: (row.path, row.num_frames, row.height, row.width)
+        for row in video_rows
+    }
+    missing_ids = set(video_ids) - set(video_info)
+    if missing_ids:
+        raise ValueError(f"Videos not found: {sorted(missing_ids)}")
+
+    # 2. Create export file
+    exports_dir = project_path / "exports"
+    exports_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    h5_path = exports_dir / f"seg_detector_masks_{timestamp}.h5"
+
+    total_frames = 0
+    chunk_size = 256
+
+    with h5py.File(h5_path, "w") as out_f:
+        for vid_id in sorted(video_info):
+            path, num_frames, height, width = video_info[vid_id]
+
+            # Create dataset keyed by absolute video path
+            ds = out_f.create_dataset(
+                path,
+                shape=(num_frames, height, width),
+                dtype=np.uint8,
+                chunks=(1, height, width),
+            )
+
+            # Chunked copy with binarization
+            with detector_masks(project_path, vid_id) as src:
+                for start in range(0, num_frames, chunk_size):
+                    end = min(start + chunk_size, num_frames)
+                    chunk = src[start:end]
+                    ds[start:end] = (chunk > 0).astype(np.uint8)
+
+            total_frames += num_frames
+
+    return str(h5_path), total_frames
