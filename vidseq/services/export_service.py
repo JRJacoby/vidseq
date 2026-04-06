@@ -101,6 +101,7 @@ async def export_detector_masks(
 
     Returns (absolute_h5_path, total_frame_count).
     """
+    import asyncio
     import h5py
 
     project_path = Path(project_path)
@@ -128,28 +129,39 @@ async def export_detector_masks(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     h5_path = exports_dir / f"seg_detector_masks_{timestamp}.h5"
 
-    total_frames = 0
-    chunk_size = 256
+    def _write_h5() -> int:
+        total_frames = 0
+        chunk_size = 256
 
-    with h5py.File(h5_path, "w") as out_f:
-        for vid_id in sorted(video_info):
-            path, num_frames, height, width = video_info[vid_id]
+        with h5py.File(h5_path, "w") as out_f:
+            for vid_id in sorted(video_info):
+                path, num_frames, height, width = video_info[vid_id]
 
-            # Create dataset keyed by absolute video path
-            ds = out_f.create_dataset(
-                path,
-                shape=(num_frames, height, width),
-                dtype=np.uint8,
-                chunks=(1, height, width),
-            )
+                # Verify detector masks exist for this video
+                src_path = project_path / "array_data" / str(vid_id) / "detector_masks.h5"
+                if not src_path.exists():
+                    raise ValueError(
+                        f"No detector masks file for video {vid_id} ({path})"
+                    )
 
-            # Chunked copy with binarization
-            with detector_masks(project_path, vid_id) as src:
-                for start in range(0, num_frames, chunk_size):
-                    end = min(start + chunk_size, num_frames)
-                    chunk = src[start:end]
-                    ds[start:end] = (chunk > 0).astype(np.uint8)
+                # Create dataset keyed by absolute video path
+                ds = out_f.create_dataset(
+                    path,
+                    shape=(num_frames, height, width),
+                    dtype=np.uint8,
+                    chunks=(1, height, width),
+                )
 
-            total_frames += num_frames
+                # Chunked copy with binarization
+                with detector_masks(project_path, vid_id) as src:
+                    for start in range(0, num_frames, chunk_size):
+                        end = min(start + chunk_size, num_frames)
+                        chunk = src[start:end]
+                        ds[start:end] = (chunk > 0).astype(np.uint8)
 
+                total_frames += num_frames
+
+        return total_frames
+
+    total_frames = await asyncio.to_thread(_write_h5)
     return str(h5_path), total_frames
