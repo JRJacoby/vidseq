@@ -41,6 +41,7 @@ class TrainRequest(BaseModel):
     batch_size: int = 4
     lr: float = 1e-4
     early_stop_patience: int = 20
+    from_checkpoint: bool = False
 
 
 class DetectorConfigRequest(BaseModel):
@@ -128,6 +129,7 @@ async def create_detection_training(
             batch_size=request.batch_size,
             lr=request.lr,
             early_stop_patience=request.early_stop_patience,
+            from_checkpoint=request.from_checkpoint,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
