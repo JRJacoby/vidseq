@@ -461,6 +461,17 @@ const handleTrainDetector = async () => {
   }
 }
 
+const handleContinueTrainDetector = async () => {
+  if (!projectId.value || isDetectorTraining.value) return
+  try {
+    await startDetectorTraining(1000, selectedVideoIdsList.value, true)
+    router.push(`/project/${projectId.value}/detector`)
+  } catch (e: any) {
+    console.error('Failed to continue detector training:', e)
+    alert(e.message || 'Failed to continue detector training')
+  }
+}
+
 const handleApplyDetector = async () => {
   if (!projectId.value || isApplyingDetector.value) return
   isApplyingDetector.value = true
@@ -882,6 +893,13 @@ const formatScore = (score: number | undefined) => {
             :disabled="isDetectorTraining || selectedCount === 0"
           >
             <span class="button-label">{{ isDetectorTraining ? 'Training...' : 'Train Detector' }}</span>
+          </button>
+          <button
+            class="sidebar-button"
+            @click="handleContinueTrainDetector"
+            :disabled="!detectorModelExists || isDetectorTraining || selectedCount === 0"
+          >
+            <span class="button-label">{{ isDetectorTraining ? 'Training...' : 'Continue Training' }}</span>
           </button>
           <button
             v-if="detectorModelExists || isDetectorTraining"
