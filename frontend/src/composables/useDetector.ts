@@ -11,7 +11,7 @@ export interface UseDetectorReturn {
     isTraining: Ref<boolean>
     modelExists: Ref<boolean>
     detectorType: Ref<string>
-    startTraining: (maxEpochs?: number, videoIds?: number[]) => Promise<void>
+    startTraining: (maxEpochs?: number, videoIds?: number[], fromCheckpoint?: boolean) => Promise<void>
     stopTraining: () => Promise<void>
     checkStatus: () => Promise<void>
     setDetectorType: (type: string) => Promise<void>
@@ -44,11 +44,11 @@ export function useDetector(projectId: Ref<number | null>): UseDetectorReturn {
         }
     }
 
-    const startTraining = async (maxEpochs: number = 1000, videoIds: number[] = []) => {
+    const startTraining = async (maxEpochs: number = 1000, videoIds: number[] = [], fromCheckpoint: boolean = false) => {
         if (!projectId.value || isTraining.value) return
         isTraining.value = true
         try {
-            await createDetectionTraining(projectId.value, maxEpochs, videoIds)
+            await createDetectionTraining(projectId.value, maxEpochs, videoIds, 10, 20, fromCheckpoint)
         } catch (e) {
             console.error('Failed to start detector training:', e)
             isTraining.value = false

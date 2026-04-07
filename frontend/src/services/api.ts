@@ -1381,6 +1381,7 @@ export async function createDetectionTraining(
     videoIds: number[],
     lrPatience: number = 10,
     earlyStopPatience: number = 20,
+    fromCheckpoint: boolean = false,
 ): Promise<void> {
     const response = await fetch(`${API_BASE}/projects/${projectId}/detection/training`, {
         method: 'POST',
@@ -1390,6 +1391,7 @@ export async function createDetectionTraining(
             max_epochs: maxEpochs,
             lr_patience: lrPatience,
             early_stop_patience: earlyStopPatience,
+            from_checkpoint: fromCheckpoint,
         }),
     })
     if (!response.ok) {
