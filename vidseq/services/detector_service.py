@@ -390,9 +390,6 @@ class DetectorService:
                 self._training_progress.train_loss_history.append(total_loss)
                 self._training_progress.val_loss_history.append(val_loss)
 
-            model.add_callback("on_fit_epoch_end", on_epoch_end)
-            model.add_callback("on_train_epoch_start", check_stop)
-
             model_save_dir = project_path / "models"
             model_save_dir.mkdir(exist_ok=True)
 
@@ -425,6 +422,9 @@ class DetectorService:
                     logger.warning("Checkpoint not found, falling back to pretrained weights")
             else:
                 model = load_pretrained(detector_type, device="cpu")
+
+            model.add_callback("on_fit_epoch_end", on_epoch_end)
+            model.add_callback("on_train_epoch_start", check_stop)
 
             train_kwargs = dict(
                 data=str(yaml_path),
