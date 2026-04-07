@@ -234,6 +234,7 @@ class DetectorService:
         lr: float = 1e-4,
         early_stop_patience: int = 20,
         training_type: str = "detector",
+        from_checkpoint: bool = False,
     ) -> bool:
         """Start training in background thread.
 
@@ -256,6 +257,7 @@ class DetectorService:
                     lr,
                     early_stop_patience,
                     training_type=training_type,
+                    from_checkpoint=from_checkpoint,
                 )
             except Exception as e:
                 logger.exception("Training failed")
@@ -278,9 +280,10 @@ class DetectorService:
         lr: float,
         early_stop_patience: int,
         training_type: str = "detector",
+        from_checkpoint: bool = False,
     ) -> None:
         """Synchronous training implementation using Ultralytics."""
-        from vidseq.services.detector_model import load_pretrained
+        from vidseq.services.detector_model import load_pretrained, load_finetuned
         from vidseq.services import segmentation_service
 
         # Free GPU memory by shutting down SAM2 worker
@@ -366,9 +369,6 @@ class DetectorService:
                 f"{len(val_frames)} val frames in {tmp_dir}"
             )
 
-            # Create and train model
-            model = load_pretrained(detector_type, device="cpu")
-
             # Graceful stop callback
             def check_stop(trainer):
                 if self._stop_requested:
@@ -413,6 +413,18 @@ class DetectorService:
                 train_workers = 0  # RT-DETR transforms contain unpicklable lambdas
                 train_batch = batch_size
                 train_name = "rtdetr_train"
+
+            # Load model — from checkpoint or pretrained
+            if from_checkpoint:
+                checkpoint_path = project_path / "models" / train_name / "weights" / "best.pt"
+                if checkpoint_path.exists():
+                    model = load_finetuned(checkpoint_path, device="cpu")
+                    logger.info(f"Fine-tuning from checkpoint: {checkpoint_path}")
+                else:
+                    model = load_pretrained(detector_type, device="cpu")
+                    logger.warning("Checkpoint not found, falling back to pretrained weights")
+            else:
+                model = load_pretrained(detector_type, device="cpu")
 
             train_kwargs = dict(
                 data=str(yaml_path),
