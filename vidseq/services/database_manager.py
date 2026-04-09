@@ -192,8 +192,18 @@ async def _migrate_project_db(conn) -> None:
         text("SELECT name FROM sqlite_master WHERE type='table' AND name='alignment_labels'")
     )
     if result.fetchone() is not None:
-        await conn.execute(text("ALTER TABLE alignment_labels RENAME TO pose_labels"))
-        logger.info("Migration: renamed table alignment_labels -> pose_labels")
+        # Check if pose_labels already exists (created by create_all)
+        result2 = await conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='pose_labels'")
+        )
+        if result2.fetchone() is not None:
+            # Both exist: copy data then drop old table
+            await conn.execute(text("INSERT OR IGNORE INTO pose_labels SELECT * FROM alignment_labels"))
+            await conn.execute(text("DROP TABLE alignment_labels"))
+            logger.info("Migration: migrated alignment_labels data to pose_labels, dropped old table")
+        else:
+            await conn.execute(text("ALTER TABLE alignment_labels RENAME TO pose_labels"))
+            logger.info("Migration: renamed table alignment_labels -> pose_labels")
 
     def get_project_engine(self, project_folder: Path):
         """Get a synchronous project engine for the worker process."""
