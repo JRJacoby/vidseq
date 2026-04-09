@@ -1,12 +1,16 @@
 """Database engine and session management."""
 
+import logging
 import threading
 from pathlib import Path
 from typing import Optional
 
 from platformdirs import user_data_dir
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+
+logger = logging.getLogger(__name__)
 
 from vidseq.models.project_db import Base as ProjectBase
 from vidseq.models.video import Video  # noqa: F401 - registers with ProjectBase.metadata
@@ -117,7 +121,8 @@ class DatabaseManager:
         
         async with engine.begin() as conn:
             await conn.run_sync(ProjectBase.metadata.create_all)
-    
+            await _migrate_project_db(conn)
+
     def get_project_session_factory(self, project_folder: Path) -> sessionmaker:
         """Get the session factory for a project."""
         key = str(project_folder)
@@ -156,6 +161,39 @@ class DatabaseManager:
         """Get a synchronous registry engine for the worker process."""
         from sqlalchemy import create_engine
         return create_engine(f"sqlite:///{REGISTRY_DB_PATH}")
+
+
+async def _migrate_project_db(conn) -> None:
+    """Add missing columns to existing project databases.
+
+    Called after create_all on every project DB init. Safe to run repeatedly —
+    each ALTER TABLE is guarded by checking if the column already exists.
+    """
+    # Get existing columns in frame_data
+    result = await conn.execute(text("PRAGMA table_info(frame_data)"))
+    existing_columns = {row[1] for row in result.fetchall()}
+
+    # Pose columns added in 2026-04-09
+    pose_columns = {
+        "pose_front_x": "FLOAT",
+        "pose_front_y": "FLOAT",
+        "pose_rear_x": "FLOAT",
+        "pose_rear_y": "FLOAT",
+        "pose_score": "FLOAT DEFAULT -1.0 NOT NULL",
+        "has_pose": "INTEGER",
+    }
+    for col_name, col_type in pose_columns.items():
+        if col_name not in existing_columns:
+            await conn.execute(text(f"ALTER TABLE frame_data ADD COLUMN {col_name} {col_type}"))
+            logger.info(f"Migration: added column frame_data.{col_name}")
+
+    # Rename alignment_labels -> pose_labels if old table exists
+    result = await conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='alignment_labels'")
+    )
+    if result.fetchone() is not None:
+        await conn.execute(text("ALTER TABLE alignment_labels RENAME TO pose_labels"))
+        logger.info("Migration: renamed table alignment_labels -> pose_labels")
 
     def get_project_engine(self, project_folder: Path):
         """Get a synchronous project engine for the worker process."""
