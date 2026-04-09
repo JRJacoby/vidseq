@@ -12,11 +12,18 @@ const props = defineProps<{
   showPrompts?: boolean
   detectorBbox?: { x1: number; y1: number; x2: number; y2: number } | null
   obbBbox?: { corners: [number, number][] } | null
+  // NEW: Pose keypoints
+  poseLabel?: { front_x: number; front_y: number; rear_x: number; rear_y: number } | null
+  posePrediction?: { front_x: number; front_y: number; rear_x: number; rear_y: number } | null
+  pendingFront?: { x: number; y: number } | null
+  showPoseKeypoints?: boolean
+  isLabelingKeypoints?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'point-complete', point: { x: number; y: number; type: 'positive_point' | 'negative_point' }): void
   (e: 'box-complete', box: { x1: number; y1: number; x2: number; y2: number }): void
+  (e: 'keypoint-click', point: { x: number; y: number }): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -43,6 +50,11 @@ function getNormalizedCoords(event: MouseEvent): { x: number; y: number } | null
 function onMouseDown(event: MouseEvent) {
   const coords = getNormalizedCoords(event)
   if (!coords) return
+
+  if (props.isLabelingKeypoints) {
+    emit('keypoint-click', { x: coords.x, y: coords.y })
+    return
+  }
 
   if (props.activeTool === 'positive_point' || props.activeTool === 'negative_point') {
     pendingPoint.value = { x: coords.x, y: coords.y, type: props.activeTool }
@@ -134,6 +146,42 @@ function render() {
     ctx.stroke()
   }
 
+  // Draw pose keypoints
+  if (props.showPoseKeypoints !== false) {
+    const drawKeypoint = (x: number, y: number, color: string, filled: boolean) => {
+      const px = x * canvas.width
+      const py = y * canvas.height
+      const radius = 8
+      ctx.beginPath()
+      ctx.arc(px, py, radius, 0, Math.PI * 2)
+      if (filled) {
+        ctx.fillStyle = color
+        ctx.fill()
+      }
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.setLineDash([])
+      ctx.stroke()
+    }
+
+    // Hand-labeled keypoints (filled circles)
+    if (props.poseLabel) {
+      drawKeypoint(props.poseLabel.front_x, props.poseLabel.front_y, '#22c55e', true)
+      drawKeypoint(props.poseLabel.rear_x, props.poseLabel.rear_y, '#ef4444', true)
+    }
+
+    // Predicted keypoints (outline circles, only if no label)
+    if (props.posePrediction && !props.poseLabel) {
+      drawKeypoint(props.posePrediction.front_x, props.posePrediction.front_y, '#22c55e', false)
+      drawKeypoint(props.posePrediction.rear_x, props.posePrediction.rear_y, '#ef4444', false)
+    }
+
+    // Pending front point during labeling
+    if (props.pendingFront) {
+      drawKeypoint(props.pendingFront.x, props.pendingFront.y, '#22c55e', true)
+    }
+  }
+
   // Draw prompts (points and boxes)
   if (props.showPrompts === false) return
   for (const prompt of props.prompts) {
@@ -223,7 +271,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts], () => {
+watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts, props.poseLabel, props.posePrediction, props.pendingFront, props.showPoseKeypoints], () => {
   pendingPoint.value = null
   pendingBox.value = null
   render()
@@ -258,7 +306,7 @@ onMounted(() => {
   <canvas
     ref="canvasRef"
     class="video-overlay"
-    :class="{ 'tool-active': activeTool !== 'none' }"
+    :class="{ 'tool-active': activeTool !== 'none' || isLabelingKeypoints }"
     @mousedown="onMouseDown"
     @mousemove="onMouseMove"
     @mouseup="onMouseUp"
