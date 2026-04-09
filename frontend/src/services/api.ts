@@ -511,6 +511,21 @@ export async function deleteSegmentation(
     }
 }
 
+export async function deleteSegmentationRange(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    endFrame: number,
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/segmentation/range?start_frame=${startFrame}&end_frame=${endFrame}`,
+        { method: 'DELETE' }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to delete segmentation range'))
+    }
+}
+
 export async function deleteVideoSegmentation(
     projectId: number,
     videoId: number

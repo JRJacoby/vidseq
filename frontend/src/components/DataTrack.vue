@@ -44,6 +44,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'mark-training': [startFrame: number, endFrame: number]
   'unmark-training': [startFrame: number, endFrame: number]
+  'unmark-masked': [startFrame: number, endFrame: number]
   'view-change': [viewStart: number, viewEnd: number]
 }>()
 
@@ -53,6 +54,7 @@ const isDragging = ref(false)
 const dragStartFrame = ref<number | null>(null)
 const dragEndFrame = ref<number | null>(null)
 const selectedRange = ref<[number, number] | null>(null)
+const selectedMaskedRange = ref<[number, number] | null>(null)
 const isHovering = ref(false)
 const plotMinScore = ref<number | null>(null)
 const plotMaxScore = ref<number | null>(null)
@@ -188,21 +190,45 @@ const findTrainingRangeAt = (frame: number): [number, number] | null => {
   return null
 }
 
+const findMaskedRangeAt = (frame: number): [number, number] | null => {
+  for (const range of props.trackerMaskedRanges) {
+    if (frame >= range[0] && frame <= range[1]) {
+      return range
+    }
+  }
+  return null
+}
+
+const selectedMaskedRangeStyle = computed(() => {
+  if (!selectedMaskedRange.value) return null
+  return rangeToStyle(selectedMaskedRange.value)
+})
+
 const onMouseDown = (event: MouseEvent) => {
   const frame = getFrameFromEvent(event)
-  const clickedRange = findTrainingRangeAt(frame)
-  
-  if (clickedRange) {
-    selectedRange.value = clickedRange
+  const clickedTraining = findTrainingRangeAt(frame)
+
+  if (clickedTraining) {
+    selectedRange.value = clickedTraining
+    selectedMaskedRange.value = null
     return
   }
-  
-  if (!props.isMarkingMode) {
+
+  const clickedMasked = findMaskedRangeAt(frame)
+  if (clickedMasked && !props.isMarkingMode) {
+    selectedMaskedRange.value = clickedMasked
     selectedRange.value = null
     return
   }
-  
+
+  if (!props.isMarkingMode) {
+    selectedRange.value = null
+    selectedMaskedRange.value = null
+    return
+  }
+
   selectedRange.value = null
+  selectedMaskedRange.value = null
   isDragging.value = true
   dragStartFrame.value = frame
   dragEndFrame.value = frame
@@ -229,11 +255,17 @@ const onMouseUp = () => {
 
 const onKeyDown = (event: KeyboardEvent) => {
   if (!isHovering.value) return
-  
-  if ((event.key === 'Delete' || event.key === 'Backspace') && selectedRange.value) {
-    event.preventDefault()
-    emit('unmark-training', selectedRange.value[0], selectedRange.value[1])
-    selectedRange.value = null
+
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (selectedRange.value) {
+      event.preventDefault()
+      emit('unmark-training', selectedRange.value[0], selectedRange.value[1])
+      selectedRange.value = null
+    } else if (selectedMaskedRange.value) {
+      event.preventDefault()
+      emit('unmark-masked', selectedMaskedRange.value[0], selectedMaskedRange.value[1])
+      selectedMaskedRange.value = null
+    }
   }
 }
 
@@ -553,6 +585,11 @@ onUnmounted(() => {
           class="range-overlay masked"
           :style="style"
         />
+        <div
+          v-if="selectedMaskedRangeStyle"
+          class="range-overlay masked selected"
+          :style="selectedMaskedRangeStyle"
+        />
         
         <canvas
           ref="canvasRef"
@@ -693,6 +730,14 @@ onUnmounted(() => {
   outline: 2px dashed rgba(34, 197, 94, 1);
   outline-offset: -2px;
   animation: pulse 1s ease-in-out infinite;
+}
+
+.range-overlay.masked.selected {
+  background-color: rgba(59, 130, 246, 0.5);
+  outline: 2px dashed rgba(59, 130, 246, 1);
+  outline-offset: -2px;
+  animation: pulse 1s ease-in-out infinite;
+  pointer-events: none;
 }
 
 @keyframes pulse {

@@ -368,6 +368,55 @@ async def delete_frame_data(
     segmentation_service.reset_frame_memory(project_id, video_id, frame_idx)
 
 
+async def delete_frame_data_range(
+    project_id: int,
+    project_path: Path,
+    video_id: int,
+    start_frame: int,
+    end_frame: int,
+    session: AsyncSession,
+) -> None:
+    """Delete all annotation data for a range of frames (inclusive).
+
+    Clears:
+    - H5 files: tracker mask/logits, detector mask, final mask (per frame)
+    - Database: conditioning_frame, frame_data (batch delete)
+    - SAM memory: per frame if session active
+    """
+    # 1. Clear H5 files (per frame)
+    with tracker_masks(project_path, video_id, "a") as masks:
+        for idx in range(start_frame, end_frame + 1):
+            masks[idx] = 0
+    with tracker_logits(project_path, video_id, "a") as logits:
+        for idx in range(start_frame, end_frame + 1):
+            logits[idx] = 0
+    with detector_masks(project_path, video_id, "a") as masks:
+        for idx in range(start_frame, end_frame + 1):
+            masks[idx] = 0
+    with final_masks(project_path, video_id, "a") as masks:
+        for idx in range(start_frame, end_frame + 1):
+            masks[idx] = 0
+
+    # 2. Batch delete from database
+    await session.execute(
+        delete(ConditioningFrame)
+        .where(ConditioningFrame.video_id == video_id)
+        .where(ConditioningFrame.frame_idx >= start_frame)
+        .where(ConditioningFrame.frame_idx <= end_frame)
+    )
+    await session.execute(
+        delete(FrameData)
+        .where(FrameData.video_id == video_id)
+        .where(FrameData.frame_idx >= start_frame)
+        .where(FrameData.frame_idx <= end_frame)
+    )
+    await session.commit()
+
+    # 3. Clear SAM memory for each frame
+    for idx in range(start_frame, end_frame + 1):
+        segmentation_service.reset_frame_memory(project_id, video_id, idx)
+
+
 async def reset_video(
     project_id: int,
     project_path: Path,

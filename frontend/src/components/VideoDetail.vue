@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, getPoseScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, deleteSegmentationRange, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, getPoseScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -371,6 +371,17 @@ const handleUnmarkTraining = async (startFrame: number, endFrame: number) => {
   await unmarkTraining(startFrame, endFrame)
 }
 
+const handleUnmarkMasked = async (startFrame: number, endFrame: number) => {
+  try {
+    await deleteSegmentationRange(projectId.value, videoId.value, startFrame, endFrame)
+    clearMaskCache(startFrame, endFrame)
+    await refreshFrameRanges()
+    condFrameRefreshKey.value++
+  } catch (e) {
+    console.error('Failed to reset segmentation range:', e)
+  }
+}
+
 const handleResetFrameWithRefresh = async () => {
   await handleResetFrame()
   await refreshFrameRanges()
@@ -537,6 +548,7 @@ onUnmounted(() => {
               :pose-scores="poseScores"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
+              @unmark-masked="handleUnmarkMasked"
               @view-change="handleViewChange"
             />
           </TimelineSystem>

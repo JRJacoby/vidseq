@@ -3,13 +3,14 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.api.dependencies import get_project_folder, get_project_session, get_video
 from vidseq.api.schemas import VideoSelectionRequest
+from vidseq.models.frame_data import FrameData
 from vidseq.models.video import Video
 from vidseq.schemas.video import VideoCreate, VideoResponse
 from vidseq.services import video_service
@@ -30,11 +31,22 @@ async def get_videos(
     )
     assoc_lookup = {row[0]: row[1] for row in assoc_result.all()}
 
+    # Bulk-fetch training frame counts (single GROUP BY query, no N+1)
+    training_count_result = await session.execute(
+        select(FrameData.video_id, func.count())
+        .where(FrameData.frame_type == "train")
+        .group_by(FrameData.video_id)
+    )
+    training_counts = {row[0]: row[1] for row in training_count_result.all()}
+
     # Enrich VideoResponse with the reverse-lookup field
     responses = []
     for video in videos:
         resp = VideoResponse.model_validate(video)
         resp.associated_video_id = assoc_lookup.get(video.id)
+        count = training_counts.get(video.id)
+        if count:
+            resp.training_frame_count = count
         responses.append(resp)
 
     return responses
@@ -66,18 +78,36 @@ async def stream_video(
     video_path = Path(video.path)
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"Video file not found: {video.path}")
-    
+
     file_size = video_path.stat().st_size
     content_type = mimetypes.guess_type(str(video_path))[0] or "video/mp4"
-    
+
     range_header = request.headers.get("range")
     if range_header:
-        range_match = range_header.replace("bytes=", "").split("-")
-        start = int(range_match[0])
-        end = int(range_match[1]) if range_match[1] else file_size - 1
-        
+        try:
+            range_spec = range_header.replace("bytes=", "").strip()
+            parts = range_spec.split("-", 1)
+            if parts[0] == "":
+                # Suffix range: bytes=-500 means last 500 bytes
+                suffix_len = int(parts[1])
+                start = max(0, file_size - suffix_len)
+                end = file_size - 1
+            else:
+                start = int(parts[0])
+                end = int(parts[1]) if parts[1] else file_size - 1
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=416, detail="Invalid range")
+
+        # Clamp end to file bounds
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            return Response(
+                status_code=416,
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+
         chunk_size = end - start + 1
-        
+
         def iter_file():
             with open(video_path, "rb") as f:
                 f.seek(start)
@@ -89,7 +119,7 @@ async def stream_video(
                         break
                     remaining -= len(data)
                     yield data
-        
+
         return StreamingResponse(
             iter_file(),
             status_code=206,
@@ -100,7 +130,7 @@ async def stream_video(
                 "Content-Length": str(chunk_size),
             },
         )
-    
+
     return FileResponse(
         video_path,
         media_type=content_type,
@@ -159,6 +189,33 @@ async def delete_segmentation(
         project_path=project_path,
         video_id=video.id,
         frame_idx=frame_idx,
+        session=session,
+    )
+    return None
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/range", status_code=204)
+async def delete_segmentation_range(
+    project_id: int,
+    start_frame: int,
+    end_frame: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Delete all segmentation data for a range of frames (inclusive).
+
+    Clears tracker masks, logits, detector masks, final masks,
+    conditioning frames, frame_data, and SAM memory for frames
+    [start_frame, end_frame].
+    """
+    await video_service.delete_frame_data_range(
+        project_id=project_id,
+        project_path=project_path,
+        video_id=video.id,
+        start_frame=start_frame,
+        end_frame=end_frame,
         session=session,
     )
     return None
