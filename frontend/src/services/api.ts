@@ -1472,3 +1472,134 @@ export async function finalMasksExist(
     }
     return response.json()
 }
+
+// --- Pose API ---
+
+export interface PoseLabel {
+    frame_idx: number
+    front_x: number
+    front_y: number
+    rear_x: number
+    rear_y: number
+}
+
+export interface PosePrediction {
+    front_x: number
+    front_y: number
+    rear_x: number
+    rear_y: number
+    score: number
+}
+
+export interface PoseStatus {
+    model_exists: boolean
+    is_training: boolean
+}
+
+export async function getPoseLabels(projectId: number, videoId: number): Promise<PoseLabel[]> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos/${videoId}/pose/labels`)
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to fetch pose labels'))
+    return response.json()
+}
+
+export async function savePoseLabel(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+    frontX: number,
+    frontY: number,
+    rearX: number,
+    rearY: number,
+): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pose/labels/${frameIdx}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ front_x: frontX, front_y: frontY, rear_x: rearX, rear_y: rearY }),
+        },
+    )
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to save pose label'))
+}
+
+export async function deletePoseLabel(projectId: number, videoId: number, frameIdx: number): Promise<void> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pose/labels/${frameIdx}`,
+        { method: 'DELETE' },
+    )
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to delete pose label'))
+}
+
+export async function getPoseLabelCount(projectId: number, videoId: number): Promise<number> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos/${videoId}/pose/label-count`)
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to fetch pose label count'))
+    const data = await response.json()
+    return data.count
+}
+
+export async function getPosePrediction(
+    projectId: number,
+    videoId: number,
+    frameIdx: number,
+): Promise<PosePrediction | null> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pose/prediction/${frameIdx}`,
+    )
+    if (!response.ok) return null
+    const data = await response.json()
+    return data.prediction
+}
+
+export async function getPoseStatus(projectId: number): Promise<PoseStatus> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/pose/status`)
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to fetch pose status'))
+    return response.json()
+}
+
+export async function createPoseTraining(
+    projectId: number,
+    maxEpochs: number,
+    videoIds: number[],
+): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/pose/training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_ids: videoIds, max_epochs: maxEpochs }),
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to start pose training'))
+}
+
+export async function deletePoseTraining(projectId: number): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/pose/training`, { method: 'DELETE' })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to stop pose training'))
+}
+
+export function connectPoseTrainingStream(projectId: number): EventSource {
+    return new EventSource(`${API_BASE}/projects/${projectId}/pose/training/stream`)
+}
+
+export async function applyPose(projectId: number, videoIds: number[]): Promise<void> {
+    const response = await fetch(`${API_BASE}/projects/${projectId}/videos/pose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_ids: videoIds }),
+    })
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to apply pose model'))
+}
+
+export async function getPoseScoresDownsampled(
+    projectId: number,
+    videoId: number,
+    maxSamples: number = 800,
+    startFrame?: number,
+    endFrame?: number,
+): Promise<{ scores: MaskScore[] }> {
+    const params = new URLSearchParams({ max_samples: maxSamples.toString() })
+    if (startFrame !== undefined) params.set('start_frame', startFrame.toString())
+    if (endFrame !== undefined) params.set('end_frame', endFrame.toString())
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/pose-scores-downsampled?${params}`,
+    )
+    if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to fetch pose scores'))
+    return response.json()
+}
