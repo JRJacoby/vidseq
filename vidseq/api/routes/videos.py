@@ -162,38 +162,6 @@ async def get_frame(
     return Response(content=jpeg_bytes, media_type="image/jpeg")
 
 
-@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}", status_code=204)
-async def delete_segmentation(
-    project_id: int,
-    frame_idx: int,
-    video: Video = Depends(get_video),
-    project_path: Path = Depends(get_project_folder),
-    session: AsyncSession = Depends(get_project_session),
-):
-    """
-    Delete all segmentation data for a frame.
-
-    Clears tracker masks, tracker logits, detector masks, final masks,
-    database entries (conditioning_frame, frame_data), and SAM memory state.
-
-    Args:
-        project_id: ID of the project
-        video_id: ID of the video (from path, resolved via get_video)
-        frame_idx: Frame index (0-based)
-
-    Returns:
-        Status confirmation
-    """
-    await video_service.delete_frame_data(
-        project_id=project_id,
-        project_path=project_path,
-        video_id=video.id,
-        frame_idx=frame_idx,
-        session=session,
-    )
-    return None
-
-
 @router.delete("/projects/{project_id}/videos/{video_id}/segmentation/range", status_code=204)
 async def delete_segmentation_range(
     project_id: int,
@@ -216,6 +184,30 @@ async def delete_segmentation_range(
         video_id=video.id,
         start_frame=start_frame,
         end_frame=end_frame,
+        session=session,
+    )
+    return None
+
+
+@router.delete("/projects/{project_id}/videos/{video_id}/segmentation/{frame_idx}", status_code=204)
+async def delete_segmentation(
+    project_id: int,
+    frame_idx: int,
+    video: Video = Depends(get_video),
+    project_path: Path = Depends(get_project_folder),
+    session: AsyncSession = Depends(get_project_session),
+):
+    """
+    Delete all segmentation data for a frame.
+
+    Clears tracker masks, tracker logits, detector masks, final masks,
+    database entries (conditioning_frame, frame_data), and SAM memory state.
+    """
+    await video_service.delete_frame_data(
+        project_id=project_id,
+        project_path=project_path,
+        video_id=video.id,
+        frame_idx=frame_idx,
         session=session,
     )
     return None
