@@ -1,12 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getCroppedVideoStreamUrl,
-  getVideoAlignmentLabels,
-  saveAlignmentLabel,
-  deleteAlignmentLabel,
-  deleteVideoAlignmentLabels,
 } from '@/services/api'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useVideo } from '@/composables/useVideo'
@@ -27,13 +23,6 @@ const viewEnd = ref(0)
 
 const overlayCanvasRef = ref<HTMLCanvasElement | null>(null)
 
-// Training mode state
-const isTrainingMode = ref(false)
-const frontPoint = ref<{ x: number; y: number } | null>(null)
-const rearPoint = ref<{ x: number; y: number } | null>(null)
-const alignmentLabelFrames = ref<number[]>([])
-const isSaving = ref(false)
-
 const croppedVideoStreamUrl = computed(() => {
   if (!projectId.value || !videoId.value) return ''
   return getCroppedVideoStreamUrl(projectId.value, videoId.value)
@@ -45,25 +34,6 @@ const currentFrameIdx = computed(() => {
   return Math.floor(currentTime.value * video.value.fps)
 })
 
-const loadExtraData = async () => {
-  if (!video.value) return
-  try {
-    // Load alignment labels for this video
-    const labelsResponse = await getVideoAlignmentLabels(
-      projectId.value,
-      videoId.value
-    )
-    alignmentLabelFrames.value = labelsResponse.frame_indices
-  } catch (e) {
-    // Extra data loading failed, but video loaded fine
-    console.error('Failed to load extra data:', e)
-  }
-}
-
-// Load extra data when video loads
-watch(video, (v) => {
-  if (v) loadExtraData()
-})
 
 const handleBack = () => {
   router.push(`/project/${projectId.value}`)
@@ -96,165 +66,11 @@ const handleViewChange = (start: number, end: number) => {
   viewEnd.value = end
 }
 
-// Render training points overlay
-function renderOverlay() {
-  const canvas = overlayCanvasRef.value
-  const videoEl = videoRef.value
-  if (!canvas || !videoEl) return
-
-  // Match canvas size to video display size
-  const rect = videoEl.getBoundingClientRect()
-  canvas.width = rect.width
-  canvas.height = rect.height
-
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-  // Draw training points if in training mode
-  if (isTrainingMode.value) {
-    const radius = 10
-
-    if (frontPoint.value) {
-      const px = frontPoint.value.x * canvas.width
-      const py = frontPoint.value.y * canvas.height
-      ctx.beginPath()
-      ctx.arc(px, py, radius, 0, 2 * Math.PI)
-      ctx.fillStyle = 'rgba(34, 197, 94, 0.8)' // Green
-      ctx.fill()
-      ctx.strokeStyle = 'white'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-
-    if (rearPoint.value) {
-      const px = rearPoint.value.x * canvas.width
-      const py = rearPoint.value.y * canvas.height
-      ctx.beginPath()
-      ctx.arc(px, py, radius, 0, 2 * Math.PI)
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.8)' // Red
-      ctx.fill()
-      ctx.strokeStyle = 'white'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-  }
-}
-
-// Toggle training mode
-async function toggleTrainingMode() {
-  isTrainingMode.value = !isTrainingMode.value
-  frontPoint.value = null
-  rearPoint.value = null
-  // Wait for canvas to be rendered in DOM before setting dimensions
-  await nextTick()
-  renderOverlay()
-}
-
-// Handle overlay click during training mode
-function handleOverlayClick(event: MouseEvent) {
-  if (!isTrainingMode.value || isSaving.value) return
-
-  const canvas = overlayCanvasRef.value
-  const videoEl = videoRef.value
-  if (!canvas || !videoEl) return
-
-  const rect = canvas.getBoundingClientRect()
-  const x = (event.clientX - rect.left) / rect.width
-  const y = (event.clientY - rect.top) / rect.height
-
-  if (!frontPoint.value) {
-    frontPoint.value = { x, y }
-    renderOverlay()
-  } else if (!rearPoint.value) {
-    rearPoint.value = { x, y }
-    renderOverlay()
-    saveAndAdvance()
-  }
-}
-
-// Save label and advance to next frame
-async function saveAndAdvance() {
-  if (!frontPoint.value || !rearPoint.value) return
-  if (!video.value) return
-
-  isSaving.value = true
-  try {
-    await saveAlignmentLabel(
-      projectId.value,
-      videoId.value,
-      currentFrameIdx.value,
-      frontPoint.value.x,
-      frontPoint.value.y,
-      rearPoint.value.x,
-      rearPoint.value.y
-    )
-
-    // Add to local list if not already present
-    if (!alignmentLabelFrames.value.includes(currentFrameIdx.value)) {
-      alignmentLabelFrames.value = [...alignmentLabelFrames.value, currentFrameIdx.value].sort(
-        (a, b) => a - b
-      )
-    }
-
-    // Clear points
-    frontPoint.value = null
-    rearPoint.value = null
-
-    // Advance to next frame
-    const nextFrame = currentFrameIdx.value + 1
-    const nextTime = (nextFrame + 0.5) / video.value.fps
-    seek(nextTime)
-  } catch (e) {
-    console.error('Failed to save alignment label:', e)
-  } finally {
-    isSaving.value = false
-    renderOverlay()
-  }
-}
-
-// Reset current frame's label
-async function handleResetFrame() {
-  try {
-    await deleteAlignmentLabel(projectId.value, videoId.value, currentFrameIdx.value)
-    alignmentLabelFrames.value = alignmentLabelFrames.value.filter(
-      (f) => f !== currentFrameIdx.value
-    )
-  } catch (e) {
-    console.error('Failed to reset frame:', e)
-  }
-}
-
-// Reset all labels for this video
-async function handleResetVideo() {
-  if (!confirm('Delete all alignment labels for this video?')) return
-  try {
-    await deleteVideoAlignmentLabels(projectId.value, videoId.value)
-    alignmentLabelFrames.value = []
-  } catch (e) {
-    console.error('Failed to reset video:', e)
-  }
-}
-
-// Discard partial label (front without rear) when navigating away
-watch(currentFrameIdx, (newFrame, oldFrame) => {
-  if (isTrainingMode.value && frontPoint.value && !rearPoint.value && newFrame !== oldFrame) {
-    frontPoint.value = null
-    renderOverlay()
-  }
-})
-
 onMounted(() => {
-  // Handle query params from AlignedVideoDetail navigation
-  if (route.query.training === 'true') {
-    isTrainingMode.value = true
-  }
   if (route.query.frame !== undefined && video.value?.fps) {
     const frameIdx = parseInt(route.query.frame as string, 10)
     if (!isNaN(frameIdx)) {
       const targetTime = (frameIdx + 0.5) / video.value.fps
-      // Wait for video to be ready before seeking
       setTimeout(() => seek(targetTime), 100)
     }
   }
@@ -290,13 +106,6 @@ onMounted(() => {
               >
                 Your browser does not support the video tag.
               </video>
-              <canvas
-                v-if="isTrainingMode"
-                ref="overlayCanvasRef"
-                class="overlay-canvas"
-                :class="{ 'training-mode': isTrainingMode }"
-                @click="handleOverlayClick"
-              />
             </div>
           </div>
           <TimelineSystem>
@@ -324,8 +133,6 @@ onMounted(() => {
               :show-confidence-plot="false"
               :is-marking-mode="false"
               :confidence-scores="[]"
-              :alignment-label-frames="alignmentLabelFrames"
-              :show-alignment-labels="true"
               @view-change="handleViewChange"
             />
           </TimelineSystem>
@@ -335,59 +142,8 @@ onMounted(() => {
 
     <aside class="action-bar">
       <div class="action-bar-content">
-        <h4 class="action-bar-title">Alignment Training</h4>
-        <button
-          class="training-toggle-button"
-          :class="{ active: isTrainingMode }"
-          @click="toggleTrainingMode"
-        >
-          {{ isTrainingMode ? 'Stop Training' : 'Start Training' }}
-        </button>
-
-        <template v-if="isTrainingMode">
-          <div class="training-instructions">
-            <p class="instruction-step">
-              <span class="step-number">1</span>
-              Click <span class="front-text">front</span> of animal
-            </p>
-            <p class="instruction-step">
-              <span class="step-number">2</span>
-              Click <span class="rear-text">rear</span> of animal
-            </p>
-            <p class="instruction-note">Auto-saves and advances</p>
-          </div>
-
-          <div class="current-state">
-            <p class="frame-indicator">Frame: {{ currentFrameIdx }}</p>
-            <p v-if="frontPoint && !rearPoint" class="waiting-indicator">
-              Waiting for rear click...
-            </p>
-            <p v-if="isSaving" class="saving-indicator">Saving...</p>
-          </div>
-
-          <div class="training-actions">
-            <button
-              class="reset-button"
-              :disabled="!alignmentLabelFrames.includes(currentFrameIdx)"
-              @click="handleResetFrame"
-            >
-              Reset Frame
-            </button>
-            <button
-              class="reset-button danger"
-              :disabled="alignmentLabelFrames.length === 0"
-              @click="handleResetVideo"
-            >
-              Reset Video
-            </button>
-          </div>
-        </template>
-
-        <div class="label-count">
-          <span class="count-label">Labels (this video):</span>
-          <span class="count-value">{{ alignmentLabelFrames.length }}</span>
-        </div>
-
+        <h4 class="action-bar-title">Cropped Video</h4>
+        <p class="marking-hint">Keypoint labeling has moved to the original video view.</p>
       </div>
     </aside>
   </div>
