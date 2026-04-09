@@ -18,6 +18,8 @@ const props = withDefaults(defineProps<{
   detectorScores?: { frame_idx: number; score: number }[]
   showObbConfidence?: boolean
   obbScores?: { frame_idx: number; score: number }[]
+  showPoseConfidence?: boolean
+  poseScores?: { frame_idx: number; score: number }[]
   // Alignment label frames (individual frame indices)
   alignmentLabelFrames?: number[]
   showAlignmentLabels?: boolean
@@ -35,6 +37,8 @@ const props = withDefaults(defineProps<{
   detectorScores: () => [],
   showObbConfidence: false,
   obbScores: () => [],
+  showPoseConfidence: false,
+  poseScores: () => [],
 })
 
 const emit = defineEmits<{
@@ -265,6 +269,14 @@ const hoverScores = computed(() => {
     }
   }
 
+  // Find nearest pose confidence score
+  if (props.showPoseConfidence && props.poseScores && props.poseScores.length > 0) {
+    const nearest = findNearestScore(props.poseScores, frame)
+    if (nearest !== null) {
+      results.push({ label: 'Pose', value: nearest.score, color: 'rgba(192, 38, 211, 0.8)' })
+    }
+  }
+
   return results
 })
 
@@ -447,6 +459,15 @@ const drawPlot = () => {
     }
   }
 
+  // Draw pose confidence scores (magenta line)
+  if (props.showPoseConfidence && props.poseScores && props.poseScores.length > 0) {
+    const validScores = props.poseScores.filter(s => s.score >= 0)
+    if (validScores.length > 0) {
+      const poseRange = drawScoreLine(ctx, validScores, 'rgba(192, 38, 211, 0.8)', width, height)
+      if (poseRange && !activeRange) activeRange = poseRange
+    }
+  }
+
   // Draw PCA scores (multiple colored lines)
   if (props.showPCAPlot && props.pcaScores && props.visiblePCs.length > 0) {
     for (const pcIdx of props.visiblePCs) {
@@ -483,6 +504,8 @@ watch(() => props.detectorScores, drawPlot, { deep: true })
 watch(() => props.showDetectorConfidence, drawPlot)
 watch(() => props.obbScores, drawPlot, { deep: true })
 watch(() => props.showObbConfidence, drawPlot)
+watch(() => props.poseScores, drawPlot, { deep: true })
+watch(() => props.showPoseConfidence, drawPlot)
 watch(() => props.pcaScores, drawPlot, { deep: true })
 watch(() => props.visiblePCs, drawPlot, { deep: true })
 watch(() => props.showPCAPlot, drawPlot)

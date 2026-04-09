@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
+import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, getPoseScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
 import { useSegmentationSession } from '@/composables/useSegmentationSession'
 import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
@@ -46,6 +46,8 @@ const hasSegMasks = ref(false)
 const obbBbox = ref<ObbBbox | null>(null)
 const obbScores = ref<{ frame_idx: number; score: number }[]>([])
 const showObbConfidence = ref(true)
+const poseScores = ref<MaskScore[]>([])
+const showPoseConfidence = ref(true)
 const condFrameRefreshKey = ref(0)
 
 const checkDetectorMasks = async () => {
@@ -260,11 +262,26 @@ const fetchObbScoresForView = async () => {
 
 const fetchObbScores = useDebounceFn(fetchObbScoresForView, 150)
 
+const fetchPoseScores = useDebounceFn(async () => {
+  if (!projectId.value || !videoId.value || !video.value) return
+  try {
+    const response = await getPoseScoresDownsampled(
+      projectId.value, videoId.value, 800,
+      Math.floor(viewStart.value * video.value.fps),
+      Math.floor(viewEnd.value * video.value.fps),
+    )
+    poseScores.value = response.scores
+  } catch {
+    poseScores.value = []
+  }
+}, 150)
+
 // Re-fetch scores when view range changes
 watch([viewStart, viewEnd], () => {
   fetchScores()
   fetchDetectorScores()
   fetchObbScores()
+  fetchPoseScores()
 }, { flush: 'post' })
 
 const isPropagating = ref(false)
@@ -287,6 +304,7 @@ const handlePropagateMask = async () => {
     await fetchScoresForView()
     await fetchDetectorScoresForView()
     await fetchObbScoresForView()
+    fetchPoseScores()
   } catch (e) {
     console.error('Failed to propagate mask:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate mask')
@@ -313,6 +331,7 @@ const handlePropagateWithoutMemory = async () => {
     await fetchScoresForView()
     await fetchDetectorScoresForView()
     await fetchObbScoresForView()
+    fetchPoseScores()
   } catch (e) {
     console.error('Failed to propagate without memory:', e)
     alert(e instanceof Error ? e.message : 'Failed to propagate without memory')
@@ -423,6 +442,7 @@ onMounted(async () => {
   await fetchScoresForView()
   await fetchDetectorScoresForView()
   await fetchObbScoresForView()
+  fetchPoseScores()
   refreshPoseLabels()
 })
 
@@ -513,6 +533,8 @@ onUnmounted(() => {
               :detector-scores="detectorScores"
               :show-obb-confidence="showObbConfidence"
               :obb-scores="obbScores"
+              :show-pose-confidence="showPoseConfidence"
+              :pose-scores="poseScores"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @view-change="handleViewChange"
@@ -708,6 +730,14 @@ onUnmounted(() => {
           >
             <span class="tool-icon">🔍</span>
             <span class="tool-label">{{ showDetectorConfidence ? 'Detector Confidence' : 'Detector Confidence Off' }}</span>
+          </button>
+          <button
+            class="tool-button toggle-button"
+            :class="{ active: showPoseConfidence }"
+            @click="showPoseConfidence = !showPoseConfidence"
+          >
+            <span class="tool-icon">*</span>
+            <span class="tool-label">{{ showPoseConfidence ? 'Pose Confidence' : 'Pose Confidence Off' }}</span>
           </button>
           <button
             class="tool-button toggle-button"
