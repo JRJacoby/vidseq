@@ -19,7 +19,7 @@ from vidseq.services.exceptions import (
     AlignmentTrainingError,
     TextFileParseError,
 )
-from vidseq.api.routes import alignment, arhmm, cropped_videos, detector, exports, filesystem, pca, projects, segmentation, videos
+from vidseq.api.routes import arhmm, cropped_videos, detector, exports, filesystem, pca, pose, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -51,7 +51,7 @@ app.include_router(videos.router, prefix="/api", tags=["videos"])
 app.include_router(filesystem.router, prefix="/api", tags=["filesystem"])
 app.include_router(segmentation.router, prefix="/api", tags=["segmentation"])
 app.include_router(cropped_videos.router, prefix="/api", tags=["cropped_videos"])
-app.include_router(alignment.router, prefix="/api", tags=["alignment"])
+app.include_router(pose.router, prefix="/api", tags=["pose"])
 app.include_router(pca.router, prefix="/api", tags=["pca"])
 app.include_router(arhmm.router, prefix="/api", tags=["arhmm"])
 app.include_router(detector.router, prefix="/api", tags=["detector"])
