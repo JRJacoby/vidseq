@@ -8,7 +8,6 @@ import AlignedVideoDetail from '../components/AlignedVideoDetail.vue'
 import AssociatedVideoDetail from '../components/AssociatedVideoDetail.vue'
 import FirstFramesView from '../components/FirstFramesView.vue'
 import PCAView from '../components/PCAView.vue'
-import Alignment from '../components/Alignment.vue'
 import ARHMMView from '../components/ARHMMView.vue'
 import DetectorTraining from '../components/DetectorTraining.vue'
 
@@ -58,11 +57,6 @@ const router = createRouter({
           path: 'pca',
           name: 'pca',
           component: PCAView
-        },
-        {
-          path: 'alignment',
-          name: 'alignment',
-          component: Alignment
         },
         {
           path: 'arhmm',
