@@ -456,7 +456,10 @@ def create_alignment_keypoints_array(
     video_id: int,
     num_frames: int,
 ) -> None:
-    """Create alignment heading vectors array for a video.
+    """Create alignment keypoints array for a video.
+
+    Stores raw keypoint coordinates: [front_x, front_y, rear_x, rear_y]
+    per frame, normalized 0-1.
 
     Args:
         project_path: Path to the project folder
@@ -467,10 +470,10 @@ def create_alignment_keypoints_array(
     with open_h5_with_lock(h5_path, mode="w") as f:
         f.create_dataset(
             "data",
-            shape=(num_frames, 2),
+            shape=(num_frames, 4),
             dtype=np.float32,
             fillvalue=0.0,
-            chunks=(1, 2),
+            chunks=(1, 4),
             compression=None,
         )
 
