@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { getVideoStreamUrl, createPropagation, createPropagationWithoutMemory, getScoresDownsampled, getDetectorScoresDownsampled, detectorMasksExist, finalMasksExist, obbBboxesExist, getObbBbox, getObbScoresDownsampled, segDetectorMasksExist, type Video, type MaskScore, type ObbBbox } from '@/services/api'
@@ -8,6 +8,8 @@ import { useVideoPlayback } from '@/composables/useVideoPlayback'
 import { useSegmentation } from '@/composables/useSegmentation'
 import { useFrameRanges } from '@/composables/useFrameRanges'
 import { useVideo } from '@/composables/useVideo'
+import { usePoseLabels } from '@/composables/usePoseLabels'
+import { getPosePrediction, type PosePrediction } from '@/services/api'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
 import DataTrack from './DataTrack.vue'
@@ -154,6 +156,44 @@ const {
   unmarkTraining,
   validateRange,
 } = useFrameRanges(projectId, videoId)
+
+const {
+  currentLabel: poseLabel,
+  labeledFrameCount: poseLabelCount,
+  labelingState,
+  pendingFront,
+  loadLabel: loadPoseLabel,
+  deleteLabel: deletePoseLabel,
+  refresh: refreshPoseLabels,
+  startLabeling,
+  stopLabeling,
+  handleClick: handleKeypointClick,
+} = usePoseLabels(projectId, videoId)
+
+const isLabelingKeypoints = ref(false)
+const showPoseKeypoints = ref(true)
+const posePrediction = ref<PosePrediction | null>(null)
+
+const toggleLabelingMode = () => {
+  isLabelingKeypoints.value = !isLabelingKeypoints.value
+  if (isLabelingKeypoints.value) {
+    startLabeling()
+  } else {
+    stopLabeling()
+  }
+}
+
+const advanceFrame = () => {
+  if (!video.value) return
+  const nextFrame = currentFrameIdx.value + 1
+  if (nextFrame < video.value.num_frames) {
+    seekToFrame(nextFrame)
+  }
+}
+
+const onKeypointClick = async (point: { x: number; y: number }) => {
+  await handleKeypointClick(point.x, point.y, currentFrameIdx.value, advanceFrame)
+}
 
 const fetchScoresForView = async () => {
   if (!projectId.value || !videoId.value || !video.value) return
@@ -339,6 +379,18 @@ setMetadataCallback(() => {
   loadFrameData(0)
 })
 
+// Load pose label and prediction when frame changes
+watch(currentFrameIdx, async (frameIdx) => {
+  if (frameIdx !== undefined && frameIdx !== null) {
+    await loadPoseLabel(frameIdx)
+    try {
+      posePrediction.value = await getPosePrediction(projectId.value, videoId.value, frameIdx)
+    } catch {
+      posePrediction.value = null
+    }
+  }
+})
+
 // Fetch OBB bbox when frame changes in OBB mode
 watch([currentFrameIdx, maskViewMode], async ([frameIdx, mode]) => {
   if (mode !== 'obb' || !projectId.value || !videoId.value) {
@@ -353,7 +405,15 @@ watch([currentFrameIdx, maskViewMode], async ([frameIdx, mode]) => {
   }
 })
 
+const handlePoseKeyDown = (e: KeyboardEvent) => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && isLabelingKeypoints.value && poseLabel.value) {
+    e.preventDefault()
+    deletePoseLabel(currentFrameIdx.value)
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handlePoseKeyDown)
   await refreshFrameRanges()
   await checkDetectorMasks()
   await checkFinalMasks()
@@ -363,10 +423,16 @@ onMounted(async () => {
   await fetchScoresForView()
   await fetchDetectorScoresForView()
   await fetchObbScoresForView()
+  refreshPoseLabels()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handlePoseKeyDown)
 })
 </script>
 
 <template>
+  <div class="video-detail-page">
   <div class="video-detail-container">
     <div class="video-content">
       <div class="video-header">
@@ -407,8 +473,14 @@ onMounted(async () => {
                 :show-prompts="showPrompts"
                 :detector-bbox="detectorBbox"
                 :obb-bbox="obbBbox"
+                :pose-label="poseLabel"
+                :pose-prediction="posePrediction"
+                :pending-front="pendingFront"
+                :show-pose-keypoints="showPoseKeypoints"
+                :is-labeling-keypoints="isLabelingKeypoints"
                 @point-complete="handlePointCompleteWithRefresh"
                 @box-complete="handleBoxCompleteWithRefresh"
+                @keypoint-click="onKeypointClick"
               />
             </div>
           </div>
@@ -446,14 +518,9 @@ onMounted(async () => {
               @view-change="handleViewChange"
             />
           </TimelineSystem>
-          <CondFrameGrid
-            v-if="video && segmentationIsReady"
-            :project-id="projectId"
-            :video-id="videoId"
-            :refresh-key="condFrameRefreshKey"
-          />
         </div>
       </div>
+
     </div>
 
     <aside class="action-bar">
@@ -550,7 +617,26 @@ onMounted(async () => {
         <p v-if="isMarkingMode" class="marking-hint">
           Drag on the data track to mark frames as training data. Press Delete to remove.
         </p>
-        
+
+        <h4 class="action-bar-title">Pose Keypoints</h4>
+        <div class="tool-buttons">
+          <button
+            class="tool-button"
+            :class="{ active: isLabelingKeypoints }"
+            @click="toggleLabelingMode"
+            :disabled="isSegmenting || isPropagating"
+          >
+            <span class="tool-icon">+</span>
+            <span class="tool-label">{{ isLabelingKeypoints ? 'Exit Labeling' : 'Label Keypoints' }}</span>
+          </button>
+        </div>
+        <p v-if="isLabelingKeypoints" class="marking-hint">
+          {{ labelingState === 'awaiting_front' ? 'Click front (nose)' : 'Click rear (tail)' }}
+        </p>
+        <p v-if="poseLabelCount > 0" class="marking-hint">
+          {{ poseLabelCount }} frame(s) labeled
+        </p>
+
         <h4 class="action-bar-title">Video Visibility</h4>
         <div class="mask-view-section">
           <label class="mask-view-label">Mask Source:</label>
@@ -623,6 +709,14 @@ onMounted(async () => {
             <span class="tool-icon">🔍</span>
             <span class="tool-label">{{ showDetectorConfidence ? 'Detector Confidence' : 'Detector Confidence Off' }}</span>
           </button>
+          <button
+            class="tool-button toggle-button"
+            :class="{ active: showPoseKeypoints }"
+            @click="showPoseKeypoints = !showPoseKeypoints"
+          >
+            <span class="tool-icon">*</span>
+            <span class="tool-label">{{ showPoseKeypoints ? 'Pose Keypoints' : 'Pose Keypoints Off' }}</span>
+          </button>
         </div>
 
         <div v-if="isSegmenting" class="segmenting-indicator">
@@ -641,13 +735,26 @@ onMounted(async () => {
       </div>
     </aside>
   </div>
+
+  <CondFrameGrid
+    v-if="video && segmentationIsReady"
+    :project-id="projectId"
+    :video-id="videoId"
+    :refresh-key="condFrameRefreshKey"
+  />
+  </div>
 </template>
 
 <style scoped>
-.video-detail-container {
-  display: flex;
+.video-detail-page {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+}
+
+.video-detail-container {
+  display: flex;
+  height: 100%;
 }
 
 .video-content {
