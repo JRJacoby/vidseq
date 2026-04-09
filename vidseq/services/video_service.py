@@ -546,7 +546,7 @@ async def delete_videos(
     Raises:
         DBRecordNotFoundError: If any video_id is not found
     """
-    from vidseq.models.alignment_label import AlignmentLabel
+    from vidseq.models.pose_label import PoseLabel
 
     # 1. Resolve & validate — fetch all videos, fail fast if any missing
     videos: list[Video] = []
@@ -581,7 +581,7 @@ async def delete_videos(
             delete(ConditioningFrame).where(ConditioningFrame.video_id == video.id)
         )
         await session.execute(
-            delete(AlignmentLabel).where(AlignmentLabel.video_id == video.id)
+            delete(PoseLabel).where(PoseLabel.video_id == video.id)
         )
         await session.delete(video)
 
