@@ -12,11 +12,6 @@ import {
   createVideosExtraction,
   getCroppedVideoExists,
   getAlignedVideoExists,
-  getAlignmentStatus,
-  createAlignmentTraining,
-  createVideosAlignment,
-  clearAlignmentModel,
-  clearAllAlignmentLabels,
   getPCAStatus,
   createPCA,
   addAssociatedVideos,
@@ -26,9 +21,9 @@ import {
   applySegDetector,
   exportDetectorBboxes,
   exportDetectorMasks,
+  applyPose,
   type Video,
   type Project,
-  type AlignmentStatus,
   type PCAStatus,
 } from '@/services/api'
 import FilePickerModal from '@/components/FilePickerModal.vue'
@@ -36,6 +31,7 @@ import { useProjectStore } from '@/stores/project'
 import { useDetector } from '@/composables/useDetector'
 import { useObbDetector } from '@/composables/useObbDetector'
 import { useSegDetector } from '@/composables/useSegDetector'
+import { usePoseDetector } from '@/composables/usePoseDetector'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -99,10 +95,6 @@ const toggleAll = () => {
   }
 }
 
-// Alignment state
-const alignmentStatus = ref<AlignmentStatus | null>(null)
-const alignmentEpochs = ref(100)
-
 // PCA state
 const pcaStatus = ref<PCAStatus | null>(null)
 const isRunningPCA = ref(false)
@@ -149,6 +141,14 @@ const {
   startTraining: startSegTraining,
 } = useSegDetector(projectId)
 
+const {
+  isTraining: isPoseTraining,
+  modelExists: poseModelExists,
+  startTraining: startPoseTraining,
+  stopTraining: stopPoseTraining,
+  checkStatus: checkPoseStatus,
+} = usePoseDetector(projectId)
+
 const loadProject = async () => {
   if (!projectStore.currentProjectId) return
   try {
@@ -171,45 +171,15 @@ const loadVideos = async () => {
   }
 }
 
-// Poll alignment status while training is in progress
-let alignmentPollInterval: ReturnType<typeof setInterval> | null = null
-const pollAlignmentStatus = () => {
-  // Clear any existing interval
-  if (alignmentPollInterval) {
-    clearInterval(alignmentPollInterval)
-  }
-  // Poll every 2 seconds
-  alignmentPollInterval = setInterval(async () => {
-    await loadAlignmentStatus()
-    // Stop polling when training is done
-    if (!alignmentStatus.value?.is_training) {
-      if (alignmentPollInterval) {
-        clearInterval(alignmentPollInterval)
-        alignmentPollInterval = null
-      }
-    }
-  }, 2000)
-}
-
 onMounted(async () => {
   await loadProject()
   await loadVideos()
   await loadCroppedVideoStatus()
   await loadAlignedVideoStatus()
-  await loadAlignmentStatus()
   await loadPCAStatus()
-  // If training is already in progress (e.g., user refreshed), start polling
-  if (alignmentStatus.value?.is_training) {
-    pollAlignmentStatus()
-  }
 })
 
 onUnmounted(() => {
-  // Clean up polling interval
-  if (alignmentPollInterval) {
-    clearInterval(alignmentPollInterval)
-    alignmentPollInterval = null
-  }
 })
 
 const handleAddVideos = () => {
@@ -357,74 +327,6 @@ const handleViewAligned = (videoId: number) => {
   }
 }
 
-const loadAlignmentStatus = async () => {
-  if (!projectStore.currentProjectId) return
-  try {
-    alignmentStatus.value = await getAlignmentStatus(projectStore.currentProjectId)
-  } catch (e) {
-    console.error('Failed to load alignment status:', e)
-  }
-}
-
-const handleTrainAlignment = async () => {
-  if (!projectId.value || alignmentStatus.value?.is_training) return
-  try {
-    // Fire-and-forget: endpoint returns immediately after starting training
-    await createAlignmentTraining(projectId.value, alignmentEpochs.value, true, 100, 50, selectedVideoIdsList.value)
-    // Refresh status - will now show is_training=true
-    await loadAlignmentStatus()
-    // Start polling to detect when training completes
-    pollAlignmentStatus()
-  } catch (e: any) {
-    console.error('Failed to start alignment training:', e)
-    alert(e.message || 'Failed to start alignment training')
-  }
-}
-
-const handleApplyAlignment = async () => {
-  if (!projectId.value) return
-
-  // If already aligning, just navigate to view progress
-  if (alignmentStatus.value?.is_applying) {
-    router.push(`/project/${projectId.value}/alignment`)
-    return
-  }
-
-  try {
-    // Start alignment in background (returns immediately)
-    await createVideosAlignment(projectId.value, selectedVideoIdsList.value)
-    // Navigate to Alignment screen to monitor progress
-    router.push(`/project/${projectId.value}/alignment`)
-  } catch (e: any) {
-    console.error('Failed to start alignment:', e)
-    alert(e.message || 'Failed to start alignment')
-  }
-}
-
-const handleClearAlignmentModel = async () => {
-  if (!projectId.value) return
-  if (!confirm('Delete the alignment model? You will need to retrain.')) return
-  try {
-    await clearAlignmentModel(projectId.value)
-    await loadAlignmentStatus()
-  } catch (e: any) {
-    console.error('Failed to clear alignment model:', e)
-    alert(e.message || 'Failed to clear alignment model')
-  }
-}
-
-const handleClearAlignmentLabels = async () => {
-  if (!projectId.value) return
-  if (!confirm('Delete ALL alignment labels across ALL videos?')) return
-  try {
-    await clearAllAlignmentLabels(projectId.value)
-    await loadAlignmentStatus()
-  } catch (e: any) {
-    console.error('Failed to clear alignment labels:', e)
-    alert(e.message || 'Failed to clear alignment labels')
-  }
-}
-
 // PCA handlers
 const loadPCAStatus = async () => {
   if (!projectStore.currentProjectId) return
@@ -559,6 +461,26 @@ const handleApplySeg = async () => {
     alert(e.message || 'Failed to apply seg detector')
   } finally {
     isApplyingSeg.value = false
+  }
+}
+
+const handleTrainPose = async () => {
+  if (!projectId.value || isPoseTraining.value) return
+  try {
+    await startPoseTraining(300, selectedVideoIdsList.value)
+    router.push(`/project/${projectId.value}/pose`)
+  } catch (e: any) {
+    alert(e.message || 'Failed to start pose training')
+  }
+}
+
+const handleApplyPose = async () => {
+  if (!projectId.value) return
+  try {
+    await applyPose(projectId.value, selectedVideoIdsList.value)
+    router.push(`/project/${projectId.value}/pose`)
+  } catch (e: any) {
+    alert(e.message || 'Failed to apply pose model')
   }
 }
 
@@ -793,56 +715,6 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isExtracting ? 'Starting...' : `Extract ${selectedCount} Cropped Videos` }}</span>
           </button>
 
-          <h4 class="sidebar-section-title">Egocentric Alignment</h4>
-          <div class="alignment-info">
-            <span class="info-label">Labels:</span>
-            <span class="info-value">{{ alignmentStatus?.label_count ?? 0 }}</span>
-          </div>
-          <div class="epochs-input">
-            <label for="epochs">Max Epochs:</label>
-            <input
-              id="epochs"
-              v-model.number="alignmentEpochs"
-              type="number"
-              min="1"
-              max="500"
-              class="epochs-field"
-            />
-          </div>
-          <button
-            class="sidebar-button train-alignment-button"
-            @click="handleTrainAlignment"
-            :disabled="alignmentStatus?.is_training || alignmentStatus?.is_applying || (alignmentStatus?.label_count ?? 0) === 0 || selectedCount === 0"
-          >
-            <span class="button-label">{{ alignmentStatus?.is_training ? 'Training...' : 'Train Alignment Model' }}</span>
-          </button>
-          <button
-            class="sidebar-button apply-alignment-button"
-            @click="handleApplyAlignment"
-            :disabled="alignmentStatus?.is_training || (!alignmentStatus?.model_trained && !alignmentStatus?.is_applying) || selectedCount === 0"
-          >
-            <span class="button-label">{{ alignmentStatus?.is_applying ? 'View Progress' : `Align ${selectedCount} Videos` }}</span>
-          </button>
-
-          <div class="alignment-clear-buttons">
-            <button
-              class="clear-button"
-              @click="handleClearAlignmentModel"
-              :disabled="!alignmentStatus?.model_trained"
-              title="Delete trained model"
-            >
-              Clear Model
-            </button>
-            <button
-              class="clear-button"
-              @click="handleClearAlignmentLabels"
-              :disabled="(alignmentStatus?.label_count ?? 0) === 0"
-              title="Delete all training labels"
-            >
-              Clear Labels
-            </button>
-          </div>
-
           <h4 class="sidebar-section-title">PCA</h4>
           <div v-if="pcaStatus?.has_pca" class="pca-info">
             <div class="info-row">
@@ -965,6 +837,22 @@ const formatScore = (score: number | undefined) => {
             <span class="button-label">{{ isExportingSegMasks ? 'Exporting...' : 'Export Seg Masks' }}</span>
           </button>
 
+          <h4 class="sidebar-section-title">Pose Model</h4>
+          <button
+            class="sidebar-button"
+            @click="handleTrainPose"
+            :disabled="isPoseTraining || selectedVideoIds.size === 0"
+          >
+            <span class="button-label">{{ isPoseTraining ? 'Training...' : 'Train Pose' }}</span>
+          </button>
+          <button
+            class="sidebar-button"
+            @click="handleApplyPose"
+            :disabled="isPoseTraining || !poseModelExists || selectedVideoIds.size === 0"
+          >
+            <span class="button-label">{{ isPoseTraining ? 'Applying...' : 'Apply Pose' }}</span>
+          </button>
+
           <h4 class="sidebar-section-title">Associated Videos</h4>
           <button
             class="sidebar-button"
@@ -994,8 +882,8 @@ const formatScore = (score: number | undefined) => {
             </label>
           </div>
 
-          <div v-if="isDeleting || isDeletingSegmentations || isSegmenting || isExtracting || alignmentStatus?.is_training || alignmentStatus?.is_applying || isRunningPCA || isDetectorTraining || isCoSegmenting || isAddingAssociated" class="status-indicator">
-            {{ isDeleting ? 'Deleting videos...' : isDeletingSegmentations ? 'Deleting segmentations...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : alignmentStatus?.is_training ? 'Training alignment model...' : alignmentStatus?.is_applying ? 'Applying alignment...' : isRunningPCA ? 'Running PCA...' : isDetectorTraining ? 'Training detector...' : isCoSegmenting ? 'Co-segmenting videos...' : 'Adding associated videos...' }}
+          <div v-if="isDeleting || isDeletingSegmentations || isSegmenting || isExtracting || isRunningPCA || isDetectorTraining || isCoSegmenting || isAddingAssociated || isPoseTraining" class="status-indicator">
+            {{ isDeleting ? 'Deleting videos...' : isDeletingSegmentations ? 'Deleting segmentations...' : isSegmenting ? 'Starting segmentation batch...' : isExtracting ? 'Starting cropped video extraction...' : isRunningPCA ? 'Running PCA...' : isDetectorTraining ? 'Training detector...' : isCoSegmenting ? 'Co-segmenting videos...' : isPoseTraining ? 'Training pose model...' : 'Adding associated videos...' }}
           </div>
         </aside>
       </div>
@@ -1302,14 +1190,6 @@ const formatScore = (score: number | undefined) => {
   color: #0366d6;
 }
 
-/* Alignment Controls */
-.alignment-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 0;
-}
-
 .info-label {
   font-size: 0.85rem;
   color: #666;
@@ -1319,59 +1199,6 @@ const formatScore = (score: number | undefined) => {
   font-size: 0.9rem;
   font-weight: 600;
   color: #a855f7;
-}
-
-.epochs-input {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.epochs-input label {
-  font-size: 0.85rem;
-  color: #666;
-}
-
-.epochs-field {
-  width: 60px;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  font-size: 0.85rem;
-}
-
-.train-alignment-button,
-.apply-alignment-button {
-  margin-top: 0.25rem;
-}
-
-.alignment-clear-buttons {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-.clear-button {
-  flex: 1;
-  padding: 0.4rem 0.5rem;
-  border: 1px solid #fca5a5;
-  border-radius: 4px;
-  background-color: #fef2f2;
-  color: #dc2626;
-  cursor: pointer;
-  font-size: 0.8rem;
-  transition: all 0.2s;
-}
-
-.clear-button:hover:not(:disabled) {
-  background-color: #fee2e2;
-  border-color: #dc2626;
-}
-
-.clear-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 /* PCA Controls */
