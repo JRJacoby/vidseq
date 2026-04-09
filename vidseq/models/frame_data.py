@@ -58,6 +58,19 @@ class FrameData(Base):
     # OBB confidence score (-1.0 = not computed)
     obb_score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
 
+    # Pose keypoint coordinates (NULL = no prediction)
+    pose_front_x: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    pose_front_y: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    pose_rear_x: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    pose_rear_y: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+    # Pose confidence score (-1.0 = not computed)
+    pose_score: Mapped[float] = mapped_column(Float, nullable=False, default=-1.0)
+
+    # Pose presence flag: 1 = has pose, 0 = no pose, NULL = unknown
+    # Using Integer for SQLite compatibility (no native boolean type)
+    has_pose: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
     __table_args__ = (
         # Primary lookup: video + frame (unique constraint)
         Index("ix_frame_data_video_frame", "video_id", "frame_idx", unique=True),
@@ -67,4 +80,5 @@ class FrameData(Base):
         Index("ix_frame_data_video_has_tracker_mask", "video_id", "has_tracker_mask"),
         Index("ix_frame_data_video_has_detector_mask", "video_id", "has_detector_mask"),
         Index("ix_frame_data_video_has_final_mask", "video_id", "has_final_mask"),
+        Index("ix_frame_data_video_has_pose", "video_id", "has_pose"),
     )
