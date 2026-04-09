@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +14,6 @@ from vidseq.api.dependencies import get_project_folder, get_project_session, get
 from vidseq.models.frame_data import FrameData
 from vidseq.models.pose_label import PoseLabel
 from vidseq.models.video import Video
-from vidseq.services import frame_data_service
 from vidseq.services.pose_service import PoseService
 
 router = APIRouter()
