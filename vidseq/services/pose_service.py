@@ -338,8 +338,6 @@ class PoseService:
                 )
                 continue
 
-            img_h, img_w = frame.shape[:2]
-
             # Derive bounding box from keypoints with 20% of frame dimensions padding
             pad_x = 0.20
             pad_y = 0.20
