@@ -516,6 +516,8 @@ class SegmentationService:
         label: int,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, float, int, int]:
         """
         Add a point prompt and return the mask and confidence score.
@@ -549,6 +551,8 @@ class SegmentationService:
             "label": label,
             "use_cond_memory": use_cond_memory,
             "use_non_cond_memory": use_non_cond_memory,
+            "working_range_start": working_range_start,
+            "working_range_end": working_range_end,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -577,6 +581,8 @@ class SegmentationService:
         y2: float,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, float, int, int]:
         """
         Add a bounding box prompt and return the mask and confidence score.
@@ -607,6 +613,8 @@ class SegmentationService:
             "y2": y2,
             "use_cond_memory": use_cond_memory,
             "use_non_cond_memory": use_non_cond_memory,
+            "working_range_start": working_range_start,
+            "working_range_end": working_range_end,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -633,6 +641,8 @@ class SegmentationService:
         labels: list[int],
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, float, int, int]:
         """
         Refine an existing mask with point prompt(s).
@@ -659,6 +669,8 @@ class SegmentationService:
             "labels": labels,
             "use_cond_memory": use_cond_memory,
             "use_non_cond_memory": use_non_cond_memory,
+            "working_range_start": working_range_start,
+            "working_range_end": working_range_end,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -794,6 +806,8 @@ class SegmentationService:
         num_frames: int,
         height: int,
         width: int,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[list[int], list[list]]:
         """
         Generate training masks by propagating tracking forward and save to H5.
@@ -831,6 +845,8 @@ class SegmentationService:
             "num_frames": num_frames,
             "height": height,
             "width": width,
+            "working_range_start": working_range_start,
+            "working_range_end": working_range_end,
         }, timeout=600.0)
 
         if result.get("status") != "ok":
@@ -850,6 +866,8 @@ class SegmentationService:
         num_frames: int,
         height: int,
         width: int,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[list[int], list[list]]:
         """
         Propagate using only conditioning frame memories (no temporal window).
@@ -872,6 +890,8 @@ class SegmentationService:
             "num_frames": num_frames,
             "height": height,
             "width": width,
+            "working_range_start": working_range_start,
+            "working_range_end": working_range_end,
         }, timeout=600.0)
 
         if result.get("status") != "ok":
@@ -1136,12 +1156,16 @@ def add_point_prompt(
     label: int,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[np.ndarray, float, int, int]:
     """Add a point prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_point_prompt(
         project_id, video_id, frame_idx, x, y, label,
         use_cond_memory=use_cond_memory,
         use_non_cond_memory=use_non_cond_memory,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
 
@@ -1155,12 +1179,16 @@ def add_box_prompt(
     y2: float,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[np.ndarray, float, int, int]:
     """Add a box prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_box_prompt(
         project_id, video_id, frame_idx, x1, y1, x2, y2,
         use_cond_memory=use_cond_memory,
         use_non_cond_memory=use_non_cond_memory,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
 
@@ -1172,12 +1200,16 @@ def refine_mask(
     labels: list[int],
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[np.ndarray, float, int, int]:
     """Refine an existing mask with point prompt(s) and return mask and score."""
     return SegmentationService.get_instance().refine_mask(
         project_id, video_id, frame_idx, points, labels,
         use_cond_memory=use_cond_memory,
         use_non_cond_memory=use_non_cond_memory,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
 
@@ -1253,10 +1285,14 @@ def generate_training_masks(
     num_frames: int,
     height: int,
     width: int,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[list[int], list[list]]:
     """Generate training masks and return frame indices and scores."""
     return SegmentationService.get_instance().generate_training_masks(
-        project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width
+        project_id, video_id, start_frame_idx, max_frames, project_path, num_frames, height, width,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
 
@@ -1269,11 +1305,15 @@ def propagate_without_memory(
     num_frames: int,
     height: int,
     width: int,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[list[int], list[list]]:
     """Propagate using only conditioning frame memories."""
     return SegmentationService.get_instance().propagate_without_memory(
         project_id, video_id, start_frame_idx, max_frames,
         project_path, num_frames, height, width,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
 
