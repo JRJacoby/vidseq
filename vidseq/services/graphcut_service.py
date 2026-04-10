@@ -68,9 +68,9 @@ def _read_frames(video_path: str, start_frame: int, end_frame: int) -> np.ndarra
         frame_list = []
         for idx in range(start_frame, end_frame + 1):
             bgr = src[idx]
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
             frame_list.append(gray)
-    return np.stack(frame_list)  # (T, H, W)
+    return np.stack(frame_list)  # (T, H, W), values in [0, 1]
 
 
 def _build_seed_volume(

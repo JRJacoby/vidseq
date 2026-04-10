@@ -247,6 +247,7 @@ const handlePlaceGraphcutRegion = (frameIdx: number) => {
 
 const handleRunGraphCut = async () => {
   await runGraphCut(clearMaskCache)
+  await loadFrameData(currentFrameIdx.value)
   await refreshFrameRanges()
 }
 
