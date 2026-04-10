@@ -31,6 +31,8 @@ const showTrackerMaskedFrames = ref(true)
 const showTrainingFrames = ref(true)
 const showConfidencePlot = ref(true)
 const isMarkingMode = ref(false)
+const workingRange = ref<[number, number] | null>(null)
+const isWorkingRangeMode = ref(false)
 const maxFrames = ref(1000)
 const confidenceScores = ref<MaskScore[]>([])
 const showDetectorConfidence = ref(true)
@@ -152,7 +154,7 @@ const {
   handleResetFrame,
   handleResetVideo,
   clearMaskCache,
-} = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps, maskViewMode)
+} = useSegmentation(projectId, videoId, currentFrameIdx, isPlaying, videoRef, fps, maskViewMode, workingRange)
 
 const {
   trackerMaskedRanges,
@@ -299,7 +301,9 @@ const handlePropagateMask = async () => {
       projectId.value,
       videoId.value,
       currentFrameIdx.value,
-      maxFrames.value
+      maxFrames.value,
+      workingRange.value?.[0] ?? null,
+      workingRange.value?.[1] ?? null,
     )
     clearMaskCache()
     await loadFrameData(currentFrameIdx.value)
@@ -326,7 +330,9 @@ const handlePropagateWithoutMemory = async () => {
       projectId.value,
       videoId.value,
       currentFrameIdx.value,
-      maxFrames.value
+      maxFrames.value,
+      workingRange.value?.[0] ?? null,
+      workingRange.value?.[1] ?? null,
     )
     clearMaskCache()
     await loadFrameData(currentFrameIdx.value)
@@ -384,6 +390,11 @@ const handleUnmarkMasked = async (startFrame: number, endFrame: number) => {
   } catch (e) {
     console.error('Failed to reset segmentation range:', e)
   }
+}
+
+const handleSetWorkingRange = (startFrame: number, endFrame: number) => {
+  workingRange.value = [startFrame, endFrame]
+  isWorkingRangeMode.value = false
 }
 
 const handleResetFrameWithRefresh = async () => {
@@ -550,9 +561,13 @@ onUnmounted(() => {
               :obb-scores="obbScores"
               :show-pose-confidence="showPoseConfidence"
               :pose-scores="poseScores"
+              :working-range="workingRange"
+              :is-working-range-mode="isWorkingRangeMode"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @unmark-masked="handleUnmarkMasked"
+              @set-working-range="handleSetWorkingRange"
+              @clear-working-range="workingRange = null"
               @view-change="handleViewChange"
             />
           </TimelineSystem>
@@ -659,10 +674,18 @@ onUnmounted(() => {
           <button
             class="tool-button mark-training-button"
             :class="{ active: isMarkingMode }"
-            @click="isMarkingMode = !isMarkingMode"
+            @click="isMarkingMode = !isMarkingMode; if (isMarkingMode) isWorkingRangeMode = false"
           >
             <span class="tool-icon">✓</span>
             <span class="tool-label">{{ isMarkingMode ? 'Exit Marking Mode' : 'Mark Training Frames' }}</span>
+          </button>
+          <button
+            class="tool-button working-range-button"
+            :class="{ active: isWorkingRangeMode }"
+            @click="isWorkingRangeMode = !isWorkingRangeMode; if (isWorkingRangeMode) isMarkingMode = false"
+          >
+            <span class="tool-icon">⊞</span>
+            <span class="tool-label">{{ isWorkingRangeMode ? 'Exit Working Range' : 'Working Range' }}</span>
           </button>
         </div>
         <p v-if="isMarkingMode" class="marking-hint">
