@@ -514,6 +514,8 @@ class SegmentationService:
         x: float,
         y: float,
         label: int,
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, float]:
         """
         Add a point prompt and return the mask and confidence score.
@@ -546,6 +548,8 @@ class SegmentationService:
             "x": x,
             "y": y,
             "label": label,
+            "use_cond_memory": use_cond_memory,
+            "use_non_cond_memory": use_non_cond_memory,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -570,6 +574,8 @@ class SegmentationService:
         y1: float,
         x2: float,
         y2: float,
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, float]:
         """
         Add a bounding box prompt and return the mask and confidence score.
@@ -599,6 +605,8 @@ class SegmentationService:
             "y1": y1,
             "x2": x2,
             "y2": y2,
+            "use_cond_memory": use_cond_memory,
+            "use_non_cond_memory": use_non_cond_memory,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
@@ -621,6 +629,8 @@ class SegmentationService:
         frame_idx: int,
         points: list[dict],
         labels: list[int],
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, float]:
         """
         Refine an existing mask with point prompt(s).
@@ -646,6 +656,8 @@ class SegmentationService:
             "frame_idx": frame_idx,
             "points": points,
             "labels": labels,
+            "use_cond_memory": use_cond_memory,
+            "use_non_cond_memory": use_non_cond_memory,
         }, timeout=120.0)
 
         if result.get("status") != "ok":
