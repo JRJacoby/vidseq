@@ -141,21 +141,29 @@ def _solve_graphcut(
     g = maxflow.Graph[float](num_nodes, num_nodes * 6)
     node_ids = g.add_grid_nodes((T, H, W))
 
+    # PyMaxflow's add_grid_edges expects weights with the same shape as the
+    # node grid. The weight at (t,h,w) is used for the edge from node (t,h,w)
+    # to its neighbor; boundary nodes with no neighbor are ignored internally.
+    # We compute difference-based weights and pad to full grid shape.
+
     # Spatial horizontal edges (axis=2: W dimension)
-    w_horiz = np.exp(-beta * (frames[:, :, :-1] - frames[:, :, 1:]) ** 2)
+    w_horiz_diff = np.exp(-beta * (frames[:, :, :-1] - frames[:, :, 1:]) ** 2)
+    w_horiz = np.pad(w_horiz_diff, ((0, 0), (0, 0), (0, 1)), constant_values=0)
     struct_horiz = np.zeros((3, 3, 3), dtype=int)
     struct_horiz[1, 1, 2] = 1  # center to right neighbor
     g.add_grid_edges(node_ids, weights=w_horiz, structure=struct_horiz, symmetric=True)
 
     # Spatial vertical edges (axis=1: H dimension)
-    w_vert = np.exp(-beta * (frames[:, :-1, :] - frames[:, 1:, :]) ** 2)
+    w_vert_diff = np.exp(-beta * (frames[:, :-1, :] - frames[:, 1:, :]) ** 2)
+    w_vert = np.pad(w_vert_diff, ((0, 0), (0, 1), (0, 0)), constant_values=0)
     struct_vert = np.zeros((3, 3, 3), dtype=int)
     struct_vert[1, 2, 1] = 1  # center to bottom neighbor
     g.add_grid_edges(node_ids, weights=w_vert, structure=struct_vert, symmetric=True)
 
     # Temporal edges (axis=0: T dimension)
     if T > 1:
-        w_temp = np.exp(-beta * (frames[:-1] - frames[1:]) ** 2)
+        w_temp_diff = np.exp(-beta * (frames[:-1] - frames[1:]) ** 2)
+        w_temp = np.pad(w_temp_diff, ((0, 1), (0, 0), (0, 0)), constant_values=0)
         struct_temp = np.zeros((3, 3, 3), dtype=int)
         struct_temp[2, 1, 1] = 1  # center to next frame
         g.add_grid_edges(node_ids, weights=w_temp, structure=struct_temp, symmetric=True)
@@ -172,5 +180,7 @@ def _solve_graphcut(
 
     g.maxflow()
 
-    segments = g.get_grid_segments(node_ids)  # True = source (foreground)
-    return segments.astype(np.uint8)
+    # PyMaxflow convention: get_grid_segments returns True for source side,
+    # which is BACKGROUND in image segmentation. Invert for foreground mask.
+    segments = g.get_grid_segments(node_ids)
+    return (~segments).astype(np.uint8)
