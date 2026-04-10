@@ -30,6 +30,9 @@ const props = withDefaults(defineProps<{
   // Working range (single orange range for scoping operations)
   workingRange?: [number, number] | null
   isWorkingRangeMode?: boolean
+  // Graph cut region
+  graphcutRegion?: { start: number; end: number } | null
+  isGraphCutMode?: boolean
 }>(), {
   alignmentLabelFrames: () => [],
   showAlignmentLabels: false,
@@ -38,6 +41,8 @@ const props = withDefaults(defineProps<{
   showPCAPlot: false,
   workingRange: null,
   isWorkingRangeMode: false,
+  graphcutRegion: null,
+  isGraphCutMode: false,
   showDetectorConfidence: false,
   detectorScores: () => [],
   showObbConfidence: false,
@@ -53,6 +58,8 @@ const emit = defineEmits<{
   'view-change': [viewStart: number, viewEnd: number]
   'set-working-range': [startFrame: number, endFrame: number]
   'clear-working-range': []
+  'place-graphcut-region': [frameIdx: number]
+  'clear-graphcut-region': []
 }>()
 
 const trackRef = ref<HTMLElement | null>(null)
@@ -155,6 +162,11 @@ const workingRangeStyle = computed(() => {
   return rangeToStyle(props.workingRange)
 })
 
+const graphcutRegionStyle = computed(() => {
+  if (!props.graphcutRegion) return null
+  return rangeToStyle([props.graphcutRegion.start, props.graphcutRegion.end])
+})
+
 const trainingRangeStyles = computed(() => {
   if (!props.showTrainingFrames) return []
   return props.trainingRanges
@@ -218,6 +230,12 @@ const selectedMaskedRangeStyle = computed(() => {
 })
 
 const onMouseDown = (event: MouseEvent) => {
+  if (props.isGraphCutMode) {
+    const frame = getFrameFromEvent(event)
+    emit('place-graphcut-region', frame)
+    return
+  }
+
   const frame = getFrameFromEvent(event)
   const clickedTraining = findTrainingRangeAt(frame)
 
@@ -286,6 +304,11 @@ const onKeyDown = (event: KeyboardEvent) => {
   if (!isHovering.value) return
 
   if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (props.graphcutRegion) {
+      event.preventDefault()
+      emit('clear-graphcut-region')
+      return
+    }
     if (selectedWorkingRange.value) {
       event.preventDefault()
       emit('clear-working-range')
@@ -639,6 +662,13 @@ onUnmounted(() => {
           :style="workingRangeStyle"
         />
 
+        <!-- Graph cut region -->
+        <div
+          v-if="graphcutRegionStyle"
+          class="range-overlay graphcut-region"
+          :style="graphcutRegionStyle"
+        />
+
         <div
           v-for="item in trainingRangeStyles"
           :key="'training-' + item.range[0]"
@@ -820,6 +850,11 @@ onUnmounted(() => {
   border: 2px dashed rgba(245, 158, 11, 0.6);
   pointer-events: none;
   box-sizing: border-box;
+}
+
+.range-overlay.graphcut-region {
+  background-color: rgba(6, 182, 212, 0.4);
+  pointer-events: none;
 }
 
 .range-overlay.drag-selection {
