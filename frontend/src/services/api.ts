@@ -1666,3 +1666,36 @@ export async function getPoseScoresDownsampled(
     if (!response.ok) throw new Error(await getErrorMessage(response, 'Failed to fetch pose scores'))
     return response.json()
 }
+
+// Graph Cut Segmentation
+
+export interface GraphCutSeed {
+    x: number
+    y: number
+    label: number  // 1 = foreground, 2 = background
+}
+
+export async function createGraphcutMasks(
+    projectId: number,
+    videoId: number,
+    startFrame: number,
+    endFrame: number,
+    seeds: Record<string, GraphCutSeed[]>,
+): Promise<{ frames_processed: number }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/graphcut-masks`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                start_frame: startFrame,
+                end_frame: endFrame,
+                seeds,
+            }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to run graph cut'))
+    }
+    return response.json()
+}
