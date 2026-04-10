@@ -25,15 +25,15 @@ No ML models, no GPU, no TCP worker. Pure CPU algorithm using PyMaxflow.
 
 A new marker type on the DataTrack: the "graph cut region."
 
-**Placement:** Requires selecting the graph cut tool first (sidebar button), then clicking on the data track. The region anchors at the clicked frame and extends 150 frames forward (clicking frame 200 creates region 200–349). Clicking again moves the region.
+**Placement:** Requires selecting the graph cut tool first (sidebar button), then clicking on the data track. This is a single-click-to-place interaction (not drag-to-create like training/working ranges), since the region is always a fixed size. The region anchors at the clicked frame and extends 150 frames forward (clicking frame 200 creates region 200–349). Clamped to video length — if the region would extend past the last frame, it's truncated. Clicking again moves the region. Frame navigation uses the video timeline scrub bar, not the data track (data track clicks always place/move the region while the tool is active).
 
-**Rendering:** A colored range bar in teal/cyan, visually distinct from training ranges (green), masked ranges (blue), and working range (orange). Same rendering pattern as existing range types (`trainingRangeStyles` etc.).
+**Rendering:** A colored range bar in `rgba(6, 182, 212, 0.4)` (teal/cyan), visually distinct from training ranges (green `rgba(34, 197, 94, 0.5)`), masked ranges (blue `rgba(59, 130, 246, 0.3)`), and working range (orange `rgba(245, 158, 11, 0.4)`). Same rendering pattern as existing range types (`trainingRangeStyles` etc.).
 
 **Deletion:** Delete/Backspace removes the region and exits graph cut mode, same as working range deletion.
 
 **Ephemeral:** The region is frontend-only state — not persisted to the database. It scopes the current graph cut session; the masks it produces are what get persisted.
 
-**Chunk size:** Fixed at 150 frames. Hardcoded constant for now, could become configurable later.
+**Chunk size:** Fixed at 150 frames. Defined as a named constant in both frontend (`GRAPHCUT_CHUNK_SIZE` in `useGraphCut.ts`) and backend (`GRAPHCUT_CHUNK_SIZE` in `graphcut_service.py`). Could become configurable later.
 
 ### Brush Tool & Seed Painting
 
@@ -41,9 +41,11 @@ When a graph cut region is active, the video overlay switches from point-click m
 
 **Interaction:**
 - Left-click drag = foreground seeds (rendered green, semi-transparent)
-- Right-click drag = background seeds (rendered red, semi-transparent)
-- Brush size adjustable via sidebar slider (pixel radius in display pixels)
+- Right-click drag = background seeds (rendered red, semi-transparent). The overlay must call `preventDefault()` on the `contextmenu` event to suppress the browser context menu during right-click painting.
+- Brush size adjustable via sidebar slider (pixel radius in display pixels). Default: 5px, range: 1–50px.
 - Painting is disabled outside the graph cut region's frame bounds
+
+**Coordinate mapping:** The overlay canvas maps display coordinates to native video pixel coordinates using the same scaling logic as `getNormalizedCoords()` in VideoOverlay, but producing integer pixel coordinates instead of [0,1] normalized values. The brush radius is similarly scaled from display pixels to native pixels based on the video-to-display scale factor. All seed coordinates stored and sent to the backend are in native pixel space.
 
 **Seed visibility:** A toggle to hide/show seed overlays, same pattern as the existing mask and prompt visibility toggles. Allows inspecting the mask underneath without seed clutter.
 
@@ -55,13 +57,13 @@ When a graph cut region is active, the video overlay switches from point-click m
 
 ### Graph Cut Solver (Backend)
 
-A new service module: `vidseq/services/graphcut_service.py`. Runs in the FastAPI process — no TCP/GPU worker involvement.
+A new service module: `vidseq/services/graphcut_service.py`. Runs in the FastAPI process via `asyncio.to_thread()` — no TCP/GPU worker involvement. The route handler awaits `asyncio.to_thread(graphcut_service.run_graphcut, ...)` to avoid blocking the event loop during the CPU-intensive solve.
 
-**Input:** Video ID, chunk start frame, chunk end frame, sparse seed dict.
+**Input:** Video ID, video path, video dimensions, chunk start frame, chunk end frame, sparse seed dict.
 
 **Algorithm:**
 
-1. **Read frames.** Use `VideoFrameSource` for sequential reads of the 150-frame chunk at native resolution.
+1. **Read frames.** Use `VideoFrameSource` (extracted to `vidseq/services/video_io.py` — a small utility shared with `segmentation_commands.py` to avoid importing GPU worker modules from FastAPI) for sequential reads of the 150-frame chunk at native resolution.
 
 2. **Build 3D graph.** PyMaxflow grid graph with H x W x T nodes. Each pixel is 6-connected:
    - 4 spatial neighbors (up, down, left, right) within the same frame
@@ -73,21 +75,29 @@ A new service module: `vidseq/services/graphcut_service.py`. Runs in the FastAPI
    ```
    Where `||.||` is Euclidean distance in color space (for 3-channel grayscale this reduces to intensity difference up to a constant factor absorbed by beta). `beta = 1 / (2 * mean(||I_p - I_q||^2))` computed over all neighbor pairs in the chunk (standard Boykov auto-beta formula). This auto-scales to the image's color/intensity statistics.
 
-4. **Terminal edges (seeds).** Foreground seed pixels get very high source capacity, very low sink capacity. Background seed pixels get the inverse. Non-seed pixels get zero unary cost — their labeling is entirely determined by edge weights propagating from seeds.
+4. **Terminal edges (seeds).** Foreground seed pixels get source capacity = `1 + max_edge_weight * 6` (guarantees the seed can never be overruled by its neighbors), sink capacity = 0. Background seed pixels get the inverse. Non-seed pixels get zero unary cost — their labeling is entirely determined by edge weights propagating from seeds.
 
 5. **Solve.** `graph.maxflow()` — single global solve across the full 3D volume.
 
 6. **Extract masks.** `graph.get_grid_segments()` returns a boolean array (H x W x T). Convert to per-frame uint8 binary masks.
 
-7. **Write to H5.** Write masks to `tracker_masks.h5` using the existing `tracker_masks()` context manager from `array_storage.py`.
+7. **Write to H5.** Write masks to `tracker_masks.h5` using the existing `tracker_masks()` context manager from `array_storage.py`. Only masks are written — no logits (graph cuts produces binary labels, not continuous logits, so `tracker_logits.h5` is not touched).
 
 **No downsampling.** The target videos are small enough (under 640x480) that native resolution is tractable.
 
 **Memory estimate:** For a 640x480x150 chunk: ~46M nodes, ~276M edges. At ~48 bytes/node + ~32 bytes/edge, roughly ~11 GB. For smaller videos (e.g., 320x240x150): ~11.5M nodes, ~2.5 GB. If this becomes a concern, the chunk size is the knob to turn.
 
+**Error handling:**
+- Chunk extends past video end: clamp `end_frame` to `num_frames - 1` (match frontend clamping).
+- No seeds provided: return 400 error — at least one foreground and one background seed required.
+- All seeds same label: return 400 error — graph cut needs both source and sink terminals.
+- Wrap the solve in try/except to catch OOM and return a 500 with a useful message rather than crashing the server.
+
+**Overwrite behavior:** Running graph cut on frames that already have SAM2 masks silently overwrites them. This is intentional — the two methods are interchangeable ways to fill the same mask slots. Conditioning frames (SAM2 concept) are not affected; they remain in the database but their associated masks may be overwritten.
+
 ### REST Endpoint
 
-**`POST /videos/{id}/graphcut`**
+**`POST /projects/{project_id}/videos/{video_id}/graphcut-masks`**
 
 Request body:
 ```json
@@ -110,7 +120,7 @@ Response:
 }
 ```
 
-Route lives in `vidseq/api/routes/graphcut.py`. Route calls `graphcut_service.run_graphcut()` — follows the route → service layering convention.
+Route lives in `vidseq/api/routes/graphcut.py`, registered in `server.py` with `app.include_router(graphcut.router, prefix="/api", tags=["graphcut"])`. Route calls `graphcut_service.run_graphcut()` via `asyncio.to_thread()` — follows the route → service layering convention.
 
 ### Frontend Composable
 
@@ -124,9 +134,9 @@ New composable: `frontend/src/composables/useGraphCut.ts`
 - `isRunning: boolean` — loading state during solve
 
 **Methods:**
-- `placeRegion(frameIdx: number)` — set chunk from frameIdx to frameIdx + 149
+- `placeRegion(frameIdx: number, numFrames: number)` — set chunk from frameIdx to min(frameIdx + 149, numFrames - 1)
 - `paintSeed(frameIdx: number, x: number, y: number, label: number)` — add seed point
-- `runGraphCut()` — POST to API, clear mask cache on success, reload masks
+- `runGraphCut(clearMaskCache: Function)` — POST to API, call the provided `clearMaskCache(start, end)` from `useSegmentation` on success to invalidate cached masks for the chunk frames
 - `clearSeeds()` — reset all seeds
 - `exitGraphCutMode()` — clear region and seeds
 
@@ -144,7 +154,7 @@ New composable: `frontend/src/composables/useGraphCut.ts`
 - Map display coordinates to native pixel coordinates for seed recording
 
 **VideoDetail.vue:**
-- Graph cut tool button in sidebar
+- Graph cut tool button in sidebar (entering graph cut mode deactivates all other tools — positive point, negative point, bounding box, marking mode, working range, keypoint labeling — and vice versa)
 - Brush size slider
 - Run button
 - Seed visibility toggle
@@ -169,7 +179,8 @@ New composable: `frontend/src/composables/useGraphCut.ts`
 | `vidseq/api/routes/graphcut.py` | REST endpoint (new) |
 | `vidseq/schemas/graphcut.py` | Request/response schemas (new) |
 | `frontend/src/composables/useGraphCut.ts` | Frontend state & API (new) |
-| `frontend/src/services/api.ts` | Add `runGraphCut()` API call |
+| `vidseq/services/video_io.py` | VideoFrameSource extracted from segmentation_commands (new) |
+| `frontend/src/services/api.ts` | Add `createGraphcutMasks()` API call |
 | `frontend/src/components/DataTrack.vue` | Graph cut region rendering + placement |
 | `frontend/src/components/VideoOverlay.vue` | Brush painting mode + seed rendering |
 | `frontend/src/components/VideoDetail.vue` | Tool button, controls, wiring |
