@@ -546,6 +546,8 @@ class SAM2StreamingSegmentor:
         label: int | list[int],
         frames,  # Indexable frame source
         masks,  # Indexable mask source
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
@@ -620,13 +622,16 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Determine is_init_cond_frame (True if no conditioning frames exist)
-        # Only conditioning frames matter here — non-cond memory from nearby
-        # propagated masks is context but doesn't satisfy SAM2's requirement
-        # for at least one conditioning frame on the non-init path.
-        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
+        # 8. Build filtered output_dict based on memory flags
+        filtered_output_dict = {
+            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
+        }
 
-        # 9. Call track_step with point_inputs
+        # 9. Determine is_init_cond_frame from *filtered* cond outputs
+        is_init_cond_frame = len(filtered_output_dict["cond_frame_outputs"]) == 0
+
+        # 10. Call track_step with filtered memory
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
@@ -636,11 +641,11 @@ class SAM2StreamingSegmentor:
                 feat_sizes=feat_sizes,
                 point_inputs=point_inputs,
                 mask_inputs=None,
-                output_dict=output_dict,
+                output_dict=filtered_output_dict,
                 num_frames=session["num_frames"],
             )
 
-        # 10. Extract mask from pred_masks_high_res
+        # 11. Extract mask from pred_masks_high_res
         # pred_masks_high_res has shape (1, num_objects, H, W), we want first object
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
 
@@ -673,6 +678,8 @@ class SAM2StreamingSegmentor:
         box: tuple[float, float, float, float],  # (x1, y1, x2, y2) in pixel coords
         frames,  # Indexable frame source: frames[idx] -> np.ndarray (H, W, 3)
         masks,   # Indexable mask source: masks[idx] -> np.ndarray (H, W)
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Add a bounding box prompt to a frame and generate initial mask.
 
@@ -736,10 +743,16 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Determine is_init_cond_frame (True if no conditioning frames exist)
-        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
+        # 8. Build filtered output_dict based on memory flags
+        filtered_output_dict = {
+            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
+        }
 
-        # 9. Call track_step with box as point_inputs
+        # 9. Determine is_init_cond_frame from *filtered* cond outputs
+        is_init_cond_frame = len(filtered_output_dict["cond_frame_outputs"]) == 0
+
+        # 10. Call track_step with filtered memory
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
@@ -749,7 +762,7 @@ class SAM2StreamingSegmentor:
                 feat_sizes=feat_sizes,
                 point_inputs=point_inputs,
                 mask_inputs=None,
-                output_dict=output_dict,
+                output_dict=filtered_output_dict,
                 num_frames=session["num_frames"],
             )
 
@@ -784,6 +797,8 @@ class SAM2StreamingSegmentor:
         frames,  # Indexable frame source
         masks,  # Indexable mask source
         prev_logits: np.ndarray,
+        use_cond_memory: bool = True,
+        use_non_cond_memory: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, float]:
         """Refine an existing mask with point prompt(s).
 
@@ -819,10 +834,14 @@ class SAM2StreamingSegmentor:
         # 3. Prepare memory for arbitrary frame access (loads non-cond frames)
         self._set_memory_frame(video_id, frame_idx, frames, masks)
 
-        # 4. Determine is_init_cond_frame based on whether OTHER conditioning
-        #    frames exist. Non-cond memory from propagated masks is context but
-        #    doesn't satisfy SAM2's requirement for the non-init path.
-        is_init_cond_frame = len(output_dict["cond_frame_outputs"]) == 0
+        # 4. Build filtered output_dict based on memory flags
+        filtered_output_dict = {
+            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
+        }
+
+        # 5. Refinement: is_init_cond_frame is always False
+        is_init_cond_frame = False
 
         # 5. Get frame from source
         frame = frames[frame_idx]
@@ -871,7 +890,19 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 11. Call track_step with point_inputs and prev_sam_mask_logits
+        # 11. Log exactly what's being passed to SAM2
+        cond_frames = sorted(output_dict["cond_frame_outputs"].keys())
+        non_cond_frames = sorted(output_dict["non_cond_frame_outputs"].keys())
+        print(
+            f"[refine_mask] frame={frame_idx} "
+            f"is_init_cond={is_init_cond_frame} "
+            f"points={len(locations)} labels={labels} "
+            f"prev_logits_range=[{prev_logits.min():.1f}, {prev_logits.max():.1f}] "
+            f"cond_frames={cond_frames} "
+            f"non_cond_frames({len(non_cond_frames)})={non_cond_frames[:10]}{'...' if len(non_cond_frames) > 10 else ''}"
+        )
+
+        # 12. Call track_step with point_inputs and prev_sam_mask_logits
         with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
             current_out = self.predictor.track_step(
                 frame_idx=frame_idx,
@@ -881,12 +912,12 @@ class SAM2StreamingSegmentor:
                 feat_sizes=feat_sizes,
                 point_inputs=point_inputs,
                 mask_inputs=None,
-                output_dict=output_dict,
+                output_dict=filtered_output_dict,
                 num_frames=session["num_frames"],
                 prev_sam_mask_logits=prev_logits_tensor,
             )
 
-        # 12. Extract mask, threshold, resize to original dims
+        # 13. Extract mask, threshold, resize to original dims
         pred_mask_high_res = current_out["pred_masks_high_res"][0, 0]  # (H, W)
         mask_binary = (pred_mask_high_res > 0).to(torch.uint8).mul(255).cpu().numpy()
         mask_resized = cv2.resize(
@@ -1221,6 +1252,7 @@ class SAM2StreamingSegmentor:
 
             # Clear non-cond memory so track_step only sees conditioning frames
             output_dict["non_cond_frame_outputs"].clear()
+            assert len(output_dict["non_cond_frame_outputs"]) == 0, "non_cond_frame_outputs not empty after clear!"
 
             # Get image features
             _, backbone_out = self._get_image_features(video_id, frame_idx, frame_bgr)
