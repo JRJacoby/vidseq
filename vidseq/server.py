@@ -19,7 +19,7 @@ from vidseq.services.exceptions import (
     AlignmentTrainingError,
     TextFileParseError,
 )
-from vidseq.api.routes import arhmm, cropped_videos, detector, exports, filesystem, pca, pose, projects, segmentation, videos
+from vidseq.api.routes import arhmm, cropped_videos, detector, exports, filesystem, graphcut, pca, pose, projects, segmentation, videos
 from vidseq.services.database_manager import DatabaseManager
 
 
@@ -56,6 +56,7 @@ app.include_router(pca.router, prefix="/api", tags=["pca"])
 app.include_router(arhmm.router, prefix="/api", tags=["arhmm"])
 app.include_router(detector.router, prefix="/api", tags=["detector"])
 app.include_router(exports.router, prefix="/api", tags=["exports"])
+app.include_router(graphcut.router, prefix="/api", tags=["graphcut"])
 
 
 # Exception handlers - translate service exceptions to HTTP responses
