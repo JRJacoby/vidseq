@@ -236,14 +236,20 @@ export async function submitPrompt(
     projectId: number,
     videoId: number,
     frameIdx: number,
-    points: PointPrompt[]
+    points: PointPrompt[],
+    useCondMemory: boolean = true,
+    useNonCondMemory: boolean = true,
 ): Promise<Blob> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/prompt/${frameIdx}`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ points }),
+            body: JSON.stringify({
+                points,
+                use_cond_memory: useCondMemory,
+                use_non_cond_memory: useNonCondMemory,
+            }),
         }
     )
     if (!response.ok) {
@@ -256,14 +262,20 @@ export async function submitBoxPrompt(
     projectId: number,
     videoId: number,
     frameIdx: number,
-    box: { x1: number; y1: number; x2: number; y2: number }
+    box: { x1: number; y1: number; x2: number; y2: number },
+    useCondMemory: boolean = true,
+    useNonCondMemory: boolean = true,
 ): Promise<Blob> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/box-prompt/${frameIdx}`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(box),
+            body: JSON.stringify({
+                ...box,
+                use_cond_memory: useCondMemory,
+                use_non_cond_memory: useNonCondMemory,
+            }),
         }
     )
     if (!response.ok) {

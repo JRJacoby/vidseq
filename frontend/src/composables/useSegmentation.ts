@@ -31,6 +31,8 @@ export interface UseSegmentationReturn {
     detectorBbox: Ref<DetectorBbox | null>
     currentPrompts: Ref<LocalPrompt[]>
     isSegmenting: Ref<boolean>
+    useCondMemory: Ref<boolean>
+    useNonCondMemory: Ref<boolean>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
@@ -65,6 +67,8 @@ export function useSegmentation(
     const currentMask = ref<ImageBitmap | null>(null)
     const detectorBbox = ref<DetectorBbox | null>(null)
     const isSegmenting = ref(false)
+    const useCondMemory = ref(true)
+    const useNonCondMemory = ref(true)
     const intendedFrameIdx = ref(0)
 
     // Local prompts tracking (not persisted to server)
@@ -273,7 +277,9 @@ export function useSegmentation(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
-                framePrompts
+                framePrompts,
+                useCondMemory.value,
+                useNonCondMemory.value,
             )
 
             const bitmap = await createImageBitmap(maskBlob)
@@ -308,7 +314,9 @@ export function useSegmentation(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
-                box
+                box,
+                useCondMemory.value,
+                useNonCondMemory.value,
             )
 
             const bitmap = await createImageBitmap(maskBlob)
@@ -449,6 +457,8 @@ export function useSegmentation(
         detectorBbox,
         currentPrompts,
         isSegmenting,
+        useCondMemory,
+        useNonCondMemory,
         loadFrameData,
         seekToFrame,
         togglePositivePointTool,
