@@ -138,6 +138,8 @@ const {
   detectorBbox,
   currentPrompts,
   isSegmenting,
+  useCondMemory,
+  useNonCondMemory,
   loadFrameData,
   seekToFrame,
   togglePositivePointTool,
@@ -605,7 +607,17 @@ onUnmounted(() => {
             <span class="tool-label">Reset Video</span>
           </button>
         </div>
-        
+        <div class="memory-options">
+          <label class="memory-toggle">
+            <input type="checkbox" v-model="useCondMemory" />
+            Cond Memory
+          </label>
+          <label class="memory-toggle">
+            <input type="checkbox" v-model="useNonCondMemory" />
+            Non-Cond Memory
+          </label>
+        </div>
+
         <h4 class="action-bar-title">Propagation</h4>
         <div class="propagate-section">
           <div class="max-frames-input">
@@ -1155,6 +1167,22 @@ onUnmounted(() => {
   background-color: #fee2e2;
   border-color: #ef4444;
   color: #b91c1c;
+}
+
+.memory-options {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.memory-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    user-select: none;
 }
 
 .action-bar-title {
