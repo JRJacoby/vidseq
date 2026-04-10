@@ -548,6 +548,8 @@ class SAM2StreamingSegmentor:
         masks,  # Indexable mask source
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
@@ -622,9 +624,20 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Build filtered output_dict based on memory flags
+        # 8. Build filtered output_dict based on memory flags and working range
+        if use_cond_memory:
+            cond_outputs = output_dict["cond_frame_outputs"]
+            if working_range_start is not None:
+                cond_outputs = {
+                    k: v for k, v in cond_outputs.items()
+                    if working_range_start <= k <= working_range_end
+                }
+            filtered_cond = cond_outputs
+        else:
+            filtered_cond = {}
+
         filtered_output_dict = {
-            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "cond_frame_outputs": filtered_cond,
             "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
         }
 
@@ -682,6 +695,8 @@ class SAM2StreamingSegmentor:
         masks,   # Indexable mask source: masks[idx] -> np.ndarray (H, W)
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Add a bounding box prompt to a frame and generate initial mask.
 
@@ -745,9 +760,20 @@ class SAM2StreamingSegmentor:
             self._prepare_backbone_features(backbone_out)
         )
 
-        # 8. Build filtered output_dict based on memory flags
+        # 8. Build filtered output_dict based on memory flags and working range
+        if use_cond_memory:
+            cond_outputs = output_dict["cond_frame_outputs"]
+            if working_range_start is not None:
+                cond_outputs = {
+                    k: v for k, v in cond_outputs.items()
+                    if working_range_start <= k <= working_range_end
+                }
+            filtered_cond = cond_outputs
+        else:
+            filtered_cond = {}
+
         filtered_output_dict = {
-            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "cond_frame_outputs": filtered_cond,
             "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
         }
 
@@ -803,6 +829,8 @@ class SAM2StreamingSegmentor:
         prev_logits: np.ndarray,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Refine an existing mask with point prompt(s).
 
@@ -838,9 +866,20 @@ class SAM2StreamingSegmentor:
         # 3. Prepare memory for arbitrary frame access (loads non-cond frames)
         self._set_memory_frame(video_id, frame_idx, frames, masks)
 
-        # 4. Build filtered output_dict based on memory flags
+        # 4. Build filtered output_dict based on memory flags and working range
+        if use_cond_memory:
+            cond_outputs = output_dict["cond_frame_outputs"]
+            if working_range_start is not None:
+                cond_outputs = {
+                    k: v for k, v in cond_outputs.items()
+                    if working_range_start <= k <= working_range_end
+                }
+            filtered_cond = cond_outputs
+        else:
+            filtered_cond = {}
+
         filtered_output_dict = {
-            "cond_frame_outputs": output_dict["cond_frame_outputs"] if use_cond_memory else {},
+            "cond_frame_outputs": filtered_cond,
             "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
         }
 
@@ -1074,6 +1113,8 @@ class SAM2StreamingSegmentor:
         masks,  # Indexable mask source
         on_result: Callable[[int, np.ndarray, np.ndarray, float], None],  # callback(frame_idx, mask, logits, score)
         progress_interval: int = 10,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> list[int]:
         """Propagate tracking forward from start_frame.
 
@@ -1141,6 +1182,18 @@ class SAM2StreamingSegmentor:
                 self._prepare_backbone_features(backbone_out)
             )
 
+            # Filter cond frames by working range
+            if working_range_start is not None:
+                prop_output_dict = {
+                    "cond_frame_outputs": {
+                        k: v for k, v in output_dict["cond_frame_outputs"].items()
+                        if working_range_start <= k <= working_range_end
+                    },
+                    "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"],
+                }
+            else:
+                prop_output_dict = output_dict
+
             # Call track_step for propagation (no point or mask inputs)
             with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
@@ -1151,7 +1204,7 @@ class SAM2StreamingSegmentor:
                     feat_sizes=feat_sizes,
                     point_inputs=None,
                     mask_inputs=None,
-                    output_dict=output_dict,
+                    output_dict=prop_output_dict,
                     num_frames=session["num_frames"],
                     run_mem_encoder=True,
                 )
@@ -1207,6 +1260,8 @@ class SAM2StreamingSegmentor:
         masks,
         on_result: Callable | None = None,
         progress_interval: int = 50,
+        working_range_start: int | None = None,
+        working_range_end: int | None = None,
     ) -> list[int]:
         """Propagate using only conditioning frame memories (no temporal window).
 
@@ -1269,6 +1324,18 @@ class SAM2StreamingSegmentor:
                 self._prepare_backbone_features(backbone_out)
             )
 
+            # Filter cond frames by working range
+            if working_range_start is not None:
+                prop_output_dict = {
+                    "cond_frame_outputs": {
+                        k: v for k, v in output_dict["cond_frame_outputs"].items()
+                        if working_range_start <= k <= working_range_end
+                    },
+                    "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"],
+                }
+            else:
+                prop_output_dict = output_dict
+
             # track_step with only conditioning memory
             with torch.inference_mode(), torch.autocast("cuda", torch.bfloat16):
                 current_out = self.predictor.track_step(
@@ -1279,7 +1346,7 @@ class SAM2StreamingSegmentor:
                     feat_sizes=feat_sizes,
                     point_inputs=None,
                     mask_inputs=None,
-                    output_dict=output_dict,
+                    output_dict=prop_output_dict,
                     num_frames=session["num_frames"],
                     run_mem_encoder=True,
                 )
