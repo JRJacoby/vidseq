@@ -109,16 +109,15 @@ def _build_seed_volume(
 
 
 def _compute_beta(frames: np.ndarray) -> float:
-    """Compute beta so that boundary edges are weak and interior edges are strong.
+    """Compute beta = 1 / (2 * mean_nonzero(squared differences)).
 
-    Uses the 90th percentile of squared differences (which roughly corresponds
-    to boundary contrast) to calibrate beta so that:
-    - Boundary edges (p90 diff) get weight ~0.01
-    - Interior edges (small diff) get weight ~0.9+
+    The standard Boykov formula uses the mean of ALL squared neighbor
+    differences. This fails on videos with large uniform-black backgrounds:
+    the zero-diff background pairs dominate the mean, making beta enormous.
 
-    The Boykov formula (1 / 2*mean) fails on smooth video because the mean is
-    dominated by near-zero interior diffs, producing a huge beta that fragments
-    the graph.
+    Filtering to nonzero diffs excludes the uninformative background-to-
+    background pairs, giving a mean that reflects actual texture and boundary
+    contrast. A small threshold (1e-6) avoids floating-point near-zeros.
     """
     diffs_sq = []
 
@@ -136,12 +135,11 @@ def _compute_beta(frames: np.ndarray) -> float:
         diffs_sq.append(dt.ravel())
 
     all_diffs_sq = np.concatenate(diffs_sq)
-    # Use 90th percentile: this captures boundary-level contrast
-    p90 = np.percentile(all_diffs_sq, 90)
-    if p90 < 1e-10:
+    nonzero_mask = all_diffs_sq > 1e-6
+    if nonzero_mask.sum() == 0:
         return 0.0
-    # Calibrate so exp(-beta * p90) ≈ 0.01 → beta * p90 ≈ 4.6
-    return 4.6 / p90
+    mean_sq = all_diffs_sq[nonzero_mask].mean()
+    return float(1.0 / (2.0 * mean_sq))
 
 
 def _solve_graphcut(
