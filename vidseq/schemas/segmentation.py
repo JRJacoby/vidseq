@@ -29,6 +29,8 @@ class PromptRequest(BaseModel):
     points: list[PointPrompt]
     use_cond_memory: bool = True
     use_non_cond_memory: bool = True
+    working_range_start: int | None = None
+    working_range_end: int | None = None
 
     @field_validator("points")
     @classmethod
@@ -49,11 +51,15 @@ class BoxPromptRequest(BaseModel):
     y2: float = Field(ge=0, le=1)
     use_cond_memory: bool = True
     use_non_cond_memory: bool = True
+    working_range_start: int | None = None
+    working_range_end: int | None = None
 
 
 class PropagateRequest(BaseModel):
     start_frame_idx: int
     max_frames: int = 1000
+    working_range_start: int | None = None
+    working_range_end: int | None = None
 
 
 class PropagateResponse(BaseModel):

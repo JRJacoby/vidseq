@@ -55,6 +55,8 @@ async def submit_prompt(
             labels=labels,
             use_cond_memory=request.use_cond_memory,
             use_non_cond_memory=request.use_non_cond_memory,
+            working_range_start=request.working_range_start,
+            working_range_end=request.working_range_end,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -94,6 +96,8 @@ async def submit_box_prompt(
             y2=request.y2,
             use_cond_memory=request.use_cond_memory,
             use_non_cond_memory=request.use_non_cond_memory,
+            working_range_start=request.working_range_start,
+            working_range_end=request.working_range_end,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -138,6 +142,8 @@ async def propagate(
             num_frames=video.num_frames,
             height=video.height,
             width=video.width,
+            working_range_start=request.working_range_start,
+            working_range_end=request.working_range_end,
         )
     except RuntimeError as e:
         logger.error(f"Propagation failed: {e}", exc_info=True)
@@ -176,6 +182,8 @@ async def propagate_without_memory(
             num_frames=video.num_frames,
             height=video.height,
             width=video.width,
+            working_range_start=request.working_range_start,
+            working_range_end=request.working_range_end,
         )
     except RuntimeError as e:
         logger.error(f"Propagation without memory failed: {e}", exc_info=True)

@@ -212,6 +212,8 @@ async def submit_prompt(
     labels: list[int],
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
     """Submit point prompt(s) for segmentation.
 
@@ -255,6 +257,8 @@ async def submit_prompt(
             labels=labels,
             use_cond_memory=use_cond_memory,
             use_non_cond_memory=use_non_cond_memory,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
     else:
         # Create new mask on blank frame (single point only, validated above)
@@ -269,6 +273,8 @@ async def submit_prompt(
             label=label,
             use_cond_memory=use_cond_memory,
             use_non_cond_memory=use_non_cond_memory,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
     # Ensure conditioning frame DB record exists — both new prompts and
@@ -327,6 +333,8 @@ async def submit_box_prompt(
     y2: float,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
     """Submit a bounding box prompt for segmentation.
 
@@ -354,6 +362,8 @@ async def submit_box_prompt(
         y2=y2,
         use_cond_memory=use_cond_memory,
         use_non_cond_memory=use_non_cond_memory,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
     # Ensure conditioning frame DB record exists (upsert pattern)
@@ -389,6 +399,8 @@ async def propagate(
     num_frames: int,
     height: int,
     width: int,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> int:
     """Propagate segmentation masks forward from a frame.
 
@@ -420,6 +432,8 @@ async def propagate(
         num_frames=num_frames,
         height=height,
         width=width,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
     # Update has_tracker_mask for all propagated frames
@@ -441,6 +455,8 @@ async def propagate_without_memory(
     num_frames: int,
     height: int,
     width: int,
+    working_range_start: int | None = None,
+    working_range_end: int | None = None,
 ) -> int:
     """Propagate using only conditioning frame memories (no temporal window).
 
@@ -455,6 +471,8 @@ async def propagate_without_memory(
         num_frames=num_frames,
         height=height,
         width=width,
+        working_range_start=working_range_start,
+        working_range_end=working_range_end,
     )
 
     await frame_data_service.set_has_tracker_mask(session, video_id, frame_indices, True)
