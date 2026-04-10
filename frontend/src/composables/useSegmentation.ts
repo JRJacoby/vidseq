@@ -59,6 +59,7 @@ export function useSegmentation(
     videoRef: Ref<HTMLVideoElement | null> = ref(null),
     fps: Ref<number> = ref(30),
     maskViewMode: Ref<'tracker' | 'detector' | 'final' | 'obb' | 'seg'> = ref('tracker'),
+    workingRange: Ref<[number, number] | null> = ref(null),
 ): UseSegmentationReturn {
 
     // ========================================================================
@@ -284,6 +285,8 @@ export function useSegmentation(
                 framePrompts,
                 useCondMemory.value,
                 useNonCondMemory.value,
+                workingRange.value?.[0] ?? null,
+                workingRange.value?.[1] ?? null,
             )
             lastCondUsed.value = nCondUsed
             lastNonCondUsed.value = nNonCondUsed
@@ -323,6 +326,8 @@ export function useSegmentation(
                 box,
                 useCondMemory.value,
                 useNonCondMemory.value,
+                workingRange.value?.[0] ?? null,
+                workingRange.value?.[1] ?? null,
             )
             lastCondUsed.value = nCondUsed
             lastNonCondUsed.value = nNonCondUsed
