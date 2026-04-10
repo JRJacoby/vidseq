@@ -32,6 +32,18 @@ Separately from the SAM2 investigation, implemented a feature to replace the DIN
 
 **Status**: Code compiles (TypeScript clean, Python imports clean), but zero manual testing. Expect bugs.
 
+### Preprocessing to Match SAM2's Training Distribution
+
+**Question**: Can we make the depth video data look more like SAM2's training distribution (natural RGB images) through preprocessing?
+
+**Attempt**: Applied CLAHE (contrast-limited adaptive histogram equalization) to the raw grayscale, then cubehelix colormap, then shifted per-channel mean/std to match ImageNet statistics (`mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]`). This is what SAM2's encoder expects internally. Tested on video 3 (`1806757_14wk_1/cropped_height_3x.mp4`) — the processed version was added as `cropped_height_3x_imagenet.mp4` (video ID 85).
+
+**Result**: About the same segmentation performance as plain cubehelix. No meaningful improvement.
+
+**Research**: Found active literature on this problem. The most promising approach is SAM-TTA's SBCT (Self-adaptive Bezier Curve-based Transformation) — learns 12 parameters (3 independent Bezier curves, one per RGB channel) optimized at test time using SAM's own predicted IoU as the loss signal. Showed +3.5-4.5% Dice improvement on medical images. Other approaches include fine-tuning (MedSAM2), adapter layers (Medical SAM Adapter), and colormap selection (Segment Any RGBD).
+
+**Decision**: Not pursuing further. The time spent correcting SAM2 interactively is less than the time it would take to implement a fancier preprocessing solution. SAM2 is just out of distribution for this data and that's acceptable — the current workflow is functional, just requires more manual correction than ideal.
+
 ### Other Small Features
 
 **Reset Segmentation Range**: Click a blue masked block on DataTrack, press Delete to clear masks + conditioning frames for that range. Same interaction as training range deletion.
