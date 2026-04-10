@@ -9,6 +9,7 @@ import { useSegmentation } from '@/composables/useSegmentation'
 import { useFrameRanges } from '@/composables/useFrameRanges'
 import { useVideo } from '@/composables/useVideo'
 import { usePoseLabels } from '@/composables/usePoseLabels'
+import { useGraphCut } from '@/composables/useGraphCut'
 import { getPosePrediction, type PosePrediction } from '@/services/api'
 import VideoTimeline from './VideoTimeline.vue'
 import VideoOverlay from './VideoOverlay.vue'
@@ -178,6 +179,19 @@ const {
   handleClick: handleKeypointClick,
 } = usePoseLabels(projectId, videoId)
 
+const {
+  graphcutRegion,
+  brushSize,
+  seedsVisible,
+  isRunning: isRunningGraphCut,
+  isGraphCutMode,
+  placeRegion,
+  paintSeed,
+  getSeedsForFrame,
+  runGraphCut,
+  exitGraphCutMode,
+} = useGraphCut(projectId, videoId)
+
 const isLabelingKeypoints = ref(false)
 const showPoseKeypoints = ref(true)
 const posePrediction = ref<PosePrediction | null>(null)
@@ -201,6 +215,49 @@ const advanceFrame = () => {
 
 const onKeypointClick = async (point: { x: number; y: number }) => {
   await handleKeypointClick(point.x, point.y, currentFrameIdx.value, advanceFrame)
+}
+
+const isGraphCutToolActive = ref(false)
+
+const toggleGraphCutTool = () => {
+  isGraphCutToolActive.value = !isGraphCutToolActive.value
+  if (isGraphCutToolActive.value) {
+    activeTool.value = 'graphcut_brush'
+    isMarkingMode.value = false
+    isWorkingRangeMode.value = false
+  } else {
+    activeTool.value = 'none'
+    exitGraphCutMode()
+  }
+}
+
+watch(activeTool, (newTool) => {
+  if (newTool !== 'graphcut_brush' && newTool !== 'none') {
+    isGraphCutToolActive.value = false
+    exitGraphCutMode()
+  }
+})
+
+const currentFrameSeeds = computed(() => getSeedsForFrame(currentFrameIdx.value))
+
+const handlePlaceGraphcutRegion = (frameIdx: number) => {
+  if (!video.value) return
+  placeRegion(frameIdx, video.value.num_frames)
+}
+
+const handleRunGraphCut = async () => {
+  await runGraphCut(clearMaskCache)
+  await refreshFrameRanges()
+}
+
+const handleBrushStroke = (point: { x: number; y: number; label: number }) => {
+  paintSeed(currentFrameIdx.value, point.x, point.y, point.label)
+}
+
+const handleClearGraphcutRegion = () => {
+  exitGraphCutMode()
+  isGraphCutToolActive.value = false
+  activeTool.value = 'none'
 }
 
 const fetchScoresForView = async () => {
@@ -524,9 +581,13 @@ onUnmounted(() => {
                 :pending-front="pendingFront"
                 :show-pose-keypoints="showPoseKeypoints"
                 :is-labeling-keypoints="isLabelingKeypoints"
+                :brush-size="brushSize"
+                :graphcut-seeds="currentFrameSeeds"
+                :show-seeds="seedsVisible"
                 @point-complete="handlePointCompleteWithRefresh"
                 @box-complete="handleBoxCompleteWithRefresh"
                 @keypoint-click="onKeypointClick"
+                @brush-stroke="handleBrushStroke"
               />
             </div>
           </div>
@@ -563,11 +624,15 @@ onUnmounted(() => {
               :pose-scores="poseScores"
               :working-range="workingRange"
               :is-working-range-mode="isWorkingRangeMode"
+              :graphcut-region="graphcutRegion"
+              :is-graph-cut-mode="isGraphCutToolActive"
               @mark-training="handleMarkTraining"
               @unmark-training="handleUnmarkTraining"
               @unmark-masked="handleUnmarkMasked"
               @set-working-range="handleSetWorkingRange"
               @clear-working-range="workingRange = null"
+              @place-graphcut-region="handlePlaceGraphcutRegion"
+              @clear-graphcut-region="handleClearGraphcutRegion"
               @view-change="handleViewChange"
             />
           </TimelineSystem>
@@ -636,6 +701,37 @@ onUnmounted(() => {
         </div>
         <div class="memory-counts" v-if="lastCondUsed > 0 || lastNonCondUsed > 0">
           used {{ lastCondUsed }} cond, {{ lastNonCondUsed }} non-cond frames
+        </div>
+
+        <h4 class="action-bar-title" style="margin-top: 16px;">Graph Cut</h4>
+        <div class="tool-buttons">
+          <button
+            class="tool-button graphcut"
+            :class="{ active: isGraphCutToolActive }"
+            @click="toggleGraphCutTool"
+          >
+            <span class="tool-icon">◈</span>
+            <span class="tool-label">Graph Cut Brush</span>
+          </button>
+          <button
+            v-if="isGraphCutMode"
+            class="tool-button"
+            :disabled="isRunningGraphCut"
+            @click="handleRunGraphCut"
+          >
+            <span class="tool-icon">▶</span>
+            <span class="tool-label">{{ isRunningGraphCut ? 'Running...' : 'Run Graph Cut' }}</span>
+          </button>
+        </div>
+        <div v-if="isGraphCutMode" class="memory-options">
+          <label class="memory-toggle">
+            <span>Brush Size: {{ brushSize }}px</span>
+            <input type="range" v-model.number="brushSize" min="1" max="50" />
+          </label>
+          <label class="memory-toggle">
+            <input type="checkbox" v-model="seedsVisible" />
+            Show Seeds
+          </label>
         </div>
 
         <h4 class="action-bar-title">Propagation</h4>
