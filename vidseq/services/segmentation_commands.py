@@ -257,7 +257,7 @@ def handle_add_prompt(
         before_sum = int(mask_before.sum())
 
         # Run segmentation - returns mask and logits
-        mask, logits, score = segmentor.add_point_prompt(
+        mask, logits, score, n_cond_used, n_non_cond_used = segmentor.add_point_prompt(
             video_id=str(video_id),
             frame_idx=frame_idx,
             location=(px, py),
@@ -283,6 +283,8 @@ def handle_add_prompt(
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
         "score": score,
+        "n_cond_used": n_cond_used,
+        "n_non_cond_used": n_non_cond_used,
     }
 
 
@@ -328,7 +330,7 @@ def handle_add_box_prompt(
         mask_before = mask_data[frame_idx]
         before_sum = int(mask_before.sum())
 
-        mask, logits, score = segmentor.add_box_prompt(
+        mask, logits, score, n_cond_used, n_non_cond_used = segmentor.add_box_prompt(
             video_id=str(video_id),
             frame_idx=frame_idx,
             box=(px1, py1, px2, py2),
@@ -354,6 +356,8 @@ def handle_add_box_prompt(
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
         "score": score,
+        "n_cond_used": n_cond_used,
+        "n_non_cond_used": n_non_cond_used,
     }
 
 
@@ -411,7 +415,7 @@ def handle_refine_mask(
         prev_logits = logits_data[frame_idx]
 
         # Run refinement with all points - returns mask and logits
-        mask, logits, score = segmentor.refine_mask(
+        mask, logits, score, n_cond_used, n_non_cond_used = segmentor.refine_mask(
             video_id=str(video_id),
             frame_idx=frame_idx,
             location=locations,
@@ -438,6 +442,8 @@ def handle_refine_mask(
         "mask_shape": mask.shape,
         "mask_dtype": str(mask.dtype),
         "score": score,
+        "n_cond_used": n_cond_used,
+        "n_non_cond_used": n_non_cond_used,
     }
 
 

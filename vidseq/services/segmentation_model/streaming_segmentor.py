@@ -548,7 +548,7 @@ class SAM2StreamingSegmentor:
         masks,  # Indexable mask source
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Add point prompt(s) to a BLANK frame and generate initial mask.
 
         This method is for adding prompts to frames that don't have existing masks.
@@ -669,7 +669,9 @@ class SAM2StreamingSegmentor:
 
         # 15. Return mask, logits, and score (caller saves to storage)
         score = self._extract_score(current_out)
-        return mask_resized, pred_masks_low_res, score
+        n_cond_used = len(filtered_output_dict["cond_frame_outputs"])
+        n_non_cond_used = len(filtered_output_dict["non_cond_frame_outputs"])
+        return mask_resized, pred_masks_low_res, score, n_cond_used, n_non_cond_used
 
     def add_box_prompt(
         self,
@@ -680,7 +682,7 @@ class SAM2StreamingSegmentor:
         masks,   # Indexable mask source: masks[idx] -> np.ndarray (H, W)
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Add a bounding box prompt to a frame and generate initial mask.
 
         Creates a new mask from the box prompt. Any existing conditioning state
@@ -786,7 +788,9 @@ class SAM2StreamingSegmentor:
 
         # 14. Return mask, logits, and score
         score = self._extract_score(current_out)
-        return mask_resized, pred_masks_low_res, score
+        n_cond_used = len(filtered_output_dict["cond_frame_outputs"])
+        n_non_cond_used = len(filtered_output_dict["non_cond_frame_outputs"])
+        return mask_resized, pred_masks_low_res, score, n_cond_used, n_non_cond_used
 
     def refine_mask(
         self,
@@ -799,7 +803,7 @@ class SAM2StreamingSegmentor:
         prev_logits: np.ndarray,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray, float, int, int]:
         """Refine an existing mask with point prompt(s).
 
         Uses the previous mask logits as context for refinement.
@@ -934,7 +938,9 @@ class SAM2StreamingSegmentor:
 
         # 15. Return mask, logits, and score (caller saves to storage)
         score = self._extract_score(current_out)
-        return mask_resized, pred_masks_low_res, score
+        n_cond_used = len(filtered_output_dict["cond_frame_outputs"])
+        n_non_cond_used = len(filtered_output_dict["non_cond_frame_outputs"])
+        return mask_resized, pred_masks_low_res, score, n_cond_used, n_non_cond_used
 
     def propagate(
         self,

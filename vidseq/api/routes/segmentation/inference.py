@@ -46,7 +46,7 @@ async def submit_prompt(
     labels = [1 if p.type == "positive_point" else 0 for p in request.points]
 
     try:
-        mask = await segmentation_service.submit_prompt(
+        mask, n_cond_used, n_non_cond_used = await segmentation_service.submit_prompt(
             session=session,
             project_id=project_id,
             video_id=video.id,
@@ -60,7 +60,14 @@ async def submit_prompt(
         raise HTTPException(status_code=400, detail=str(e))
 
     mask_png = segmentation_service.mask_to_png(mask)
-    return Response(content=mask_png, media_type="image/png")
+    return Response(
+        content=mask_png,
+        media_type="image/png",
+        headers={
+            "X-Cond-Frames-Used": str(n_cond_used),
+            "X-Non-Cond-Frames-Used": str(n_non_cond_used),
+        },
+    )
 
 
 @router.post("/projects/{project_id}/videos/{video_id}/box-prompt/{frame_idx}")
@@ -76,7 +83,7 @@ async def submit_box_prompt(
     Box coords should be normalized [0,1].
     """
     try:
-        mask = await segmentation_service.submit_box_prompt(
+        mask, n_cond_used, n_non_cond_used = await segmentation_service.submit_box_prompt(
             session=session,
             project_id=project_id,
             video_id=video.id,
@@ -92,7 +99,14 @@ async def submit_box_prompt(
         raise HTTPException(status_code=400, detail=str(e))
 
     mask_png = segmentation_service.mask_to_png(mask)
-    return Response(content=mask_png, media_type="image/png")
+    return Response(
+        content=mask_png,
+        media_type="image/png",
+        headers={
+            "X-Cond-Frames-Used": str(n_cond_used),
+            "X-Non-Cond-Frames-Used": str(n_non_cond_used),
+        },
+    )
 
 
 @router.post(

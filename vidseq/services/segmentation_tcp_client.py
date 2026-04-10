@@ -516,7 +516,7 @@ class SegmentationService:
         label: int,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float, int, int]:
         """
         Add a point prompt and return the mask and confidence score.
 
@@ -531,8 +531,7 @@ class SegmentationService:
             label: Label (1=positive, 0=negative)
 
         Returns:
-            Tuple of (mask, score) where mask is numpy array (height, width)
-            and score is the predicted IoU confidence.
+            Tuple of (mask, score, n_cond_used, n_non_cond_used).
 
         Raises:
             RuntimeError: If no session exists for this video
@@ -562,8 +561,10 @@ class SegmentationService:
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
         score = result.get("score", -1.0)
+        n_cond_used = result.get("n_cond_used", 0)
+        n_non_cond_used = result.get("n_non_cond_used", 0)
 
-        return mask, score
+        return mask, score, n_cond_used, n_non_cond_used
 
     def add_box_prompt(
         self,
@@ -576,7 +577,7 @@ class SegmentationService:
         y2: float,
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float, int, int]:
         """
         Add a bounding box prompt and return the mask and confidence score.
 
@@ -590,8 +591,7 @@ class SegmentationService:
             x2, y2: Bottom-right corner in normalized [0, 1] coords
 
         Returns:
-            Tuple of (mask, score) where mask is numpy array (height, width)
-            and score is the predicted IoU confidence.
+            Tuple of (mask, score, n_cond_used, n_non_cond_used).
         """
         session = self.get_session(project_id, video_id)
         if session is None:
@@ -619,8 +619,10 @@ class SegmentationService:
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
         score = result.get("score", -1.0)
+        n_cond_used = result.get("n_cond_used", 0)
+        n_non_cond_used = result.get("n_non_cond_used", 0)
 
-        return mask, score
+        return mask, score, n_cond_used, n_non_cond_used
 
     def refine_mask(
         self,
@@ -631,7 +633,7 @@ class SegmentationService:
         labels: list[int],
         use_cond_memory: bool = True,
         use_non_cond_memory: bool = True,
-    ) -> tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float, int, int]:
         """
         Refine an existing mask with point prompt(s).
 
@@ -643,8 +645,7 @@ class SegmentationService:
             labels: List of labels (1=positive, 0=negative), one per point
 
         Returns:
-            Tuple of (mask, score) where mask is numpy array (height, width)
-            and score is the predicted IoU confidence.
+            Tuple of (mask, score, n_cond_used, n_non_cond_used).
         """
         session = self.get_session(project_id, video_id)
         if session is None:
@@ -668,8 +669,10 @@ class SegmentationService:
         mask_dtype = result.get("mask_dtype", "uint8")
         mask = _decode_mask_rle(mask_rle, mask_shape, mask_dtype)
         score = result.get("score", -1.0)
+        n_cond_used = result.get("n_cond_used", 0)
+        n_non_cond_used = result.get("n_non_cond_used", 0)
 
-        return mask, score
+        return mask, score, n_cond_used, n_non_cond_used
 
     def propagate(
         self,
@@ -1133,7 +1136,7 @@ def add_point_prompt(
     label: int,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, int, int]:
     """Add a point prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_point_prompt(
         project_id, video_id, frame_idx, x, y, label,
@@ -1152,7 +1155,7 @@ def add_box_prompt(
     y2: float,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, int, int]:
     """Add a box prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_box_prompt(
         project_id, video_id, frame_idx, x1, y1, x2, y2,
@@ -1169,7 +1172,7 @@ def refine_mask(
     labels: list[int],
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, int, int]:
     """Refine an existing mask with point prompt(s) and return mask and score."""
     return SegmentationService.get_instance().refine_mask(
         project_id, video_id, frame_idx, points, labels,

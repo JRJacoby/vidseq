@@ -212,7 +212,7 @@ async def submit_prompt(
     labels: list[int],
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
-) -> np.ndarray:
+) -> tuple[np.ndarray, int, int]:
     """Submit point prompt(s) for segmentation.
 
     Workflow determined by existing state:
@@ -230,7 +230,7 @@ async def submit_prompt(
         labels: List of labels (1=positive, 0=negative)
 
     Returns:
-        Resulting mask as numpy array
+        Tuple of (mask, n_cond_used, n_non_cond_used)
 
     Raises:
         MultiPointWithoutMaskError: If multi-point submitted without existing mask
@@ -247,7 +247,7 @@ async def submit_prompt(
 
     if has_existing_mask:
         # Refine existing mask using previous logits as dense prompt
-        mask, score = segmentation_tcp_client.refine_mask(
+        mask, score, n_cond_used, n_non_cond_used = segmentation_tcp_client.refine_mask(
             project_id=project_id,
             video_id=video_id,
             frame_idx=frame_idx,
@@ -260,7 +260,7 @@ async def submit_prompt(
         # Create new mask on blank frame (single point only, validated above)
         p = points[0]
         label = labels[0]
-        mask, score = segmentation_tcp_client.add_point_prompt(
+        mask, score, n_cond_used, n_non_cond_used = segmentation_tcp_client.add_point_prompt(
             project_id=project_id,
             video_id=video_id,
             frame_idx=frame_idx,
@@ -313,7 +313,7 @@ async def submit_prompt(
             frame_idx=frame_idx,
         )
 
-    return mask
+    return mask, n_cond_used, n_non_cond_used
 
 
 async def submit_box_prompt(
@@ -327,7 +327,7 @@ async def submit_box_prompt(
     y2: float,
     use_cond_memory: bool = True,
     use_non_cond_memory: bool = True,
-) -> np.ndarray:
+) -> tuple[np.ndarray, int, int]:
     """Submit a bounding box prompt for segmentation.
 
     Box is always an initial prompt — creates a new mask. Any existing
@@ -342,9 +342,9 @@ async def submit_box_prompt(
         x2, y2: Bottom-right corner in normalized [0, 1] coords
 
     Returns:
-        Resulting mask as numpy array
+        Tuple of (mask, n_cond_used, n_non_cond_used)
     """
-    mask, score = segmentation_tcp_client.add_box_prompt(
+    mask, score, n_cond_used, n_non_cond_used = segmentation_tcp_client.add_box_prompt(
         project_id=project_id,
         video_id=video_id,
         frame_idx=frame_idx,
@@ -376,7 +376,7 @@ async def submit_box_prompt(
     )
     await frame_data_service.save_score(session, video_id, frame_idx, score)
 
-    return mask
+    return mask, n_cond_used, n_non_cond_used
 
 
 async def propagate(
