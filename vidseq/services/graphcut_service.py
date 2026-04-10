@@ -109,7 +109,17 @@ def _build_seed_volume(
 
 
 def _compute_beta(frames: np.ndarray) -> float:
-    """Compute beta = 1 / (2 * mean(squared differences)) over all neighbor pairs."""
+    """Compute beta so that boundary edges are weak and interior edges are strong.
+
+    Uses the 90th percentile of squared differences (which roughly corresponds
+    to boundary contrast) to calibrate beta so that:
+    - Boundary edges (p90 diff) get weight ~0.01
+    - Interior edges (small diff) get weight ~0.9+
+
+    The Boykov formula (1 / 2*mean) fails on smooth video because the mean is
+    dominated by near-zero interior diffs, producing a huge beta that fragments
+    the graph.
+    """
     diffs_sq = []
 
     # Spatial horizontal
@@ -125,10 +135,13 @@ def _compute_beta(frames: np.ndarray) -> float:
         dt = (frames[:-1] - frames[1:]) ** 2
         diffs_sq.append(dt.ravel())
 
-    mean_sq = np.concatenate(diffs_sq).mean()
-    if mean_sq < 1e-10:
-        return 0.0  # Constant image — all edges get weight 1
-    return 1.0 / (2.0 * mean_sq)
+    all_diffs_sq = np.concatenate(diffs_sq)
+    # Use 90th percentile: this captures boundary-level contrast
+    p90 = np.percentile(all_diffs_sq, 90)
+    if p90 < 1e-10:
+        return 0.0
+    # Calibrate so exp(-beta * p90) ≈ 0.01 → beta * p90 ≈ 4.6
+    return 4.6 / p90
 
 
 def _solve_graphcut(
