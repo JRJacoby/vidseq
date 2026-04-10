@@ -235,6 +235,8 @@ def handle_add_prompt(
     x = params["x"]  # normalized [0, 1]
     y = params["y"]  # normalized [0, 1]
     label = params["label"]  # 1=positive, 0=negative
+    use_cond_memory = params.get("use_cond_memory", True)
+    use_non_cond_memory = params.get("use_non_cond_memory", True)
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -262,6 +264,8 @@ def handle_add_prompt(
             label=label,
             frames=resources.frame_source,
             masks=mask_data,
+            use_cond_memory=use_cond_memory,
+            use_non_cond_memory=use_non_cond_memory,
         )
 
         # Write results to HDF5
@@ -302,6 +306,8 @@ def handle_add_box_prompt(
     y1 = params["y1"]
     x2 = params["x2"]
     y2 = params["y2"]
+    use_cond_memory = params.get("use_cond_memory", True)
+    use_non_cond_memory = params.get("use_non_cond_memory", True)
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -328,6 +334,8 @@ def handle_add_box_prompt(
             box=(px1, py1, px2, py2),
             frames=resources.frame_source,
             masks=mask_data,
+            use_cond_memory=use_cond_memory,
+            use_non_cond_memory=use_non_cond_memory,
         )
 
         # Write both mask and logits — logits are required for point refinement
@@ -390,6 +398,9 @@ def handle_refine_mask(
         locations = [(x * width, y * height)]
         labels = [label]
 
+    use_cond_memory = params.get("use_cond_memory", True)
+    use_non_cond_memory = params.get("use_non_cond_memory", True)
+
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
         # Get mask before for comparison
@@ -408,6 +419,8 @@ def handle_refine_mask(
             frames=resources.frame_source,
             masks=mask_data,
             prev_logits=prev_logits,
+            use_cond_memory=use_cond_memory,
+            use_non_cond_memory=use_non_cond_memory,
         )
 
         # Write results to HDF5
@@ -567,6 +580,11 @@ def handle_propagate_without_memory(
         raise RuntimeError(f"No session for video {video_id}")
 
     resources = _video_resources[video_id]
+
+    session = segmentor.sessions[str(video_id)]
+    cond_frames = sorted(session["cond_frame_indices"])
+    non_cond_count = len(session["output_dict"]["non_cond_frame_outputs"])
+    print(f"Propagating without memory — cond frames: {cond_frames}, non_cond_frames before clear: {non_cond_count}")
 
     scores: list[list] = []
     frames_propagated = 0
