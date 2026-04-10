@@ -27,12 +27,17 @@ const props = withDefaults(defineProps<{
   pcaScores?: Record<string, { frame_idx: number; score: number }[]>
   visiblePCs?: number[]
   showPCAPlot?: boolean
+  // Working range (single orange range for scoping operations)
+  workingRange?: [number, number] | null
+  isWorkingRangeMode?: boolean
 }>(), {
   alignmentLabelFrames: () => [],
   showAlignmentLabels: false,
   pcaScores: () => ({}),
   visiblePCs: () => [],
   showPCAPlot: false,
+  workingRange: null,
+  isWorkingRangeMode: false,
   showDetectorConfidence: false,
   detectorScores: () => [],
   showObbConfidence: false,
@@ -46,6 +51,8 @@ const emit = defineEmits<{
   'unmark-training': [startFrame: number, endFrame: number]
   'unmark-masked': [startFrame: number, endFrame: number]
   'view-change': [viewStart: number, viewEnd: number]
+  'set-working-range': [startFrame: number, endFrame: number]
+  'clear-working-range': []
 }>()
 
 const trackRef = ref<HTMLElement | null>(null)
@@ -55,6 +62,7 @@ const dragStartFrame = ref<number | null>(null)
 const dragEndFrame = ref<number | null>(null)
 const selectedRange = ref<[number, number] | null>(null)
 const selectedMaskedRange = ref<[number, number] | null>(null)
+const selectedWorkingRange = ref(false)
 const isHovering = ref(false)
 const plotMinScore = ref<number | null>(null)
 const plotMaxScore = ref<number | null>(null)
@@ -142,6 +150,11 @@ const trackerMaskedRangeStyles = computed(() => {
     .filter((s): s is { left: string; width: string } => s !== null)
 })
 
+const workingRangeStyle = computed(() => {
+  if (!props.workingRange) return null
+  return rangeToStyle(props.workingRange)
+})
+
 const trainingRangeStyles = computed(() => {
   if (!props.showTrainingFrames) return []
   return props.trainingRanges
@@ -211,17 +224,29 @@ const onMouseDown = (event: MouseEvent) => {
   if (clickedTraining) {
     selectedRange.value = clickedTraining
     selectedMaskedRange.value = null
+    selectedWorkingRange.value = false
     return
   }
 
+  // Check if click is on working range
+  if (props.workingRange) {
+    if (frame >= props.workingRange[0] && frame <= props.workingRange[1]) {
+      selectedWorkingRange.value = true
+      selectedRange.value = null
+      selectedMaskedRange.value = null
+      return
+    }
+  }
+  selectedWorkingRange.value = false
+
   const clickedMasked = findMaskedRangeAt(frame)
-  if (clickedMasked && !props.isMarkingMode) {
+  if (clickedMasked && !props.isMarkingMode && !props.isWorkingRangeMode) {
     selectedMaskedRange.value = clickedMasked
     selectedRange.value = null
     return
   }
 
-  if (!props.isMarkingMode) {
+  if (!props.isMarkingMode && !props.isWorkingRangeMode) {
     selectedRange.value = null
     selectedMaskedRange.value = null
     return
@@ -241,13 +266,17 @@ const onMouseMove = (event: MouseEvent) => {
 
 const onMouseUp = () => {
   if (!isDragging.value) return
-  
+
   if (dragStartFrame.value !== null && dragEndFrame.value !== null) {
     const start = Math.min(dragStartFrame.value, dragEndFrame.value)
     const end = Math.max(dragStartFrame.value, dragEndFrame.value)
-    emit('mark-training', start, end)
+    if (props.isWorkingRangeMode) {
+      emit('set-working-range', start, end)
+    } else {
+      emit('mark-training', start, end)
+    }
   }
-  
+
   isDragging.value = false
   dragStartFrame.value = null
   dragEndFrame.value = null
@@ -257,6 +286,12 @@ const onKeyDown = (event: KeyboardEvent) => {
   if (!isHovering.value) return
 
   if (event.key === 'Delete' || event.key === 'Backspace') {
+    if (selectedWorkingRange.value) {
+      event.preventDefault()
+      emit('clear-working-range')
+      selectedWorkingRange.value = false
+      return
+    }
     if (selectedRange.value) {
       event.preventDefault()
       emit('unmark-training', selectedRange.value[0], selectedRange.value[1])
@@ -572,7 +607,7 @@ onUnmounted(() => {
       <div
         ref="trackRef"
         class="data-track"
-        :class="{ 'marking-mode': isMarkingMode }"
+        :class="{ 'marking-mode': isMarkingMode || isWorkingRangeMode }"
         @mousedown="onMouseDown"
         @mouseenter="onMouseEnter"
         @mouseleave="onMouseLeave"
@@ -596,6 +631,14 @@ onUnmounted(() => {
           class="confidence-plot"
         />
         
+        <!-- Working range -->
+        <div
+          v-if="workingRangeStyle"
+          class="range-overlay working-range"
+          :class="{ selected: selectedWorkingRange }"
+          :style="workingRangeStyle"
+        />
+
         <div
           v-for="item in trainingRangeStyles"
           :key="'training-' + item.range[0]"
@@ -613,7 +656,8 @@ onUnmounted(() => {
 
         <div
           v-if="dragRangeStyle"
-          class="range-overlay drag-selection"
+          class="range-overlay"
+          :class="isWorkingRangeMode ? 'working-range-drag' : 'drag-selection'"
           :style="dragRangeStyle"
         />
         
@@ -747,6 +791,35 @@ onUnmounted(() => {
   50% {
     outline-color: rgba(34, 197, 94, 0.5);
   }
+}
+
+.range-overlay.working-range {
+  background-color: rgba(245, 158, 11, 0.4);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.range-overlay.working-range.selected {
+  background-color: rgba(245, 158, 11, 0.6);
+  outline: 2px dashed rgba(245, 158, 11, 0.9);
+  outline-offset: -2px;
+  animation: pulse-working 1s ease-in-out infinite;
+}
+
+@keyframes pulse-working {
+  0%, 100% {
+    outline-color: rgba(245, 158, 11, 0.9);
+  }
+  50% {
+    outline-color: rgba(245, 158, 11, 0.4);
+  }
+}
+
+.range-overlay.working-range-drag {
+  background-color: rgba(245, 158, 11, 0.2);
+  border: 2px dashed rgba(245, 158, 11, 0.6);
+  pointer-events: none;
+  box-sizing: border-box;
 }
 
 .range-overlay.drag-selection {
