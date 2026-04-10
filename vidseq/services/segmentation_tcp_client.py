@@ -1131,10 +1131,14 @@ def add_point_prompt(
     x: float,
     y: float,
     label: int,
+    use_cond_memory: bool = True,
+    use_non_cond_memory: bool = True,
 ) -> tuple[np.ndarray, float]:
     """Add a point prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_point_prompt(
-        project_id, video_id, frame_idx, x, y, label
+        project_id, video_id, frame_idx, x, y, label,
+        use_cond_memory=use_cond_memory,
+        use_non_cond_memory=use_non_cond_memory,
     )
 
 
@@ -1146,10 +1150,14 @@ def add_box_prompt(
     y1: float,
     x2: float,
     y2: float,
+    use_cond_memory: bool = True,
+    use_non_cond_memory: bool = True,
 ) -> tuple[np.ndarray, float]:
     """Add a box prompt and return the mask and confidence score."""
     return SegmentationService.get_instance().add_box_prompt(
-        project_id, video_id, frame_idx, x1, y1, x2, y2
+        project_id, video_id, frame_idx, x1, y1, x2, y2,
+        use_cond_memory=use_cond_memory,
+        use_non_cond_memory=use_non_cond_memory,
     )
 
 
@@ -1159,10 +1167,14 @@ def refine_mask(
     frame_idx: int,
     points: list[dict],
     labels: list[int],
+    use_cond_memory: bool = True,
+    use_non_cond_memory: bool = True,
 ) -> tuple[np.ndarray, float]:
     """Refine an existing mask with point prompt(s) and return mask and score."""
     return SegmentationService.get_instance().refine_mask(
-        project_id, video_id, frame_idx, points, labels
+        project_id, video_id, frame_idx, points, labels,
+        use_cond_memory=use_cond_memory,
+        use_non_cond_memory=use_non_cond_memory,
     )
 
 
