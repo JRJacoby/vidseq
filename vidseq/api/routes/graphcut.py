@@ -41,7 +41,7 @@ async def create_graphcut_masks(
             graphcut_service.run_graphcut,
             project_path,
             video.id,
-            video.filepath,
+            video.path,
             request.start_frame,
             end_frame,
             seeds,
