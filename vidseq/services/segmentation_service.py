@@ -210,6 +210,8 @@ async def submit_prompt(
     frame_idx: int,
     points: list[dict],
     labels: list[int],
+    use_cond_memory: bool = True,
+    use_non_cond_memory: bool = True,
 ) -> np.ndarray:
     """Submit point prompt(s) for segmentation.
 
@@ -251,6 +253,8 @@ async def submit_prompt(
             frame_idx=frame_idx,
             points=points,
             labels=labels,
+            use_cond_memory=use_cond_memory,
+            use_non_cond_memory=use_non_cond_memory,
         )
     else:
         # Create new mask on blank frame (single point only, validated above)
@@ -263,6 +267,8 @@ async def submit_prompt(
             x=p["x"],
             y=p["y"],
             label=label,
+            use_cond_memory=use_cond_memory,
+            use_non_cond_memory=use_non_cond_memory,
         )
 
     # Ensure conditioning frame DB record exists — both new prompts and
@@ -319,6 +325,8 @@ async def submit_box_prompt(
     y1: float,
     x2: float,
     y2: float,
+    use_cond_memory: bool = True,
+    use_non_cond_memory: bool = True,
 ) -> np.ndarray:
     """Submit a bounding box prompt for segmentation.
 
@@ -344,6 +352,8 @@ async def submit_box_prompt(
         y1=y1,
         x2=x2,
         y2=y2,
+        use_cond_memory=use_cond_memory,
+        use_non_cond_memory=use_non_cond_memory,
     )
 
     # Ensure conditioning frame DB record exists (upsert pattern)
