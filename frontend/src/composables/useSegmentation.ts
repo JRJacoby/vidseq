@@ -19,7 +19,7 @@ import { LruCache } from '@/utils/LruCache'
 // Types & Constants
 // ============================================================================
 
-export type ToolType = 'none' | 'positive_point' | 'negative_point' | 'bounding_box'
+export type ToolType = 'none' | 'positive_point' | 'negative_point' | 'bounding_box' | 'graphcut_brush'
 
 export type LocalPrompt =
     | { x: number; y: number; type: 'positive_point' | 'negative_point' }
