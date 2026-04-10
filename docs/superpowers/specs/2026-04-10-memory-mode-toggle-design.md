@@ -35,12 +35,12 @@ These checkboxes affect **point prompts and box prompts only**. The existing "Pr
 
 | Cond | Non-Cond | `is_init_cond_frame` | Memory passed to SAM2 |
 |------|----------|---------------------|-----------------------|
-| off  | off      | `False`             | Empty cond, empty non-cond + prev_logits |
-| on   | off      | `False`             | Real cond, empty non-cond + prev_logits |
-| off  | on       | `False`             | Empty cond, real non-cond + prev_logits |
-| on   | on       | `False`             | Real cond, real non-cond + prev_logits (current default) |
+| off  | off      | `True`              | Empty cond, empty non-cond + prev_logits |
+| on   | off      | `False` if cond frames exist, else `True` | Real cond, empty non-cond + prev_logits |
+| off  | on       | `True`              | Empty cond, real non-cond + prev_logits |
+| on   | on       | `False` if cond frames exist, else `True` | Real cond, real non-cond + prev_logits (current default) |
 
-`is_init_cond_frame` is always `False` for refinement. Previous frame logits are always passed.
+`is_init_cond_frame` is derived from the filtered cond dict, same as new prompts. SAM2 asserts that cond frames exist on the non-init path, so when filtered cond is empty, the init path is used. Previous frame logits still provide refinement context regardless.
 
 ## Data Flow
 
@@ -87,8 +87,7 @@ Propagation methods (`propagate`, `propagate_sequential`, `propagate_sequential_
 
 ## `is_init_cond_frame` Logic
 
-- **New prompt (no existing mask):** `is_init_cond_frame = len(filtered_output_dict["cond_frame_outputs"]) == 0`. This means if the user turns off cond memory, or if no cond frames exist yet, the click is treated as an init conditioning frame.
-- **Refinement (existing mask):** `is_init_cond_frame = False` always, regardless of memory flags. The prev_logits provide sufficient context.
+- **Both new prompts and refinement:** `is_init_cond_frame = len(filtered_output_dict["cond_frame_outputs"]) == 0`. When filtered cond is empty (user disabled cond memory or no cond frames exist), the init path is used. SAM2 asserts cond frames exist on the non-init path, so this is required. For refinement, prev_logits still provide context regardless of which path is taken.
 
 ## Constraints
 

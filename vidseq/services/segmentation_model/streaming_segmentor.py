@@ -844,8 +844,11 @@ class SAM2StreamingSegmentor:
             "non_cond_frame_outputs": output_dict["non_cond_frame_outputs"] if use_non_cond_memory else {},
         }
 
-        # 5. Refinement: is_init_cond_frame is always False
-        is_init_cond_frame = False
+        # 5. Determine is_init_cond_frame from filtered cond outputs.
+        # When filtered cond is empty (no cond memory available or disabled),
+        # use init path — SAM2 asserts cond frames exist on the non-init path.
+        # prev_logits still provide refinement context regardless.
+        is_init_cond_frame = len(filtered_output_dict["cond_frame_outputs"]) == 0
 
         # 5. Get frame from source
         frame = frames[frame_idx]
