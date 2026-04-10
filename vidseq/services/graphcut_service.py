@@ -55,7 +55,10 @@ def run_threshold_segment(
     binary = (frames > threshold).astype(np.uint8)
 
     # 3. Morphological opening to break thin bridges and remove noise
-    open_struct = np.ones((5, 5, 5), dtype=bool)
+    # Ellipsoidal structuring element for isotropic erosion/dilation
+    r = 2  # radius → 5x5x5
+    z, y, x = np.ogrid[-r:r+1, -r:r+1, -r:r+1]
+    open_struct = (x*x + y*y + z*z) <= r*r
     binary = ndimage.binary_opening(binary, structure=open_struct).astype(np.uint8)
 
     # 4. 3D connected component labeling (6-connectivity: face-adjacent only)
