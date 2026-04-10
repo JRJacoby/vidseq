@@ -239,6 +239,8 @@ export async function submitPrompt(
     points: PointPrompt[],
     useCondMemory: boolean = true,
     useNonCondMemory: boolean = true,
+    workingRangeStart: number | null = null,
+    workingRangeEnd: number | null = null,
 ): Promise<{ blob: Blob; nCondUsed: number; nNonCondUsed: number }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/prompt/${frameIdx}`,
@@ -249,6 +251,10 @@ export async function submitPrompt(
                 points,
                 use_cond_memory: useCondMemory,
                 use_non_cond_memory: useNonCondMemory,
+                ...(workingRangeStart !== null && {
+                    working_range_start: workingRangeStart,
+                    working_range_end: workingRangeEnd,
+                }),
             }),
         }
     )
@@ -268,6 +274,8 @@ export async function submitBoxPrompt(
     box: { x1: number; y1: number; x2: number; y2: number },
     useCondMemory: boolean = true,
     useNonCondMemory: boolean = true,
+    workingRangeStart: number | null = null,
+    workingRangeEnd: number | null = null,
 ): Promise<{ blob: Blob; nCondUsed: number; nNonCondUsed: number }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/box-prompt/${frameIdx}`,
@@ -278,6 +286,10 @@ export async function submitBoxPrompt(
                 ...box,
                 use_cond_memory: useCondMemory,
                 use_non_cond_memory: useNonCondMemory,
+                ...(workingRangeStart !== null && {
+                    working_range_start: workingRangeStart,
+                    working_range_end: workingRangeEnd,
+                }),
             }),
         }
     )
@@ -595,14 +607,23 @@ export async function createPropagation(
     projectId: number,
     videoId: number,
     startFrameIdx: number,
-    maxFrames: number = 1000
+    maxFrames: number = 1000,
+    workingRangeStart: number | null = null,
+    workingRangeEnd: number | null = null,
 ): Promise<PropagateResponse> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/propagation`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+            body: JSON.stringify({
+                start_frame_idx: startFrameIdx,
+                max_frames: maxFrames,
+                ...(workingRangeStart !== null && {
+                    working_range_start: workingRangeStart,
+                    working_range_end: workingRangeEnd,
+                }),
+            }),
         }
     )
     if (!response.ok) {
@@ -615,14 +636,23 @@ export async function createPropagationWithoutMemory(
     projectId: number,
     videoId: number,
     startFrameIdx: number,
-    maxFrames: number = 1000
+    maxFrames: number = 1000,
+    workingRangeStart: number | null = null,
+    workingRangeEnd: number | null = null,
 ): Promise<PropagateResponse> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/propagation-without-memory`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ start_frame_idx: startFrameIdx, max_frames: maxFrames }),
+            body: JSON.stringify({
+                start_frame_idx: startFrameIdx,
+                max_frames: maxFrames,
+                ...(workingRangeStart !== null && {
+                    working_range_start: workingRangeStart,
+                    working_range_end: workingRangeEnd,
+                }),
+            }),
         }
     )
     if (!response.ok) {
