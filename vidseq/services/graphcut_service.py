@@ -50,22 +50,18 @@ def run_graphcut(
     # 3. Compute beta from neighbor intensity differences
     beta = _compute_beta(frames)
 
-    logger.info(
-        "Graph cut stats: frames=%s, beta=%.4f, intensity range=[%.4f, %.4f], "
-        "fg_seeds=%d, bg_seeds=%d",
-        frames.shape, beta,
-        frames.min(), frames.max(),
-        int((seed_vol == 1).sum()), int((seed_vol == 2).sum()),
+    print(
+        f"[graphcut] stats: frames={frames.shape}, beta={beta:.4f}, "
+        f"intensity range=[{frames.min():.4f}, {frames.max():.4f}], "
+        f"fg_seeds={int((seed_vol == 1).sum())}, bg_seeds={int((seed_vol == 2).sum())}"
     )
 
     # 4. Build graph, solve, extract masks
     masks = _solve_graphcut(frames, seed_vol, beta)
 
-    logger.info(
-        "Graph cut result: total fg pixels=%d, frames with fg=%d/%d",
-        int(masks.sum()),
-        int((masks.sum(axis=(1, 2)) > 0).sum()),
-        T,
+    print(
+        f"[graphcut] result: total fg pixels={int(masks.sum())}, "
+        f"frames with fg={int((masks.sum(axis=(1, 2)) > 0).sum())}/{T}"
     )
 
     # 5. Write masks to H5
