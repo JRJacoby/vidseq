@@ -54,9 +54,13 @@ def run_threshold_segment(
     # 2. Threshold
     binary = (frames > threshold).astype(np.uint8)
 
-    # 3. 3D connected component labeling (6-connectivity: face-adjacent only)
-    structure = ndimage.generate_binary_structure(3, 1)  # 6-connected
-    labels, num_components = ndimage.label(binary, structure=structure)
+    # 3. Morphological opening to break thin bridges and remove noise
+    open_struct = np.ones((5, 5, 5), dtype=bool)
+    binary = ndimage.binary_opening(binary, structure=open_struct).astype(np.uint8)
+
+    # 4. 3D connected component labeling (6-connectivity: face-adjacent only)
+    label_struct = ndimage.generate_binary_structure(3, 1)  # 6-connected
+    labels, num_components = ndimage.label(binary, structure=label_struct)
 
     # 4. Find which component the click is in
     t = click_frame - start_frame
