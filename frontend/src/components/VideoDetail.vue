@@ -181,14 +181,13 @@ const {
 
 const {
   graphcutRegion,
-  brushSize,
-  seedsVisible,
+  threshold,
+  clickPoint,
   isRunning: isRunningGraphCut,
   isGraphCutMode,
   placeRegion,
-  paintSeed,
-  getSeedsForFrame,
-  runGraphCut,
+  setClickPoint,
+  runThresholdSegment,
   exitGraphCutMode,
 } = useGraphCut(projectId, videoId)
 
@@ -222,7 +221,7 @@ const isGraphCutToolActive = ref(false)
 const toggleGraphCutTool = () => {
   isGraphCutToolActive.value = !isGraphCutToolActive.value
   if (isGraphCutToolActive.value) {
-    activeTool.value = 'graphcut_brush'
+    activeTool.value = 'graphcut_click'
     isMarkingMode.value = false
     isWorkingRangeMode.value = false
   } else {
@@ -232,13 +231,11 @@ const toggleGraphCutTool = () => {
 }
 
 watch(activeTool, (newTool) => {
-  if (newTool !== 'graphcut_brush' && newTool !== 'none') {
+  if (newTool !== 'graphcut_click' && newTool !== 'none') {
     isGraphCutToolActive.value = false
     exitGraphCutMode()
   }
 })
-
-const currentFrameSeeds = computed(() => getSeedsForFrame(currentFrameIdx.value))
 
 const handlePlaceGraphcutRegion = (frameIdx: number) => {
   if (!video.value) return
@@ -246,13 +243,13 @@ const handlePlaceGraphcutRegion = (frameIdx: number) => {
 }
 
 const handleRunGraphCut = async () => {
-  await runGraphCut(clearMaskCache)
+  await runThresholdSegment(clearMaskCache)
   await loadFrameData(currentFrameIdx.value)
   await refreshFrameRanges()
 }
 
-const handleBrushStroke = (point: { x: number; y: number; label: number }) => {
-  paintSeed(currentFrameIdx.value, point.x, point.y, point.label)
+const handleComponentClick = (point: { x: number; y: number }) => {
+  setClickPoint(point.x, point.y, currentFrameIdx.value)
 }
 
 const handleClearGraphcutRegion = () => {
@@ -582,13 +579,10 @@ onUnmounted(() => {
                 :pending-front="pendingFront"
                 :show-pose-keypoints="showPoseKeypoints"
                 :is-labeling-keypoints="isLabelingKeypoints"
-                :brush-size="brushSize"
-                :graphcut-seeds="currentFrameSeeds"
-                :show-seeds="seedsVisible"
                 @point-complete="handlePointCompleteWithRefresh"
                 @box-complete="handleBoxCompleteWithRefresh"
                 @keypoint-click="onKeypointClick"
-                @brush-stroke="handleBrushStroke"
+                @component-click="handleComponentClick"
               />
             </div>
           </div>
@@ -704,7 +698,7 @@ onUnmounted(() => {
           used {{ lastCondUsed }} cond, {{ lastNonCondUsed }} non-cond frames
         </div>
 
-        <h4 class="action-bar-title" style="margin-top: 16px;">Graph Cut</h4>
+        <h4 class="action-bar-title" style="margin-top: 16px;">Threshold Segment</h4>
         <div class="tool-buttons">
           <button
             class="tool-button graphcut"
@@ -712,27 +706,29 @@ onUnmounted(() => {
             @click="toggleGraphCutTool"
           >
             <span class="tool-icon">◈</span>
-            <span class="tool-label">Graph Cut Brush</span>
+            <span class="tool-label">Threshold Tool</span>
           </button>
           <button
             v-if="isGraphCutMode"
             class="tool-button"
-            :disabled="isRunningGraphCut"
+            :disabled="isRunningGraphCut || !clickPoint"
             @click="handleRunGraphCut"
           >
             <span class="tool-icon">▶</span>
-            <span class="tool-label">{{ isRunningGraphCut ? 'Running...' : 'Run Graph Cut' }}</span>
+            <span class="tool-label">{{ isRunningGraphCut ? 'Running...' : 'Run' }}</span>
           </button>
         </div>
         <div v-if="isGraphCutMode" class="memory-options">
           <label class="memory-toggle">
-            <span>Brush Size: {{ brushSize }}px</span>
-            <input type="range" v-model.number="brushSize" min="1" max="50" />
+            <span>Threshold: {{ threshold }}</span>
+            <input type="range" v-model.number="threshold" min="1" max="255" />
           </label>
-          <label class="memory-toggle">
-            <input type="checkbox" v-model="seedsVisible" />
-            Show Seeds
-          </label>
+          <div v-if="clickPoint" style="font-size: 11px; color: #aaa; margin-top: 4px;">
+            Component at ({{ clickPoint.x }}, {{ clickPoint.y }}) frame {{ clickPoint.frame }}
+          </div>
+          <div v-else style="font-size: 11px; color: #aaa; margin-top: 4px;">
+            Click on the animal to select component
+          </div>
         </div>
 
         <h4 class="action-bar-title">Propagation</h4>

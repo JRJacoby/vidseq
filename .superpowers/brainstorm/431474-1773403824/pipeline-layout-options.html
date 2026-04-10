@@ -1,0 +1,170 @@
+<h2>Video Pipeline: How should associated videos fit in?</h2>
+<p class="subtitle">Three approaches — consider how selection, batch actions, and visual clarity work in each</p>
+
+<div class="cards">
+  <!-- Option A: Flat list with badges -->
+  <div class="card" data-choice="flat-list" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 16px; background: #f8f9fa;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+        <span>☑</span>
+        <span>Sort by: Name ↑</span>
+        <span style="margin-left: auto; background: #e8f0fe; padding: 2px 8px; border-radius: 4px; color: #1a73e8;">Filter: All</span>
+      </div>
+      <!-- Main video -->
+      <div style="border: 1px solid #e0e0e0; border-left: 4px solid #28a745; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" checked disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session01_ir.avi</div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session01/</div>
+        </div>
+        <span style="background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 12px; font-size: 10px;">Segmented</span>
+      </div>
+      <!-- Associated video -->
+      <div style="border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session01_depth.avi <span style="background: #e8f0fe; color: #1a73e8; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 500;">ASSOC</span></div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session01/</div>
+        </div>
+      </div>
+      <!-- Another main -->
+      <div style="border: 1px solid #e0e0e0; border-left: 4px solid #28a745; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session02_ir.avi</div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session02/</div>
+        </div>
+        <span style="background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 12px; font-size: 10px;">Segmented</span>
+      </div>
+      <!-- Associated -->
+      <div style="border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px 12px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session02_depth.avi <span style="background: #e8f0fe; color: #1a73e8; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 500;">ASSOC</span></div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session02/</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A: Flat List + Badges</h3>
+      <p>All videos in one list. Associated videos get an "ASSOC" badge. Filter dropdown to show All / Main / Associated. Existing batch buttons work on selection; new "Co-Segment" button activates only when associated videos selected.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Minimal architecture change</li><li>All existing selection/batch logic reuses</li><li>Quick to implement</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Relationship between main↔associated not visually obvious</li><li>List gets 2x longer</li><li>Easy to accidentally select wrong video type for an operation</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option B: Session grouping -->
+  <div class="card" data-choice="sessions" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 16px; background: #f8f9fa;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+        <span>☑</span>
+        <span>Sort by: Name ↑</span>
+      </div>
+      <!-- Session 1 -->
+      <div style="border: 1px solid #d0d0d0; border-radius: 6px; margin-bottom: 8px; overflow: hidden;">
+        <div style="background: #f0f0f0; padding: 6px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d0d0d0;">
+          <input type="checkbox" checked disabled style="margin: 0;">
+          <span style="font-weight: 700; font-size: 12px; color: #444;">Session 01</span>
+          <span style="font-size: 10px; color: #888; margin-left: auto;">2 videos</span>
+        </div>
+        <div style="padding: 6px 12px 6px 28px;">
+          <div style="display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid #f0f0f0;">
+            <span style="font-size: 9px; background: #28a745; color: white; padding: 1px 5px; border-radius: 3px; font-weight: 600;">MAIN</span>
+            <span style="font-size: 12px; font-weight: 500;">session01_ir.avi</span>
+            <span style="margin-left: auto; background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 10px; font-size: 9px;">Segmented</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 4px 0;">
+            <span style="font-size: 9px; background: #1a73e8; color: white; padding: 1px 5px; border-radius: 3px; font-weight: 600;">DEPTH</span>
+            <span style="font-size: 12px; font-weight: 500;">session01_depth.avi</span>
+          </div>
+        </div>
+      </div>
+      <!-- Session 2 -->
+      <div style="border: 1px solid #d0d0d0; border-radius: 6px; overflow: hidden;">
+        <div style="background: #f0f0f0; padding: 6px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d0d0d0;">
+          <input type="checkbox" disabled style="margin: 0;">
+          <span style="font-weight: 700; font-size: 12px; color: #444;">Session 02</span>
+          <span style="font-size: 10px; color: #888; margin-left: auto;">2 videos</span>
+        </div>
+        <div style="padding: 6px 12px 6px 28px;">
+          <div style="display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid #f0f0f0;">
+            <span style="font-size: 9px; background: #28a745; color: white; padding: 1px 5px; border-radius: 3px; font-weight: 600;">MAIN</span>
+            <span style="font-size: 12px; font-weight: 500;">session02_ir.avi</span>
+            <span style="margin-left: auto; background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 10px; font-size: 9px;">Segmented</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 4px 0;">
+            <span style="font-size: 9px; background: #1a73e8; color: white; padding: 1px 5px; border-radius: 3px; font-weight: 600;">DEPTH</span>
+            <span style="font-size: 12px; font-weight: 500;">session02_depth.avi</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B: Session Groups</h3>
+      <p>Videos grouped by session. Session header has checkbox (selects all videos in session). Each video shows its role (MAIN/DEPTH). Double-click a video to open its detail screen. Batch actions apply to selected sessions.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Familiar pattern in scientific software</li><li>Relationship immediately clear</li><li>Session-level selection natural for batch ops</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Significant refactor of video list rendering</li><li>Need to derive/define "session" concept</li><li>Sorting/filtering gets more complex (sort sessions? videos within?)</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option C: Inline expand -->
+  <div class="card" data-choice="inline-expand" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 16px; background: #f8f9fa;">
+      <div style="font-size: 11px; color: #888; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+        <span>☑</span>
+        <span>Sort by: Name ↑</span>
+      </div>
+      <!-- Video with associated - expanded -->
+      <div style="border: 1px solid #e0e0e0; border-left: 4px solid #28a745; border-radius: 4px; margin-bottom: 6px; background: white; overflow: hidden;">
+        <div style="padding: 8px 12px; display: flex; align-items: center; gap: 8px;">
+          <input type="checkbox" checked disabled style="margin: 0;">
+          <div style="flex: 1;">
+            <div style="font-weight: 600; font-size: 12px;">session01_ir.avi</div>
+            <div style="font-size: 10px; color: #666;">/data/recordings/session01/</div>
+          </div>
+          <span style="font-size: 10px; color: #1a73e8; cursor: pointer;">▼ 1 associated</span>
+          <span style="background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 12px; font-size: 10px;">Segmented</span>
+        </div>
+        <!-- Expanded associated video -->
+        <div style="background: #f8f9fc; border-top: 1px solid #e8e8e8; padding: 6px 12px 6px 40px; display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 9px; color: #1a73e8;">↳</span>
+          <div style="flex: 1;">
+            <div style="font-size: 11px; font-weight: 500; color: #555;">session01_depth.avi</div>
+          </div>
+          <button style="font-size: 9px; padding: 2px 8px; border: 1px solid #ccc; border-radius: 3px; background: white; cursor: pointer;">View</button>
+        </div>
+      </div>
+      <!-- Video without associated -->
+      <div style="border: 1px solid #e0e0e0; border-left: 4px solid #28a745; border-radius: 4px; margin-bottom: 6px; padding: 8px 12px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session02_ir.avi</div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session02/</div>
+        </div>
+        <span style="background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 12px; font-size: 10px;">Segmented</span>
+      </div>
+      <!-- Another with associated - collapsed -->
+      <div style="border: 1px solid #e0e0e0; border-left: 4px solid #ffc107; border-radius: 4px; padding: 8px 12px; background: white; display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" disabled style="margin: 0;">
+        <div style="flex: 1;">
+          <div style="font-weight: 600; font-size: 12px;">session03_ir.avi</div>
+          <div style="font-size: 10px; color: #666;">/data/recordings/session03/</div>
+        </div>
+        <span style="font-size: 10px; color: #1a73e8; cursor: pointer;">▶ 1 associated</span>
+        <span style="background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 12px; font-size: 10px;">In Progress</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C: Inline Expand</h3>
+      <p>Main videos stay in the list as-is. Each card with an associated video gets a collapsible "1 associated" link that expands to show the depth video inline. Selection stays on main videos — batch ops like "Co-Segment" derive associated videos from selection.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>Main list unchanged for videos without associations</li><li>Relationship clear when expanded</li><li>Selection model stays simple (select main videos)</li><li>Moderate refactor — mostly card-level changes</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Expand/collapse adds interaction complexity</li><li>Less discoverable than always-visible</li><li>Doesn't scale well to 1:many if you ever need it</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

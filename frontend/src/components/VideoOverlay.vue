@@ -18,16 +18,13 @@ const props = defineProps<{
   pendingFront?: { x: number; y: number } | null
   showPoseKeypoints?: boolean
   isLabelingKeypoints?: boolean
-  brushSize?: number
-  graphcutSeeds?: { x: number; y: number; label: number }[]
-  showSeeds?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'point-complete', point: { x: number; y: number; type: 'positive_point' | 'negative_point' }): void
   (e: 'box-complete', box: { x1: number; y1: number; x2: number; y2: number }): void
   (e: 'keypoint-click', point: { x: number; y: number }): void
-  (e: 'brush-stroke', point: { x: number; y: number; label: number }): void
+  (e: 'component-click', point: { x: number; y: number }): void
 }>()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -63,37 +60,11 @@ function getNativeCoords(event: MouseEvent): { x: number; y: number } | null {
   return { x, y }
 }
 
-const isBrushPainting = ref(false)
-const brushButton = ref(0)
-
-function emitBrushStroke(cx: number, cy: number, label: number) {
-  const canvas = canvasRef.value
-  if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const scaleX = props.videoWidth / rect.width
-  const r = Math.max(1, Math.round((props.brushSize ?? 5) * scaleX))
-  for (let dy = -r; dy <= r; dy++) {
-    for (let dx = -r; dx <= r; dx++) {
-      if (dx * dx + dy * dy <= r * r) {
-        const x = cx + dx
-        const y = cy + dy
-        if (x >= 0 && x < props.videoWidth && y >= 0 && y < props.videoHeight) {
-          emit('brush-stroke', { x, y, label })
-        }
-      }
-    }
-  }
-  render()
-}
-
 function onMouseDown(event: MouseEvent) {
-  if (props.activeTool === 'graphcut_brush') {
+  if (props.activeTool === 'graphcut_click') {
     const coords = getNativeCoords(event)
     if (!coords) return
-    isBrushPainting.value = true
-    brushButton.value = event.button
-    const label = event.button === 2 ? 2 : 1
-    emitBrushStroke(coords.x, coords.y, label)
+    emit('component-click', coords)
     return
   }
 
@@ -118,14 +89,6 @@ function onMouseDown(event: MouseEvent) {
 }
 
 function onMouseMove(event: MouseEvent) {
-  if (isBrushPainting.value) {
-    const coords = getNativeCoords(event)
-    if (!coords) return
-    const label = brushButton.value === 2 ? 2 : 1
-    emitBrushStroke(coords.x, coords.y, label)
-    return
-  }
-
   if (!isDragging.value || !dragStart.value) return
 
   const coords = getNormalizedCoords(event)
@@ -141,11 +104,6 @@ function onMouseMove(event: MouseEvent) {
 }
 
 function onMouseUp(_event: MouseEvent) {
-  if (isBrushPainting.value) {
-    isBrushPainting.value = false
-    return
-  }
-
   if (!isDragging.value || !pendingBox.value) return
 
   isDragging.value = false
@@ -244,16 +202,6 @@ function render() {
     }
   }
 
-  // Draw graph cut seeds
-  if (props.showSeeds !== false && props.graphcutSeeds) {
-    for (const seed of props.graphcutSeeds) {
-      ctx.fillStyle = seed.label === 1
-        ? 'rgba(34, 197, 94, 0.7)'   // green for foreground
-        : 'rgba(239, 68, 68, 0.7)'   // red for background
-      ctx.fillRect(seed.x, seed.y, 1, 1)
-    }
-  }
-
   // Draw prompts (points and boxes)
   if (props.showPrompts === false) return
   for (const prompt of props.prompts) {
@@ -343,7 +291,7 @@ function render() {
   }
 }
 
-watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts, props.poseLabel, props.posePrediction, props.pendingFront, props.showPoseKeypoints, props.graphcutSeeds, props.showSeeds], () => {
+watch(() => [props.mask, props.prompts, props.detectorBbox, props.obbBbox, props.showMask, props.showPrompts, props.poseLabel, props.posePrediction, props.pendingFront, props.showPoseKeypoints], () => {
   pendingPoint.value = null
   pendingBox.value = null
   render()

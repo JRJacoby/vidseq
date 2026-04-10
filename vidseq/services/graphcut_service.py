@@ -1,33 +1,37 @@
-"""Graph cut segmentation service.
+"""Threshold segmentation service.
 
-Builds a 3D spatio-temporal graph over a chunk of video frames and solves
-maxflow to produce binary masks. Runs on CPU — no GPU or TCP worker needed.
+Thresholds video frames and uses 3D connected component labeling to
+produce binary masks. User sets threshold and clicks to select which
+component to keep. Runs on CPU — no GPU or TCP worker needed.
 """
 
 import logging
 from pathlib import Path
 
 import cv2
-import maxflow
 import numpy as np
+from scipy import ndimage
 
 from vidseq.services.array_storage import tracker_masks
 from vidseq.services.video_io import VideoFrameSource
 
 logger = logging.getLogger(__name__)
 
-GRAPHCUT_CHUNK_SIZE = 150
+CHUNK_SIZE = 150
 
 
-def run_graphcut(
+def run_threshold_segment(
     project_path: Path,
     video_id: int,
     video_path: str,
     start_frame: int,
     end_frame: int,
-    seeds: dict[str, list[dict]],
+    threshold: float,
+    click_x: int,
+    click_y: int,
+    click_frame: int,
 ) -> int:
-    """Run spatio-temporal graph cut segmentation on a video chunk.
+    """Threshold video chunk and keep the 3D connected component at the click point.
 
     Args:
         project_path: Path to the project directory.
@@ -35,174 +39,60 @@ def run_graphcut(
         video_path: Path to the video file.
         start_frame: First frame index (inclusive).
         end_frame: Last frame index (inclusive).
-        seeds: Sparse seed dict {frame_idx_str: [{x, y, label}, ...]}.
+        threshold: Intensity threshold in [0, 255] (uint8 scale).
+        click_x: X pixel coordinate of component selection click.
+        click_y: Y pixel coordinate of component selection click.
+        click_frame: Absolute frame index of the click.
 
     Returns:
         Number of frames processed.
     """
-    # 1. Read frames and convert to grayscale
+    # 1. Read frames as grayscale uint8
     frames = _read_frames(video_path, start_frame, end_frame)
     T, H, W = frames.shape
 
-    # 2. Build seed volume
-    seed_vol = _build_seed_volume(seeds, start_frame, T, H, W)
+    # 2. Threshold
+    binary = (frames > threshold).astype(np.uint8)
 
-    # 3. Compute beta from neighbor intensity differences
-    beta = _compute_beta(frames)
+    # 3. 3D connected component labeling (6-connectivity: face-adjacent only)
+    structure = ndimage.generate_binary_structure(3, 1)  # 6-connected
+    labels, num_components = ndimage.label(binary, structure=structure)
+
+    # 4. Find which component the click is in
+    t = click_frame - start_frame
+    if t < 0 or t >= T or click_y < 0 or click_y >= H or click_x < 0 or click_x >= W:
+        raise ValueError(f"Click point ({click_x}, {click_y}, frame {click_frame}) is outside the chunk")
+
+    selected_label = labels[t, click_y, click_x]
+    if selected_label == 0:
+        raise ValueError(
+            f"Click point ({click_x}, {click_y}) is below threshold on frame {click_frame}. "
+            "Click on a bright region or lower the threshold."
+        )
+
+    # 5. Extract mask for selected component
+    masks = (labels == selected_label).astype(np.uint8)
 
     print(
-        f"[graphcut] stats: frames={frames.shape}, beta={beta:.4f}, "
-        f"intensity range=[{frames.min():.4f}, {frames.max():.4f}], "
-        f"fg_seeds={int((seed_vol == 1).sum())}, bg_seeds={int((seed_vol == 2).sum())}"
+        f"[threshold] {T} frames, threshold={threshold}, "
+        f"{num_components} components, selected={selected_label}, "
+        f"fg pixels={int(masks.sum())}, frames with fg={int((masks.sum(axis=(1, 2)) > 0).sum())}/{T}"
     )
 
-    # 4. Build graph, solve, extract masks
-    masks = _solve_graphcut(frames, seed_vol, beta)
-
-    print(
-        f"[graphcut] result: total fg pixels={int(masks.sum())}, "
-        f"frames with fg={int((masks.sum(axis=(1, 2)) > 0).sum())}/{T}"
-    )
-
-    # 5. Write masks to H5
+    # 6. Write masks to H5
     with tracker_masks(project_path, video_id, mode="a") as h5:
-        for t in range(T):
-            h5[start_frame + t] = masks[t]
+        for t_idx in range(T):
+            h5[start_frame + t_idx] = masks[t_idx]
 
-    logger.info("Graph cut: wrote %d masks for video %d (frames %d-%d)", T, video_id, start_frame, end_frame)
     return T
 
 
 def _read_frames(video_path: str, start_frame: int, end_frame: int) -> np.ndarray:
-    """Read frames and convert to single-channel grayscale float32."""
+    """Read frames as single-channel grayscale uint8."""
     with VideoFrameSource(video_path) as src:
         frame_list = []
         for idx in range(start_frame, end_frame + 1):
             bgr = src[idx]
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
             frame_list.append(gray)
-    return np.stack(frame_list)  # (T, H, W), values in [0, 1]
-
-
-def _build_seed_volume(
-    seeds: dict[str, list[dict]],
-    start_frame: int,
-    T: int,
-    H: int,
-    W: int,
-) -> np.ndarray:
-    """Build a 3D seed volume from sparse seed dict.
-
-    Returns array of shape (T, H, W) with 0=no seed, 1=foreground, 2=background.
-    """
-    vol = np.zeros((T, H, W), dtype=np.uint8)
-    for frame_str, points in seeds.items():
-        frame_idx = int(frame_str)
-        t = frame_idx - start_frame
-        if t < 0 or t >= T:
-            continue
-        for p in points:
-            x, y, label = p["x"], p["y"], p["label"]
-            if 0 <= x < W and 0 <= y < H:
-                vol[t, y, x] = label
-    return vol
-
-
-def _compute_beta(frames: np.ndarray) -> float:
-    """Compute beta = 1 / (2 * mean_nonzero(squared differences)).
-
-    The standard Boykov formula uses the mean of ALL squared neighbor
-    differences. This fails on videos with large uniform-black backgrounds:
-    the zero-diff background pairs dominate the mean, making beta enormous.
-
-    Filtering to nonzero diffs excludes the uninformative background-to-
-    background pairs, giving a mean that reflects actual texture and boundary
-    contrast. A small threshold (1e-6) avoids floating-point near-zeros.
-    """
-    diffs_sq = []
-
-    # Spatial horizontal
-    dh = (frames[:, :, :-1] - frames[:, :, 1:]) ** 2
-    diffs_sq.append(dh.ravel())
-
-    # Spatial vertical
-    dv = (frames[:, :-1, :] - frames[:, 1:, :]) ** 2
-    diffs_sq.append(dv.ravel())
-
-    # Temporal
-    if frames.shape[0] > 1:
-        dt = (frames[:-1] - frames[1:]) ** 2
-        diffs_sq.append(dt.ravel())
-
-    all_diffs_sq = np.concatenate(diffs_sq)
-    nonzero_mask = all_diffs_sq > 1e-6
-    if nonzero_mask.sum() == 0:
-        return 0.0
-    mean_sq = all_diffs_sq[nonzero_mask].mean()
-    return float(1.0 / (2.0 * mean_sq))
-
-
-def _solve_graphcut(
-    frames: np.ndarray,
-    seed_vol: np.ndarray,
-    beta: float,
-) -> np.ndarray:
-    """Build 3D graph, solve maxflow, return binary masks.
-
-    Args:
-        frames: (T, H, W) float32 grayscale.
-        seed_vol: (T, H, W) uint8, 0=none, 1=fg, 2=bg.
-        beta: Edge weight parameter.
-
-    Returns:
-        (T, H, W) uint8 binary masks (0 or 1).
-    """
-    T, H, W = frames.shape
-    num_nodes = T * H * W
-
-    g = maxflow.Graph[float](num_nodes, num_nodes * 6)
-    node_ids = g.add_grid_nodes((T, H, W))
-
-    # PyMaxflow's add_grid_edges expects weights with the same shape as the
-    # node grid. The weight at (t,h,w) is used for the edge from node (t,h,w)
-    # to its neighbor; boundary nodes with no neighbor are ignored internally.
-    # We compute difference-based weights and pad to full grid shape.
-
-    # Spatial horizontal edges (axis=2: W dimension)
-    w_horiz_diff = np.exp(-beta * (frames[:, :, :-1] - frames[:, :, 1:]) ** 2)
-    w_horiz = np.pad(w_horiz_diff, ((0, 0), (0, 0), (0, 1)), constant_values=0)
-    struct_horiz = np.zeros((3, 3, 3), dtype=int)
-    struct_horiz[1, 1, 2] = 1  # center to right neighbor
-    g.add_grid_edges(node_ids, weights=w_horiz, structure=struct_horiz, symmetric=True)
-
-    # Spatial vertical edges (axis=1: H dimension)
-    w_vert_diff = np.exp(-beta * (frames[:, :-1, :] - frames[:, 1:, :]) ** 2)
-    w_vert = np.pad(w_vert_diff, ((0, 0), (0, 1), (0, 0)), constant_values=0)
-    struct_vert = np.zeros((3, 3, 3), dtype=int)
-    struct_vert[1, 2, 1] = 1  # center to bottom neighbor
-    g.add_grid_edges(node_ids, weights=w_vert, structure=struct_vert, symmetric=True)
-
-    # Temporal edges (axis=0: T dimension)
-    if T > 1:
-        w_temp_diff = np.exp(-beta * (frames[:-1] - frames[1:]) ** 2)
-        w_temp = np.pad(w_temp_diff, ((0, 1), (0, 0), (0, 0)), constant_values=0)
-        struct_temp = np.zeros((3, 3, 3), dtype=int)
-        struct_temp[2, 1, 1] = 1  # center to next frame
-        g.add_grid_edges(node_ids, weights=w_temp, structure=struct_temp, symmetric=True)
-
-    # Terminal edges (seeds)
-    K = 1.0 + 1.0 * 6.0  # 1 + max_edge_weight * max_degree
-
-    source_cap = np.zeros((T, H, W), dtype=np.float64)
-    sink_cap = np.zeros((T, H, W), dtype=np.float64)
-    source_cap[seed_vol == 1] = K
-    sink_cap[seed_vol == 2] = K
-
-    g.add_grid_tedges(node_ids, source_cap, sink_cap)
-
-    g.maxflow()
-
-    # PyMaxflow convention: get_grid_segments returns True for source side,
-    # which is BACKGROUND in image segmentation. Invert for foreground mask.
-    segments = g.get_grid_segments(node_ids)
-    return (~segments).astype(np.uint8)
+    return np.stack(frame_list)  # (T, H, W), uint8

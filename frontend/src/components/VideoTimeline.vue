@@ -282,7 +282,7 @@ const onWheel = (event: WheelEvent) => {
     
     <div class="timeline-col-right">
       <div class="time-display">
-        {{ formatTime(seekTarget !== null ? seekTarget : currentTime) }}<br>
+        {{ formatTime(seekTarget !== null ? seekTarget : currentTime) }} f{{ Math.round((seekTarget !== null ? seekTarget : currentTime) * fps) }}<br>
         {{ formatTime(duration) }}
       </div>
     </div>

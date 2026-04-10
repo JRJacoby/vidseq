@@ -87,6 +87,7 @@ const {
     currentMask,
     seekToFrame,
     loadFrameData,
+    clearMaskCache,
 } = useSegmentation(
     projectId,
     assocVideoId,
@@ -279,7 +280,9 @@ const handleReset = async () => {
         await resetAssociatedSegmentation(projectId.value, associatedVideo.value.id)
         // Reload associated video metadata to get updated segmentation_status
         await loadAssociatedVideo()
-        // Clear bbox cache
+        // Clear all caches so stale masks disappear
+        clearMaskCache()
+        currentMask.value = null
         bboxCache.clear()
         bboxPrefetchedUpTo = -1
         currentBbox.value = null
@@ -335,6 +338,7 @@ watch([projectId, mainVideoId], loadAssociatedVideo, { immediate: true })
                 ref="videoRef"
                 class="video-player"
                 :src="videoStreamUrl"
+                preload="metadata"
                 @timeupdate="onTimeUpdate"
                 @loadedmetadata="onLoadedMetadata"
                 @play="onPlay"

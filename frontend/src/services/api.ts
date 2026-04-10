@@ -1667,35 +1667,34 @@ export async function getPoseScoresDownsampled(
     return response.json()
 }
 
-// Graph Cut Segmentation
-
-export interface GraphCutSeed {
-    x: number
-    y: number
-    label: number  // 1 = foreground, 2 = background
-}
-
-export async function createGraphcutMasks(
+// Threshold Segmentation
+export async function createThresholdMasks(
     projectId: number,
     videoId: number,
     startFrame: number,
     endFrame: number,
-    seeds: Record<string, GraphCutSeed[]>,
+    threshold: number,
+    clickX: number,
+    clickY: number,
+    clickFrame: number,
 ): Promise<{ frames_processed: number }> {
     const response = await fetch(
-        `${API_BASE}/projects/${projectId}/videos/${videoId}/graphcut-masks`,
+        `${API_BASE}/projects/${projectId}/videos/${videoId}/threshold-masks`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 start_frame: startFrame,
                 end_frame: endFrame,
-                seeds,
+                threshold,
+                click_x: clickX,
+                click_y: clickY,
+                click_frame: clickFrame,
             }),
         }
     )
     if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Failed to run graph cut'))
+        throw new Error(await getErrorMessage(response, 'Failed to run threshold segmentation'))
     }
     return response.json()
 }
