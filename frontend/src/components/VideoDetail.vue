@@ -140,6 +140,8 @@ const {
   isSegmenting,
   useCondMemory,
   useNonCondMemory,
+  lastCondUsed,
+  lastNonCondUsed,
   loadFrameData,
   seekToFrame,
   togglePositivePointTool,
@@ -616,6 +618,9 @@ onUnmounted(() => {
             <input type="checkbox" v-model="useNonCondMemory" />
             Non-Cond Memory
           </label>
+        </div>
+        <div class="memory-counts" v-if="lastCondUsed > 0 || lastNonCondUsed > 0">
+          used {{ lastCondUsed }} cond, {{ lastNonCondUsed }} non-cond frames
         </div>
 
         <h4 class="action-bar-title">Propagation</h4>
@@ -1173,6 +1178,11 @@ onUnmounted(() => {
     display: flex;
     gap: 12px;
     align-items: center;
+}
+
+.memory-counts {
+    font-size: 11px;
+    color: #888;
 }
 
 .memory-toggle {

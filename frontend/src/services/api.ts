@@ -239,7 +239,7 @@ export async function submitPrompt(
     points: PointPrompt[],
     useCondMemory: boolean = true,
     useNonCondMemory: boolean = true,
-): Promise<Blob> {
+): Promise<{ blob: Blob; nCondUsed: number; nNonCondUsed: number }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/prompt/${frameIdx}`,
         {
@@ -255,7 +255,10 @@ export async function submitPrompt(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to submit prompt'))
     }
-    return response.blob()
+    const nCondUsed = parseInt(response.headers.get('X-Cond-Frames-Used') || '0', 10)
+    const nNonCondUsed = parseInt(response.headers.get('X-Non-Cond-Frames-Used') || '0', 10)
+    const blob = await response.blob()
+    return { blob, nCondUsed, nNonCondUsed }
 }
 
 export async function submitBoxPrompt(
@@ -265,7 +268,7 @@ export async function submitBoxPrompt(
     box: { x1: number; y1: number; x2: number; y2: number },
     useCondMemory: boolean = true,
     useNonCondMemory: boolean = true,
-): Promise<Blob> {
+): Promise<{ blob: Blob; nCondUsed: number; nNonCondUsed: number }> {
     const response = await fetch(
         `${API_BASE}/projects/${projectId}/videos/${videoId}/box-prompt/${frameIdx}`,
         {
@@ -281,7 +284,10 @@ export async function submitBoxPrompt(
     if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Failed to submit box prompt'))
     }
-    return response.blob()
+    const nCondUsed = parseInt(response.headers.get('X-Cond-Frames-Used') || '0', 10)
+    const nNonCondUsed = parseInt(response.headers.get('X-Non-Cond-Frames-Used') || '0', 10)
+    const blob = await response.blob()
+    return { blob, nCondUsed, nNonCondUsed }
 }
 
 export async function getTrackerMask(

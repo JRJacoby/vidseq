@@ -33,6 +33,8 @@ export interface UseSegmentationReturn {
     isSegmenting: Ref<boolean>
     useCondMemory: Ref<boolean>
     useNonCondMemory: Ref<boolean>
+    lastCondUsed: Ref<number>
+    lastNonCondUsed: Ref<number>
     loadFrameData: (frameIdx: number) => Promise<void>
     seekToFrame: (frameIdx: number) => void
     togglePositivePointTool: () => void
@@ -69,6 +71,8 @@ export function useSegmentation(
     const isSegmenting = ref(false)
     const useCondMemory = ref(true)
     const useNonCondMemory = ref(true)
+    const lastCondUsed = ref(0)
+    const lastNonCondUsed = ref(0)
     const intendedFrameIdx = ref(0)
 
     // Local prompts tracking (not persisted to server)
@@ -273,7 +277,7 @@ export function useSegmentation(
 
         try {
             // Always send all accumulated prompts - backend determines workflow
-            const maskBlob = await submitPrompt(
+            const { blob: maskBlob, nCondUsed, nNonCondUsed } = await submitPrompt(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
@@ -281,6 +285,8 @@ export function useSegmentation(
                 useCondMemory.value,
                 useNonCondMemory.value,
             )
+            lastCondUsed.value = nCondUsed
+            lastNonCondUsed.value = nNonCondUsed
 
             const bitmap = await createImageBitmap(maskBlob)
             currentMask.value = bitmap
@@ -310,7 +316,7 @@ export function useSegmentation(
         localPrompts.value.set(currentFrameIdx.value, framePrompts)
 
         try {
-            const maskBlob = await submitBoxPrompt(
+            const { blob: maskBlob, nCondUsed, nNonCondUsed } = await submitBoxPrompt(
                 projectId.value,
                 videoId.value,
                 currentFrameIdx.value,
@@ -318,6 +324,8 @@ export function useSegmentation(
                 useCondMemory.value,
                 useNonCondMemory.value,
             )
+            lastCondUsed.value = nCondUsed
+            lastNonCondUsed.value = nNonCondUsed
 
             const bitmap = await createImageBitmap(maskBlob)
             currentMask.value = bitmap
@@ -459,6 +467,8 @@ export function useSegmentation(
         isSegmenting,
         useCondMemory,
         useNonCondMemory,
+        lastCondUsed,
+        lastNonCondUsed,
         loadFrameData,
         seekToFrame,
         togglePositivePointTool,
