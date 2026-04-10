@@ -237,6 +237,8 @@ def handle_add_prompt(
     label = params["label"]  # 1=positive, 0=negative
     use_cond_memory = params.get("use_cond_memory", True)
     use_non_cond_memory = params.get("use_non_cond_memory", True)
+    working_range_start = params.get("working_range_start")
+    working_range_end = params.get("working_range_end")
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -266,6 +268,8 @@ def handle_add_prompt(
             masks=mask_data,
             use_cond_memory=use_cond_memory,
             use_non_cond_memory=use_non_cond_memory,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
         # Write results to HDF5
@@ -310,6 +314,8 @@ def handle_add_box_prompt(
     y2 = params["y2"]
     use_cond_memory = params.get("use_cond_memory", True)
     use_non_cond_memory = params.get("use_non_cond_memory", True)
+    working_range_start = params.get("working_range_start")
+    working_range_end = params.get("working_range_end")
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -338,6 +344,8 @@ def handle_add_box_prompt(
             masks=mask_data,
             use_cond_memory=use_cond_memory,
             use_non_cond_memory=use_non_cond_memory,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
         # Write both mask and logits — logits are required for point refinement
@@ -404,6 +412,8 @@ def handle_refine_mask(
 
     use_cond_memory = params.get("use_cond_memory", True)
     use_non_cond_memory = params.get("use_non_cond_memory", True)
+    working_range_start = params.get("working_range_start")
+    working_range_end = params.get("working_range_end")
 
     with tracker_masks(resources.project_path, video_id, "a") as mask_data, \
          tracker_logits(resources.project_path, video_id, "a") as logits_data:
@@ -425,6 +435,8 @@ def handle_refine_mask(
             prev_logits=prev_logits,
             use_cond_memory=use_cond_memory,
             use_non_cond_memory=use_non_cond_memory,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
         # Write results to HDF5
@@ -513,6 +525,8 @@ def handle_generate_training_masks(
     video_id = params["video_id"]
     start_frame_idx = params["start_frame_idx"]
     max_frames = params["max_frames"]
+    working_range_start = params.get("working_range_start")
+    working_range_end = params.get("working_range_end")
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -549,6 +563,8 @@ def handle_generate_training_masks(
             masks=mask_data,
             on_result=on_result,
             progress_interval=50,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
     return {
@@ -578,6 +594,8 @@ def handle_propagate_without_memory(
     video_id = params["video_id"]
     start_frame_idx = params["start_frame_idx"]
     max_frames = params["max_frames"]
+    working_range_start = params.get("working_range_start")
+    working_range_end = params.get("working_range_end")
 
     if segmentor is None:
         raise RuntimeError("Model not loaded")
@@ -618,6 +636,8 @@ def handle_propagate_without_memory(
             masks=mask_data,
             on_result=on_result,
             progress_interval=50,
+            working_range_start=working_range_start,
+            working_range_end=working_range_end,
         )
 
     return {
