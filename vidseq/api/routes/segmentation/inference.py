@@ -53,6 +53,8 @@ async def submit_prompt(
             frame_idx=frame_idx,
             points=points,
             labels=labels,
+            use_cond_memory=request.use_cond_memory,
+            use_non_cond_memory=request.use_non_cond_memory,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -83,6 +85,8 @@ async def submit_box_prompt(
             y1=request.y1,
             x2=request.x2,
             y2=request.y2,
+            use_cond_memory=request.use_cond_memory,
+            use_non_cond_memory=request.use_non_cond_memory,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))

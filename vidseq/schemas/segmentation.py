@@ -27,6 +27,8 @@ class PromptRequest(BaseModel):
     - 2+ points, no existing mask: ERROR (can't refine without mask)
     """
     points: list[PointPrompt]
+    use_cond_memory: bool = True
+    use_non_cond_memory: bool = True
 
     @field_validator("points")
     @classmethod
@@ -45,6 +47,8 @@ class BoxPromptRequest(BaseModel):
     y1: float = Field(ge=0, le=1)
     x2: float = Field(ge=0, le=1)
     y2: float = Field(ge=0, le=1)
+    use_cond_memory: bool = True
+    use_non_cond_memory: bool = True
 
 
 class PropagateRequest(BaseModel):
