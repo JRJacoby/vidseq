@@ -712,6 +712,146 @@ def process_single_video(
     return True
 
 
+def process_single_video_bbox(
+    project_path: Path,
+    video,
+    crop_size: int,
+    smoothed_centroids: np.ndarray,  # (num_frames, 2), already smoothed
+) -> bool:
+    """Process a single video to create a cropped output using bbox centroids.
+
+    Stripped-down clone of process_single_video / _process_frames_with_masks for
+    bbox-centroid mode.  Key differences from mask mode:
+
+    - Crop center comes from smoothed_centroids[frame_idx] (rounded to int),
+      not from a mask centroid.
+    - Does NOT open or write cropped_masks.h5.  Bbox mode produces the cropped
+      video only — no mask sidecar.
+    - Returns True on success, False on any failure.
+
+    Args:
+        project_path: Path to the project folder
+        video: Video model instance (uses video.path, video.name, video.width,
+            video.height)
+        crop_size: Square crop dimension in pixels
+        smoothed_centroids: Float array of shape (num_frames, 2) with columns
+            [cx, cy] in pixel coordinates, already smoothed.  Must be dense
+            (no NaNs).
+
+    Returns:
+        True if successful, False otherwise
+    """
+    video_path = Path(video.path)
+    output_path = _get_cropped_video_path(project_path, video.name)
+    temp_path = output_path.with_suffix(".temp.mp4")
+
+    # Ensure output directory exists
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Open input video
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        print(f"[Cropped Video] Failed to open video: {video_path}")
+        return False
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    # Create output video writer (to temp file with mp4v codec)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(
+        str(temp_path),
+        fourcc,
+        fps,
+        (crop_size, crop_size),
+    )
+
+    if not writer.isOpened():
+        print(f"[Cropped Video] Failed to create output video: {temp_path}")
+        cap.release()
+        return False
+
+    # Process all frames using bbox centroids
+    try:
+        frame_idx = 0
+        num_centroids = len(smoothed_centroids)
+
+        while True:
+            # Bounds-check: defend in depth against caller providing a
+            # centroids array shorter than the actual video.
+            if frame_idx >= num_centroids:
+                break
+
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Crop center from smoothed centroid (rounded to integer pixel coords)
+            cx = int(round(smoothed_centroids[frame_idx, 0]))
+            cy = int(round(smoothed_centroids[frame_idx, 1]))
+
+            # Compute crop bounds (same convention as _process_frames_with_masks)
+            x1 = cx - crop_size // 2
+            y1 = cy - crop_size // 2
+            x2 = x1 + crop_size
+            y2 = y1 + crop_size
+
+            # Create output frame (black background for out-of-bounds padding)
+            cropped_frame = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+
+            # Compute valid source and destination regions (clipped to frame bounds)
+            src_x1 = max(0, x1)
+            src_y1 = max(0, y1)
+            src_x2 = min(video.width, x2)
+            src_y2 = min(video.height, y2)
+
+            dst_x1 = src_x1 - x1
+            dst_y1 = src_y1 - y1
+            dst_x2 = dst_x1 + (src_x2 - src_x1)
+            dst_y2 = dst_y1 + (src_y2 - src_y1)
+
+            # Copy valid region from source frame (fully out-of-bounds → black frame)
+            if src_x2 > src_x1 and src_y2 > src_y1:
+                cropped_frame[dst_y1:dst_y2, dst_x1:dst_x2] = frame[src_y1:src_y2, src_x1:src_x2]
+
+            # Write frame regardless (out-of-bounds centroid → black frame, never missing)
+            writer.write(cropped_frame)
+
+            frame_idx += 1
+
+        print(f"[Cropped Video] Processed {frame_idx} frames for video {video.id} (bbox mode)")
+
+    except Exception as e:
+        print(f"[Cropped Video] Error processing video {video.id} (bbox mode): {e}")
+        import traceback
+        traceback.print_exc()
+        cap.release()
+        writer.release()
+        temp_path.unlink(missing_ok=True)
+        return False
+
+    cap.release()
+    writer.release()
+
+    # Re-encode to H.264 for browser compatibility.
+    # Write to a _tmp file first, then atomically rename so that
+    # existence checks only see fully-written files.
+    print(f"[Cropped Video] Re-encoding to H.264 (bbox mode): {output_path.name}")
+    tmp_output_path = output_path.with_name(output_path.stem + "_tmp.mp4")
+    if not _reencode_to_h264(temp_path, tmp_output_path):
+        print(f"[Cropped Video] Failed to re-encode video {video.id} (bbox mode)")
+        temp_path.unlink(missing_ok=True)
+        tmp_output_path.unlink(missing_ok=True)
+        return False
+
+    # Atomic rename to final path
+    tmp_output_path.rename(output_path)
+
+    # Clean up mp4v temp file
+    temp_path.unlink(missing_ok=True)
+    print(f"[Cropped Video] Completed video {video.id} (bbox mode): {output_path}")
+    return True
+
+
 async def create_videos_extraction(
     session: AsyncSession,
     project_path: Path,
