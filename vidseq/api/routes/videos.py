@@ -172,11 +172,11 @@ async def delete_segmentation_range(
     session: AsyncSession = Depends(get_project_session),
 ):
     """
-    Delete all segmentation data for a range of frames (inclusive).
+    Delete tracker-derived segmentation data for a range of frames (inclusive).
 
-    Clears tracker masks, logits, detector masks, final masks,
-    conditioning frames, frame_data, and SAM memory for frames
-    [start_frame, end_frame].
+    Clears tracker masks, logits, final masks, conditioning frames, frame_data,
+    and SAM memory for frames [start_frame, end_frame]. Leaves detector_masks.h5
+    untouched — the detector's output is independent of the tracker range.
     """
     await video_service.delete_frame_data_range(
         project_id=project_id,

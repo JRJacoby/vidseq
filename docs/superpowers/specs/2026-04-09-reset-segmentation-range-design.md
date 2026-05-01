@@ -5,7 +5,7 @@
 
 ## Overview
 
-Add the ability to click on a contiguous block of tracker-masked frames in the DataTrack and delete all segmentation data (masks, logits, conditioning frames, frame_data, SAM memory) for that range. Uses the same click-to-select + Delete key interaction as training range management.
+Add the ability to click on a contiguous block of tracker-masked frames in the DataTrack and delete tracker-derived segmentation data (tracker masks, logits, final masks, conditioning frames, frame_data, SAM memory) for that range. `detector_masks.h5` is deliberately left untouched — the detector's output is independent of which tracker range the user is clearing. Uses the same click-to-select + Delete key interaction as training range management.
 
 ## Backend
 
@@ -13,9 +13,7 @@ Add the ability to click on a contiguous block of tracker-masked frames in the D
 
 `DELETE /projects/{project_id}/videos/{video_id}/segmentation/range?start_frame={start}&end_frame={end}`
 
-Calls the existing `video_service.delete_frame_data()` for each frame in `[start_frame, end_frame]` inclusive. This reuses the same per-frame cleanup logic (H5 zeroing, DB deletes, SAM memory reset) that the single-frame reset already uses.
-
-Add a new service function `delete_frame_data_range()` in `video_service.py` that batches the DB deletes (single DELETE WHERE frame_idx BETWEEN) and loops the H5 zeroing + SAM memory reset per frame.
+Calls a new service function `delete_frame_data_range()` in `video_service.py` that batches the DB deletes (single DELETE WHERE frame_idx BETWEEN) and loops the H5 zeroing + SAM memory reset per frame for `tracker_masks.h5`, `tracker_logits.h5`, and `final_masks.h5`. Note: this range operation intentionally **does not** zero `detector_masks.h5`, unlike the single-frame `delete_frame_data()` path which clears detector masks as well. Deleting a tracker range should not wipe independent detector output.
 
 ### Route location
 

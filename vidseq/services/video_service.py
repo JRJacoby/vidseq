@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vidseq.models.conditioning_frame import ConditioningFrame
 from vidseq.models.frame_data import FrameData
+from vidseq.models.pose_label import PoseLabel
 from vidseq.models.video import Video
 from vidseq.services.array_storage import (
     create_video_segmentation_arrays,
@@ -376,12 +377,15 @@ async def delete_frame_data_range(
     end_frame: int,
     session: AsyncSession,
 ) -> None:
-    """Delete all annotation data for a range of frames (inclusive).
+    """Delete tracker-derived annotation data for a range of frames (inclusive).
 
     Clears:
-    - H5 files: tracker mask/logits, detector mask, final mask (per frame)
+    - H5 files: tracker mask/logits, final mask (per frame)
     - Database: conditioning_frame, frame_data (batch delete)
     - SAM memory: per frame if session active
+
+    Does NOT touch detector_masks.h5 — the detector's output is independent
+    of the tracker-masked range the user is clearing.
     """
     # 1. Clear H5 files (per frame)
     with tracker_masks(project_path, video_id, "a") as masks:
@@ -390,9 +394,6 @@ async def delete_frame_data_range(
     with tracker_logits(project_path, video_id, "a") as logits:
         for idx in range(start_frame, end_frame + 1):
             logits[idx] = 0
-    with detector_masks(project_path, video_id, "a") as masks:
-        for idx in range(start_frame, end_frame + 1):
-            masks[idx] = 0
     with final_masks(project_path, video_id, "a") as masks:
         for idx in range(start_frame, end_frame + 1):
             masks[idx] = 0
@@ -427,7 +428,7 @@ async def reset_video(
 
     Clears:
     - H5 files: tracker masks/logits, detector masks, final masks
-    - Database: conditioning_frames, frame_data tables
+    - Database: conditioning_frames, frame_data, pose_labels tables
     - SAM memory: closes and re-opens session if it was open
 
     Does NOT touch cropped/aligned mask files.
@@ -462,6 +463,9 @@ async def reset_video(
     )
     await session.execute(
         delete(FrameData).where(FrameData.video_id == video_id)
+    )
+    await session.execute(
+        delete(PoseLabel).where(PoseLabel.video_id == video_id)
     )
     await session.commit()
 
