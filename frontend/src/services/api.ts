@@ -746,6 +746,21 @@ export async function createVideosExtraction(projectId: number, videoIds: number
     return response.json()
 }
 
+export async function createVideosExtractionBbox(projectId: number, videoIds: number[]): Promise<{ status: string; video_count: number; message?: string }> {
+    const response = await fetch(
+        `${API_BASE}/projects/${projectId}/videos/bbox-extraction`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_ids: videoIds }),
+        }
+    )
+    if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Failed to start bbox video extraction'))
+    }
+    return response.json()
+}
+
 export interface CroppedVideoExistsResponse {
     exists: boolean
     path?: string
