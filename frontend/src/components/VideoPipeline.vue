@@ -951,6 +951,7 @@ const formatScore = (score: number | undefined) => {
   padding: 1rem;
   border-left: 1px solid #e0e0e0;
   background-color: #fcfcfc;
+  overflow-y: auto;
 }
 
 .sidebar-button {
