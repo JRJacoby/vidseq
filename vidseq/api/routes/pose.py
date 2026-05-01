@@ -86,6 +86,20 @@ async def upsert_pose_label(
     session: AsyncSession = Depends(get_project_session),
 ) -> PoseLabelResponse:
     """Upsert a pose label for a specific frame (delete existing then insert)."""
+    # Require a tracker mask on this frame so training can derive a tight bbox.
+    mask_check = await session.execute(
+        select(FrameData.has_tracker_mask).where(
+            FrameData.video_id == video_id,
+            FrameData.frame_idx == frame_idx,
+        )
+    )
+    row = mask_check.first()
+    if row is None or not row[0]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot label pose: frame has no tracker mask.",
+        )
+
     # Delete existing label if present
     await session.execute(
         delete(PoseLabel).where(

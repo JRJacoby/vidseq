@@ -20,7 +20,11 @@ from vidseq.models.frame_data import FrameData
 from vidseq.models.pose_label import PoseLabel
 from vidseq.models.video import Video
 from vidseq.schemas.pose import PoseTrainingProgress
-from vidseq.services.array_storage import alignment_keypoints, create_alignment_keypoints_array
+from vidseq.services.array_storage import (
+    alignment_keypoints,
+    create_alignment_keypoints_array,
+    tracker_masks,
+)
 from vidseq.services.database_manager import DatabaseManager
 
 logger = logging.getLogger("vidseq.pose")
@@ -176,9 +180,9 @@ class PoseService:
                 (tmp_path / "labels" / split).mkdir(parents=True, exist_ok=True)
 
             # Write frames and labels
-            self._write_yolo_pose_dataset(train_frames, "train", tmp_path)
+            self._write_yolo_pose_dataset(train_frames, "train", tmp_path, project_path)
             if val_frames:
-                self._write_yolo_pose_dataset(val_frames, "val", tmp_path)
+                self._write_yolo_pose_dataset(val_frames, "val", tmp_path, project_path)
 
             # Write dataset.yaml with kpt_shape for pose
             yaml_path = tmp_path / "dataset.yaml"
@@ -221,7 +225,7 @@ class PoseService:
             model_save_dir = project_path / "models"
             model_save_dir.mkdir(exist_ok=True)
 
-            model = YOLO("yolo11n-pose.pt")
+            model = YOLO("yolo11x-pose.pt")
             model.add_callback("on_fit_epoch_end", on_epoch_end)
             model.add_callback("on_train_epoch_start", check_stop)
 
@@ -309,65 +313,70 @@ class PoseService:
         frames: list[tuple[Path, int, int, float, float, float, float]],
         split: str,
         tmp_path: Path,
+        project_path: Path,
     ) -> None:
         """Write frames and YOLO pose labels to the dataset directory.
 
         YOLO pose label format per line:
             0 cx cy w h fx fy 2 rx ry 2
-        where (cx, cy, w, h) is the normalized bounding box derived from keypoints,
-        (fx, fy) is the front keypoint (normalized), (rx, ry) is the rear keypoint,
-        and 2 = visible confidence for each keypoint.
+        where (cx, cy, w, h) is the normalized bounding box derived from the
+        frame's tracker mask, (fx, fy) is the front keypoint (normalized),
+        (rx, ry) is the rear keypoint, and 2 = visible confidence per keypoint.
 
         Args:
             frames: List of (video_path, video_id, frame_idx, front_x, front_y, rear_x, rear_y).
             split: "train" or "val".
             tmp_path: Root of the temporary dataset directory.
+            project_path: Project folder (used to locate tracker_masks.h5).
         """
         images_dir = tmp_path / "images" / split
         labels_dir = tmp_path / "labels" / split
 
-        for i, (video_path, video_id, frame_idx, front_x, front_y, rear_x, rear_y) in enumerate(frames):
-            cap = cv2.VideoCapture(str(video_path))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            cap.release()
-
-            if not ret:
-                logger.warning(
-                    f"Failed to read frame {frame_idx} from {video_path}, skipping"
-                )
-                continue
-
-            # Derive bounding box from keypoints with 20% of frame dimensions padding
-            pad_x = 0.20
-            pad_y = 0.20
-
-            kp_x_min = min(front_x, rear_x)
-            kp_x_max = max(front_x, rear_x)
-            kp_y_min = min(front_y, rear_y)
-            kp_y_max = max(front_y, rear_y)
-
-            x1 = max(0.0, kp_x_min - pad_x)
-            y1 = max(0.0, kp_y_min - pad_y)
-            x2 = min(1.0, kp_x_max + pad_x)
-            y2 = min(1.0, kp_y_max + pad_y)
-
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
-            w = x2 - x1
-            h = y2 - y1
-
-            # YOLO pose label: class cx cy w h kp1_x kp1_y kp1_vis kp2_x kp2_y kp2_vis
-            yolo_line = (
-                f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f} "
-                f"{front_x:.6f} {front_y:.6f} 2 "
-                f"{rear_x:.6f} {rear_y:.6f} 2"
+        # Group frames by video_id so we open each tracker_masks.h5 once.
+        frames_by_video: dict[int, list[tuple[int, Path, int, float, float, float, float]]] = {}
+        for i, (video_path, video_id, frame_idx, fx, fy, rx, ry) in enumerate(frames):
+            frames_by_video.setdefault(video_id, []).append(
+                (i, video_path, frame_idx, fx, fy, rx, ry)
             )
 
-            name = f"v{video_id}_f{frame_idx}_{i:06d}"
-            cv2.imwrite(str(images_dir / f"{name}.jpg"), frame)
-            with open(labels_dir / f"{name}.txt", "w") as f:
-                f.write(yolo_line + "\n")
+        for video_id, entries in frames_by_video.items():
+            with tracker_masks(project_path, video_id) as masks:
+                for i, video_path, frame_idx, front_x, front_y, rear_x, rear_y in entries:
+                    mask = np.asarray(masks[frame_idx])
+                    img_h, img_w = mask.shape[:2]
+                    rows = np.any(mask > 127, axis=1)
+                    cols = np.any(mask > 127, axis=0)
+                    if not rows.any() or not cols.any():
+                        raise RuntimeError(
+                            f"Tracker mask for video {video_id} frame {frame_idx} is empty"
+                        )
+                    y1p, y2p = np.where(rows)[0][[0, -1]]
+                    x1p, x2p = np.where(cols)[0][[0, -1]]
+                    cx = (x1p + x2p + 1) / 2 / img_w
+                    cy = (y1p + y2p + 1) / 2 / img_h
+                    w = (x2p - x1p + 1) / img_w
+                    h = (y2p - y1p + 1) / img_h
+
+                    cap = cv2.VideoCapture(str(video_path))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    cap.release()
+                    if not ret:
+                        raise RuntimeError(
+                            f"Failed to read frame {frame_idx} from {video_path}"
+                        )
+
+                    # YOLO pose label: class cx cy w h kp1_x kp1_y kp1_vis kp2_x kp2_y kp2_vis
+                    yolo_line = (
+                        f"0 {cx:.6f} {cy:.6f} {w:.6f} {h:.6f} "
+                        f"{front_x:.6f} {front_y:.6f} 2 "
+                        f"{rear_x:.6f} {rear_y:.6f} 2"
+                    )
+
+                    name = f"v{video_id}_f{frame_idx}_{i:06d}"
+                    cv2.imwrite(str(images_dir / f"{name}.jpg"), frame)
+                    with open(labels_dir / f"{name}.txt", "w") as f:
+                        f.write(yolo_line + "\n")
 
     # -------------------------------------------------------------------------
     # Applying

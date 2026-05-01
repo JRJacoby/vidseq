@@ -236,6 +236,12 @@ const resetZoom = () => {
   panY.value = 0
 }
 
+const isCurrentFrameMasked = computed(() => {
+  const frame = currentFrameIdx.value
+  return trackerMaskedRanges.value.some(([start, end]) => frame >= start && frame <= end)
+})
+const canLabelKeypoints = computed(() => isLabelingKeypoints.value && isCurrentFrameMasked.value)
+
 const toggleLabelingMode = () => {
   isLabelingKeypoints.value = !isLabelingKeypoints.value
   if (isLabelingKeypoints.value) {
@@ -249,11 +255,13 @@ const advanceFrame = () => {
   if (!video.value) return
   const nextFrame = currentFrameIdx.value + 1
   if (nextFrame < video.value.num_frames) {
+    seek((nextFrame + 0.5) / video.value.fps)
     seekToFrame(nextFrame)
   }
 }
 
 const onKeypointClick = async (point: { x: number; y: number }) => {
+  if (!isCurrentFrameMasked.value) return
   await handleKeypointClick(point.x, point.y, currentFrameIdx.value, advanceFrame)
 }
 
@@ -632,7 +640,7 @@ onUnmounted(() => {
               :pose-prediction="posePrediction"
               :pending-front="pendingFront"
               :show-pose-keypoints="showPoseKeypoints"
-              :is-labeling-keypoints="isLabelingKeypoints"
+              :is-labeling-keypoints="canLabelKeypoints"
               @point-complete="handlePointCompleteWithRefresh"
               @box-complete="handleBoxCompleteWithRefresh"
               @keypoint-click="onKeypointClick"
@@ -857,7 +865,10 @@ onUnmounted(() => {
             <span class="tool-label">{{ isLabelingKeypoints ? 'Exit Labeling' : 'Label Keypoints' }}</span>
           </button>
         </div>
-        <p v-if="isLabelingKeypoints" class="marking-hint">
+        <p v-if="isLabelingKeypoints && !isCurrentFrameMasked" class="marking-hint">
+          This frame has no tracker mask — labeling disabled.
+        </p>
+        <p v-else-if="isLabelingKeypoints" class="marking-hint">
           {{ labelingState === 'awaiting_front' ? 'Click front (nose)' : 'Click rear (tail)' }}
         </p>
         <p v-if="poseLabelCount > 0" class="marking-hint">
