@@ -34,6 +34,25 @@ async def create_videos_extraction(
     return result
 
 
+@router.post("/projects/{project_id}/videos/bbox-extraction")
+async def create_videos_bbox_extraction(
+    project_id: int,
+    request: VideoSelectionRequest,
+    session: AsyncSession = Depends(get_project_session),
+    project_path: Path = Depends(get_project_folder),
+):
+    """Start bbox-centroid cropped video extraction for selected videos."""
+    try:
+        result = await cropped_video_service.create_videos_extraction_bbox(
+            session=session,
+            project_path=project_path,
+            video_ids=request.video_ids,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
 @router.get("/projects/{project_id}/videos/{video_id}/cropped-video/exists")
 async def get_cropped_video_exists(
     video: Video = Depends(get_video),
