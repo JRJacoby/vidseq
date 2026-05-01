@@ -469,6 +469,76 @@ def compute_global_crop_size(
     return crop_size
 
 
+async def compute_global_crop_size_bbox(
+    session: AsyncSession,
+    videos: list,
+) -> int:
+    """Compute the global square crop size for bbox-centroid mode.
+
+    Pools all non-NULL detector bboxes across the selected videos via a single
+    SQL query.  Returns ``ceil(max(p99(widths), p99(heights)) * 1.15)`` as a
+    square crop dimension.
+
+    The 1.15 factor adds a +15 % safety margin so that the bounding box of a
+    slightly-larger-than-median animal is not clipped at the crop edge.
+
+    Args:
+        session: Async SQLAlchemy session bound to the project database.
+        videos: List of Video model instances (video IDs are extracted from
+            ``v.id`` for each ``v``).
+
+    Returns:
+        Square crop size in pixels (integer).
+
+    Raises:
+        ValueError: If no non-NULL detector bboxes exist across all selected
+            videos.  The caller should gate on detector readiness before
+            calling this function, but this guard defends in depth.
+    """
+    from vidseq.models.frame_data import FrameData
+
+    video_ids = [v.id for v in videos]
+
+    result = await session.execute(
+        select(
+            FrameData.detector_bbox_x1,
+            FrameData.detector_bbox_y1,
+            FrameData.detector_bbox_x2,
+            FrameData.detector_bbox_y2,
+        )
+        .where(
+            FrameData.video_id.in_(video_ids),
+            FrameData.detector_bbox_x1.isnot(None),
+            FrameData.detector_bbox_y1.isnot(None),
+            FrameData.detector_bbox_x2.isnot(None),
+            FrameData.detector_bbox_y2.isnot(None),
+        )
+    )
+    rows = result.all()
+
+    if not rows:
+        raise ValueError(
+            "no detector bboxes across selected videos; run the detector first"
+        )
+
+    arr = np.array(rows, dtype=np.float32)  # shape (N, 4): x1, y1, x2, y2
+    widths = arr[:, 2] - arr[:, 0]
+    heights = arr[:, 3] - arr[:, 1]
+
+    p99_w = float(np.percentile(widths, 99))
+    p99_h = float(np.percentile(heights, 99))
+    square = max(p99_w, p99_h)
+    # +15 % safety margin so typical animals are not clipped at the crop edge
+    crop_size = int(math.ceil(square * 1.15))
+
+    print(
+        f"[Cropped Video] bbox crop size: {len(rows)} bboxes across "
+        f"{len(video_ids)} video(s), p99_w={p99_w:.1f}, p99_h={p99_h:.1f} "
+        f"→ crop_size={crop_size}"
+    )
+    return crop_size
+
+
 def _process_frames_with_masks(
     cap: cv2.VideoCapture,
     writer: cv2.VideoWriter,
