@@ -310,6 +310,9 @@ async def load_bboxes_for_video(
         .where(
             FrameData.video_id == video_id,
             FrameData.detector_bbox_x1.isnot(None),
+            FrameData.detector_bbox_y1.isnot(None),
+            FrameData.detector_bbox_x2.isnot(None),
+            FrameData.detector_bbox_y2.isnot(None),
         )
         .order_by(FrameData.frame_idx)
     )
@@ -382,8 +385,10 @@ def compute_smoothed_centroids(
     # Step 4 — 5-frame median filter (removes single-frame outliers)
     centroids = median_filter(centroids, size=(5, 1), mode="nearest")
 
-    # Step 5 — Gaussian temporal smoothing (~0.1 s window)
-    sigma = math.ceil(fps * _GAUSSIAN_SIGMA_SECONDS)
+    # Step 5 — Gaussian temporal smoothing (~0.1 s window).  Clamp to >=1
+    # so videos with missing/zero fps headers don't trigger a ZeroDivisionError
+    # inside scipy.
+    sigma = max(1, math.ceil(fps * _GAUSSIAN_SIGMA_SECONDS))
     centroids = gaussian_filter1d(centroids, sigma=sigma, axis=0, mode="nearest")
 
     return centroids.astype(np.float32)
