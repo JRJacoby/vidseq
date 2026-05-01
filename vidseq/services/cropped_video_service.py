@@ -1149,6 +1149,7 @@ class CroppedVideoService:
 
         def _extract():
             from vidseq.services.database_manager import DatabaseManager
+            session_factory = DatabaseManager.get_instance().get_project_session_factory(project_path)
 
             try:
                 # Pass 1: Get or compute global crop size (bbox mode)
@@ -1161,7 +1162,6 @@ class CroppedVideoService:
                         f"[Cropped Video] Computing global bbox crop size from "
                         f"{len(videos)} videos..."
                     )
-                    session_factory = DatabaseManager.get_instance().get_project_session_factory(project_path)
 
                     async def _compute_crop_size():
                         async with session_factory() as session:
@@ -1174,8 +1174,6 @@ class CroppedVideoService:
                 succeeded = 0
                 failed = 0
                 skipped = 0
-
-                session_factory = DatabaseManager.get_instance().get_project_session_factory(project_path)
 
                 for video in videos:
                     print(f"[Cropped Video] Processing video {video.id}: {video.name} (bbox mode)")
