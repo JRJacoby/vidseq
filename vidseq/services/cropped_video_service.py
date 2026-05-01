@@ -777,8 +777,13 @@ def process_single_video_bbox(
 
         while True:
             # Bounds-check: defend in depth against caller providing a
-            # centroids array shorter than the actual video.
+            # centroids array shorter than the actual video.  Log so silent
+            # truncation is visible during debugging.
             if frame_idx >= num_centroids:
+                print(
+                    f"[Cropped Video] Warning: centroids array length {num_centroids} "
+                    f"shorter than video; truncating output at frame {frame_idx}"
+                )
                 break
 
             ret, frame = cap.read()
