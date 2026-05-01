@@ -162,6 +162,12 @@ class DatabaseManager:
         from sqlalchemy import create_engine
         return create_engine(f"sqlite:///{REGISTRY_DB_PATH}")
 
+    def get_project_engine(self, project_folder: Path):
+        """Get a synchronous project engine for the worker process."""
+        from sqlalchemy import create_engine
+        db_path = project_folder / "vidseq.db"
+        return create_engine(f"sqlite:///{db_path}")
+
 
 async def _migrate_project_db(conn) -> None:
     """Add missing columns to existing project databases.
@@ -204,10 +210,4 @@ async def _migrate_project_db(conn) -> None:
         else:
             await conn.execute(text("ALTER TABLE alignment_labels RENAME TO pose_labels"))
             logger.info("Migration: renamed table alignment_labels -> pose_labels")
-
-    def get_project_engine(self, project_folder: Path):
-        """Get a synchronous project engine for the worker process."""
-        from sqlalchemy import create_engine
-        db_path = project_folder / "vidseq.db"
-        return create_engine(f"sqlite:///{db_path}")
 
