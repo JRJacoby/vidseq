@@ -61,6 +61,8 @@ function getNativeCoords(event: MouseEvent): { x: number; y: number } | null {
 }
 
 function onMouseDown(event: MouseEvent) {
+  if (event.button !== 0) return
+
   if (props.activeTool === 'graphcut_click') {
     const coords = getNativeCoords(event)
     if (!coords) return
@@ -343,6 +345,7 @@ onMounted(() => {
   height: 100%;
   object-fit: contain;
   pointer-events: none;
+  image-rendering: pixelated;
 }
 
 .video-overlay.tool-active {

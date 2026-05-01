@@ -195,6 +195,47 @@ const isLabelingKeypoints = ref(false)
 const showPoseKeypoints = ref(true)
 const posePrediction = ref<PosePrediction | null>(null)
 
+const zoom = ref(1)
+const panX = ref(0)
+const panY = ref(0)
+const videoWrapperRef = ref<HTMLElement | null>(null)
+
+const handleWheelZoom = (e: WheelEvent) => {
+  const wrapper = videoWrapperRef.value
+  if (!wrapper) return
+  const rect = wrapper.getBoundingClientRect()
+  const cursorOffsetX = e.clientX - rect.left
+  const cursorOffsetY = e.clientY - rect.top
+  const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2
+  const newZoom = Math.max(1, Math.min(16, zoom.value * factor))
+  if (newZoom === zoom.value) return
+  panX.value += cursorOffsetX * (1 - newZoom / zoom.value)
+  panY.value += cursorOffsetY * (1 - newZoom / zoom.value)
+  zoom.value = newZoom
+  if (zoom.value <= 1) { panX.value = 0; panY.value = 0 }
+}
+
+const handlePanMove = (e: MouseEvent) => {
+  panX.value += e.movementX
+  panY.value += e.movementY
+}
+const endPan = () => {
+  window.removeEventListener('mousemove', handlePanMove)
+  window.removeEventListener('mouseup', endPan)
+}
+const handleStartPan = (e: MouseEvent) => {
+  if (e.button !== 2) return
+  e.preventDefault()
+  window.addEventListener('mousemove', handlePanMove)
+  window.addEventListener('mouseup', endPan)
+}
+
+const resetZoom = () => {
+  zoom.value = 1
+  panX.value = 0
+  panY.value = 0
+}
+
 const toggleLabelingMode = () => {
   isLabelingKeypoints.value = !isLabelingKeypoints.value
   if (isLabelingKeypoints.value) {
@@ -506,9 +547,13 @@ watch([currentFrameIdx, maskViewMode], async ([frameIdx, mode]) => {
 })
 
 const handlePoseKeyDown = (e: KeyboardEvent) => {
+  const target = e.target as HTMLElement | null
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) return
   if ((e.key === 'Delete' || e.key === 'Backspace') && isLabelingKeypoints.value && poseLabel.value) {
     e.preventDefault()
     deletePoseLabel(currentFrameIdx.value)
+  } else if (e.key === 'r' || e.key === 'R') {
+    resetZoom()
   }
 }
 
@@ -548,8 +593,18 @@ onUnmounted(() => {
         <div v-else-if="error" class="error-state">
           {{ error }}
         </div>
-        <div v-else class="video-container">
-          <div class="video-wrapper">
+        <div
+          v-else
+          class="video-container"
+          @wheel.prevent="handleWheelZoom"
+          @mousedown="handleStartPan"
+          @contextmenu.prevent
+        >
+          <div
+            ref="videoWrapperRef"
+            class="video-wrapper"
+            :style="{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})` }"
+          >
             <video
               ref="videoRef"
               class="video-player"
@@ -977,12 +1032,14 @@ onUnmounted(() => {
 .video-container {
   position: relative;
   max-width: 100%;
+  overflow: hidden;
 }
 
 .video-wrapper {
   position: relative;
   display: inline-block;
   max-width: 100%;
+  transform-origin: 0 0;
 }
 
 .video-player {
@@ -990,6 +1047,7 @@ onUnmounted(() => {
   max-width: 100%;
   width: auto;
   height: auto;
+  image-rendering: pixelated;
 }
 
 .loading-state,
