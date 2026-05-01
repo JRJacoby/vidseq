@@ -37,8 +37,11 @@ def _get_crop_size_path(project_path: Path) -> Path:
     return project_path / "crop_config.json"
 
 
-def get_saved_crop_size(project_path: Path) -> int | None:
-    """Load the saved crop size for a project, if it exists.
+def get_saved_crop_size_mask(project_path: Path) -> int | None:
+    """Load the saved mask-mode crop size for a project, if it exists.
+
+    Falls back to the legacy ``crop_size`` key for projects that saved their
+    mask-mode value before per-mode keys were introduced.
 
     Args:
         project_path: Path to the project folder
@@ -53,30 +56,119 @@ def get_saved_crop_size(project_path: Path) -> int | None:
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
-        return config.get("crop_size")
+        # Prefer the new per-mode key; fall back to legacy bare key
+        return config.get("crop_size_mask", config.get("crop_size"))
     except Exception as e:
         print(f"[Cropped Video] Warning: Failed to load crop config: {e}")
         return None
 
 
-def save_crop_size(project_path: Path, crop_size: int) -> None:
-    """Save the crop size for a project.
+def save_crop_size_mask(project_path: Path, crop_size: int) -> None:
+    """Save the mask-mode crop size for a project.
+
+    Reads the existing config (if any) and upserts the ``crop_size_mask`` key
+    so that any other per-mode values are preserved.
 
     Args:
         project_path: Path to the project folder
         crop_size: Crop size to save
     """
     config_path = _get_crop_size_path(project_path)
-    config = {"crop_size": crop_size}
+
+    # Preserve any existing keys (e.g. crop_size_bbox)
+    config: dict = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+        except Exception:
+            pass
+
+    config["crop_size_mask"] = crop_size
 
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
 
-    print(f"[Cropped Video] Saved crop size {crop_size} to {config_path}")
+    print(f"[Cropped Video] Saved mask-mode crop size {crop_size} to {config_path}")
+
+
+def get_saved_crop_size_bbox(project_path: Path) -> int | None:
+    """Load the saved bbox-mode crop size for a project, if it exists.
+
+    Does NOT fall back to any legacy key — bbox mode is new, so an absent
+    key simply means the value has not been computed yet.
+
+    Args:
+        project_path: Path to the project folder
+
+    Returns:
+        Saved crop size, or None if not saved yet
+    """
+    config_path = _get_crop_size_path(project_path)
+    if not config_path.exists():
+        return None
+
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        return config.get("crop_size_bbox")
+    except Exception as e:
+        print(f"[Cropped Video] Warning: Failed to load crop config: {e}")
+        return None
+
+
+def save_crop_size_bbox(project_path: Path, crop_size: int) -> None:
+    """Save the bbox-mode crop size for a project.
+
+    Reads the existing config (if any) and upserts the ``crop_size_bbox`` key
+    so that any other per-mode values are preserved.
+
+    Args:
+        project_path: Path to the project folder
+        crop_size: Crop size to save
+    """
+    config_path = _get_crop_size_path(project_path)
+
+    # Preserve any existing keys (e.g. crop_size_mask)
+    config: dict = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+        except Exception:
+            pass
+
+    config["crop_size_bbox"] = crop_size
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"[Cropped Video] Saved bbox-mode crop size {crop_size} to {config_path}")
+
+
+# ---------------------------------------------------------------------------
+# Legacy aliases — kept so any code that imported the old names still works.
+# Both delegate to the mask-mode helpers (mask mode was the only mode when
+# the bare ``crop_size`` key was introduced).
+# ---------------------------------------------------------------------------
+
+def get_saved_crop_size(project_path: Path) -> int | None:
+    """Alias for get_saved_crop_size_mask (legacy name)."""
+    return get_saved_crop_size_mask(project_path)
+
+
+def save_crop_size(project_path: Path, crop_size: int) -> None:
+    """Alias for save_crop_size_mask (legacy name)."""
+    save_crop_size_mask(project_path, crop_size)
 
 
 def clear_crop_size(project_path: Path) -> bool:
-    """Clear the saved crop size for a project.
+    """Clear all saved crop sizes for a project by deleting crop_config.json.
+
+    Deletes the entire config file rather than individual keys — there is no
+    per-mode clear in the UI today, and clearing one mode's cached value while
+    leaving the other's would be surprising.  Both modes will recompute their
+    crop size on the next extraction run.
 
     Use this to force recomputation of crop size on next cropping run.
 
@@ -89,7 +181,7 @@ def clear_crop_size(project_path: Path) -> bool:
     config_path = _get_crop_size_path(project_path)
     if config_path.exists():
         config_path.unlink()
-        print(f"[Cropped Video] Cleared saved crop size from {config_path}")
+        print(f"[Cropped Video] Cleared saved crop sizes from {config_path}")
         return True
     return False
 
@@ -544,15 +636,15 @@ class CroppedVideoService:
 
         def _extract():
             try:
-                # Pass 1: Get or compute global crop size
-                saved_crop_size = get_saved_crop_size(project_path)
+                # Pass 1: Get or compute global crop size (mask mode)
+                saved_crop_size = get_saved_crop_size_mask(project_path)
                 if saved_crop_size is not None:
                     crop_size = saved_crop_size
                     print(f"[Cropped Video] Using saved crop size: {crop_size}")
                 else:
                     print(f"[Cropped Video] Computing global crop size from {len(videos)} videos...")
                     crop_size = compute_global_crop_size(project_path, videos)
-                    save_crop_size(project_path, crop_size)
+                    save_crop_size_mask(project_path, crop_size)
 
                 # Pass 2: Process each video
                 for video in videos:
