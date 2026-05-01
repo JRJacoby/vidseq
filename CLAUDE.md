@@ -10,7 +10,7 @@ VidSeq is a full-stack application for animal behavior modeling from raw video u
 
 ### Backend (Python/FastAPI)
 ```bash
-vidseq                    # Start backend server on port 8000 (with auto-reload)
+uv run vidseq             # Start backend server on port 8000 (with auto-reload)
 uv sync                   # Install/sync Python dependencies
 uv run python ...         # Run Python commands (always use uv run, not bare python)
 ```
