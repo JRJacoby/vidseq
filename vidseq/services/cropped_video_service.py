@@ -5,6 +5,7 @@ Extracts cropped videos centered on the mask centroid with non-mask pixels zeroe
 
 import asyncio
 import json
+import math
 import random
 import subprocess
 import threading
@@ -13,6 +14,7 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from scipy.ndimage import gaussian_filter1d, median_filter
 
 from vidseq.models.video import Video
 
@@ -266,6 +268,125 @@ def compute_centroid(mask: np.ndarray) -> tuple[int, int]:
     cy = int(np.mean(coords[:, 0]))
     cx = int(np.mean(coords[:, 1]))
     return (cx, cy)
+
+
+# =============================================================================
+# Bbox-centroid signal computation
+# =============================================================================
+
+async def load_bboxes_for_video(
+    session: AsyncSession,
+    video_id: int,
+    num_frames: int,
+) -> np.ndarray:
+    """Bulk-load detector bboxes for all frames of a video into a dense array.
+
+    Runs a single SQL query over ``frame_data`` and maps each row into the
+    output array by ``frame_idx``.  Frames with no row (or with a NULL bbox)
+    are left as NaN.
+
+    Args:
+        session: Async SQLAlchemy session bound to the project database.
+        video_id: Primary key of the video.
+        num_frames: Total frame count — determines the output array length.
+
+    Returns:
+        Float32 array of shape ``(num_frames, 4)`` with columns
+        ``[x1, y1, x2, y2]`` in pixel coordinates.  Rows for frames that
+        have no detector bbox are filled with ``np.nan``.
+    """
+    from vidseq.models.frame_data import FrameData
+
+    out = np.full((num_frames, 4), np.nan, dtype=np.float32)
+
+    result = await session.execute(
+        select(
+            FrameData.frame_idx,
+            FrameData.detector_bbox_x1,
+            FrameData.detector_bbox_y1,
+            FrameData.detector_bbox_x2,
+            FrameData.detector_bbox_y2,
+        )
+        .where(
+            FrameData.video_id == video_id,
+            FrameData.detector_bbox_x1.isnot(None),
+        )
+        .order_by(FrameData.frame_idx)
+    )
+    for row in result.all():
+        frame_idx, x1, y1, x2, y2 = row
+        if 0 <= frame_idx < num_frames:
+            out[frame_idx] = (x1, y1, x2, y2)
+
+    return out
+
+
+# Sigma = ceil(fps / 10) gives ~0.1 s worth of frames.  At 30 fps that is
+# 3 frames; at 100 fps it is 10 frames.  Keeps the Gaussian scale
+# proportional to real time rather than frame count.
+_GAUSSIAN_SIGMA_SECONDS = 0.1
+
+
+def compute_smoothed_centroids(
+    bboxes: np.ndarray,
+    fps: float,
+) -> np.ndarray:
+    """Compute a smoothed per-frame centroid trajectory from detector bboxes.
+
+    Pipeline:
+    1. Compute raw centroids (cx, cy) as bbox midpoints.
+    2. Raise ``ValueError`` if every frame is NaN.
+    3. Linear-interpolate NaN frames (per axis); hold boundary values for
+       leading / trailing NaN runs.
+    4. Apply a 5-frame median filter (``mode='nearest'``) to kill outliers.
+    5. Apply a Gaussian filter with ``sigma = ceil(fps * 0.1)`` frames and
+       ``mode='nearest'`` to smooth temporal jitter.
+
+    Args:
+        bboxes: Float array of shape ``(N, 4)`` with columns
+            ``[x1, y1, x2, y2]``.  NaN rows represent frames with no
+            detection.
+        fps: Frame rate of the video (used to set the Gaussian sigma so that
+            smoothing spans a fixed real-time window).
+
+    Returns:
+        Float array of shape ``(N, 2)`` with columns ``[cx, cy]``, fully
+        dense (no NaNs).
+
+    Raises:
+        ValueError: If every row of *bboxes* is NaN (video has no valid
+            bboxes).
+    """
+    n = len(bboxes)
+
+    # Step 1 — raw centroids
+    cx_raw = (bboxes[:, 0] + bboxes[:, 2]) / 2.0
+    cy_raw = (bboxes[:, 1] + bboxes[:, 3]) / 2.0
+    centroids = np.stack([cx_raw, cy_raw], axis=1)  # (N, 2)
+
+    # Step 2 — guard: all-NaN video is a hard fail
+    valid_mask = ~np.isnan(centroids[:, 0])
+    if not np.any(valid_mask):
+        raise ValueError("video has no valid bboxes")
+
+    # Step 3 — linear interpolation + hold-nearest at boundaries
+    all_idxs = np.arange(n, dtype=float)
+    valid_idxs = all_idxs[valid_mask]
+    for axis in range(2):
+        valid_vals = centroids[valid_mask, axis]
+        # np.interp clamps to endpoint values outside the range of valid_idxs,
+        # which is exactly the hold-nearest behaviour we want for leading/trailing
+        # NaN runs.
+        centroids[:, axis] = np.interp(all_idxs, valid_idxs, valid_vals)
+
+    # Step 4 — 5-frame median filter (removes single-frame outliers)
+    centroids = median_filter(centroids, size=(5, 1), mode="nearest")
+
+    # Step 5 — Gaussian temporal smoothing (~0.1 s window)
+    sigma = math.ceil(fps * _GAUSSIAN_SIGMA_SECONDS)
+    centroids = gaussian_filter1d(centroids, sigma=sigma, axis=0, mode="nearest")
+
+    return centroids.astype(np.float32)
 
 
 def compute_global_crop_size(
