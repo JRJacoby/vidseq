@@ -10,6 +10,7 @@ import {
   createVideosSegmentation,
   createSimpleSegmentation,
   createVideosExtraction,
+  createVideosExtractionBbox,
   getCroppedVideoExists,
   getAlignedVideoExists,
   getPCAStatus,
@@ -42,6 +43,7 @@ const isLoading = ref(false)
 const showFilePicker = ref(false)
 const isSegmenting = ref(false)
 const isExtracting = ref(false)
+const isExtractingBbox = ref(false)
 const isDeleting = ref(false)
 const croppedVideoExists = ref<Record<number, boolean>>({})
 const alignedVideoExists = ref<Record<number, boolean>>({})
@@ -298,6 +300,21 @@ const handleExtractCroppedVideos = async () => {
     alert(e.message || 'Failed to start cropped video extraction')
   } finally {
     isExtracting.value = false
+  }
+}
+
+const handleExtractCroppedVideosBbox = async () => {
+  if (!projectId.value || isExtractingBbox.value) return
+  isExtractingBbox.value = true
+  try {
+    await createVideosExtractionBbox(projectId.value, selectedVideoIdsList.value)
+    // Refresh status after starting extraction
+    setTimeout(() => loadCroppedVideoStatus(), 1000)
+  } catch (e: any) {
+    console.error('Failed to extract cropped videos (bbox):', e)
+    alert(e.message || 'Failed to start cropped video extraction (bbox)')
+  } finally {
+    isExtractingBbox.value = false
   }
 }
 
@@ -707,13 +724,22 @@ const formatScore = (score: number | undefined) => {
           </button>
 
           <h4 class="sidebar-section-title">Cropped Videos</h4>
-          <button
-            class="sidebar-button extract-button"
-            @click="handleExtractCroppedVideos"
-            :disabled="isExtracting || selectedCount === 0"
-          >
-            <span class="button-label">{{ isExtracting ? 'Starting...' : `Extract ${selectedCount} Cropped Videos` }}</span>
-          </button>
+          <div class="crop-mode-buttons">
+            <button
+              class="sidebar-button extract-button"
+              @click="handleExtractCroppedVideos"
+              :disabled="isExtracting || isExtractingBbox || selectedCount === 0"
+            >
+              <span class="button-label">Crop (mask)</span>
+            </button>
+            <button
+              class="sidebar-button extract-button"
+              @click="handleExtractCroppedVideosBbox"
+              :disabled="isExtracting || isExtractingBbox || selectedCount === 0"
+            >
+              <span class="button-label">Crop (bbox)</span>
+            </button>
+          </div>
 
           <h4 class="sidebar-section-title">PCA</h4>
           <div v-if="pcaStatus?.has_pca" class="pca-info">
@@ -1335,5 +1361,13 @@ const formatScore = (score: number | undefined) => {
   border: 1px solid #ccc;
   border-radius: 4px;
   font-size: 0.85rem;
+}
+
+.crop-mode-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+.crop-mode-buttons .sidebar-button {
+  flex: 1;
 }
 </style>
