@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from scipy.ndimage import gaussian_filter1d, median_filter
 
@@ -322,6 +322,41 @@ async def load_bboxes_for_video(
             out[frame_idx] = (x1, y1, x2, y2)
 
     return out
+
+
+async def videos_with_no_bboxes(
+    session: AsyncSession,
+    video_ids: list[int],
+) -> list[int]:
+    """Return the subset of video_ids that have zero non-NULL detector bboxes.
+
+    Runs a single SQL query that counts fully-non-NULL detector bbox rows per
+    video, then returns any video ID from the input list that either has no row
+    at all in the result or has a count of zero.
+
+    Args:
+        session: Async SQLAlchemy session bound to the project database.
+        video_ids: Video primary keys to check.
+
+    Returns:
+        Sorted list of video IDs that have no valid detector bbox rows.
+    """
+    from vidseq.models.frame_data import FrameData
+
+    result = await session.execute(
+        select(FrameData.video_id, func.count().label("n"))
+        .where(
+            FrameData.video_id.in_(video_ids),
+            FrameData.detector_bbox_x1.isnot(None),
+            FrameData.detector_bbox_y1.isnot(None),
+            FrameData.detector_bbox_x2.isnot(None),
+            FrameData.detector_bbox_y2.isnot(None),
+        )
+        .group_by(FrameData.video_id)
+    )
+    has_bboxes = {row.video_id for row in result.all() if row.n > 0}
+    missing = [vid for vid in video_ids if vid not in has_bboxes]
+    return sorted(missing)
 
 
 # Sigma = ceil(fps / 10) gives ~0.1 s worth of frames.  At 30 fps that is
@@ -917,6 +952,72 @@ async def create_videos_extraction(
     return {"status": "started", "video_count": len(uncropped)}
 
 
+async def create_videos_extraction_bbox(
+    session: AsyncSession,
+    project_path: Path,
+    video_ids: list[int],
+) -> dict:
+    """Start bbox-centroid cropped video extraction for selected videos.
+
+    Fetches videos by ID, validates all have detector bboxes (gating), filters
+    out already-cropped videos, and starts background extraction.
+
+    Unlike ``create_videos_extraction`` (mask mode), this function does NOT
+    require ``segmentation_status == "segmented"`` — bbox mode crops from
+    detector bbox centroids and does not use segmentation masks.
+
+    Args:
+        session: Async database session bound to the project database.
+        project_path: Path to the project folder.
+        video_ids: List of video IDs to extract.
+
+    Returns:
+        Dict with ``status`` (``"started"`` or ``"skipped"``) and
+        ``video_count``.
+
+    Raises:
+        ValueError: If no videos found, any video has no detector bboxes, or
+            extraction is already in progress.
+    """
+    # Fetch videos by ID (fully-loaded Video objects; metadata used in worker thread)
+    result = await session.execute(
+        select(Video).where(Video.id.in_(video_ids)).order_by(Video.id)
+    )
+    videos = list(result.scalars().all())
+    if not videos:
+        raise ValueError("No videos found for the given IDs")
+
+    # Gate: every selected video must have at least one non-NULL detector bbox
+    missing_ids = await videos_with_no_bboxes(session, [v.id for v in videos])
+    if missing_ids:
+        id_to_name = {v.id: v.name for v in videos}
+        names = ", ".join(id_to_name[vid] for vid in missing_ids if vid in id_to_name)
+        raise ValueError(
+            f"Detector hasn't been run on: {names}. "
+            f"Run the bbox or seg detector before bbox-centroid cropping."
+        )
+
+    # Filter out videos that already have cropped files on disk
+    uncropped = await asyncio.to_thread(
+        lambda: [v for v in videos if not cropped_video_exists(project_path, v.name)]
+    )
+    if not uncropped:
+        return {"status": "skipped", "message": "All selected videos already cropped", "video_count": 0}
+
+    # Start extraction
+    service = CroppedVideoService.get_instance()
+
+    if service.is_extracting():
+        raise ValueError("Extraction already in progress")
+
+    service.extract_all_cropped_videos_bbox(
+        project_path=project_path,
+        videos=uncropped,
+    )
+
+    return {"status": "started", "video_count": len(uncropped)}
+
+
 class CroppedVideoService:
     """Singleton service for managing cropped video extraction."""
 
@@ -1008,6 +1109,123 @@ class CroppedVideoService:
 
             except Exception as e:
                 print(f"[Cropped Video] Extraction failed: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                self._is_extracting = False
+
+        self._extraction_thread = threading.Thread(target=_extract, daemon=True)
+        self._extraction_thread.start()
+
+    def extract_all_cropped_videos_bbox(
+        self,
+        project_path: Path,
+        videos: list,
+    ) -> None:
+        """Start bbox-centroid cropped video extraction in a background thread.
+
+        Reuses the same ``_is_extracting`` flag as mask mode so that at most
+        one extraction (mask OR bbox) runs at a time.
+
+        The background thread uses ``asyncio.run()`` to call the async DB
+        helpers (``compute_global_crop_size_bbox`` and
+        ``load_bboxes_for_video``) via the project's already-initialized
+        async session factory.
+
+        Args:
+            project_path: Path to the project folder.
+            videos: Fully-loaded Video model instances.  All metadata
+                (``id``, ``name``, ``path``, ``width``, ``height``,
+                ``num_frames``, ``fps``) is read directly from these objects;
+                the worker thread does not query the DB for video metadata.
+
+        Raises:
+            RuntimeError: If extraction is already in progress.
+        """
+        if self._is_extracting:
+            raise RuntimeError("Extraction already in progress")
+
+        self._is_extracting = True
+
+        def _extract():
+            from vidseq.services.database_manager import DatabaseManager
+
+            try:
+                # Pass 1: Get or compute global crop size (bbox mode)
+                saved_crop_size = get_saved_crop_size_bbox(project_path)
+                if saved_crop_size is not None:
+                    crop_size = saved_crop_size
+                    print(f"[Cropped Video] Using saved bbox crop size: {crop_size}")
+                else:
+                    print(
+                        f"[Cropped Video] Computing global bbox crop size from "
+                        f"{len(videos)} videos..."
+                    )
+                    session_factory = DatabaseManager.get_instance().get_project_session_factory(project_path)
+
+                    async def _compute_crop_size():
+                        async with session_factory() as session:
+                            return await compute_global_crop_size_bbox(session, videos)
+
+                    crop_size = asyncio.run(_compute_crop_size())
+                    save_crop_size_bbox(project_path, crop_size)
+
+                # Pass 2: Process each video
+                succeeded = 0
+                failed = 0
+                skipped = 0
+
+                session_factory = DatabaseManager.get_instance().get_project_session_factory(project_path)
+
+                for video in videos:
+                    print(f"[Cropped Video] Processing video {video.id}: {video.name} (bbox mode)")
+
+                    # Load bboxes for this video
+                    try:
+                        async def _load_bboxes(vid=video):
+                            async with session_factory() as session:
+                                return await load_bboxes_for_video(session, vid.id, vid.num_frames)
+
+                        bboxes = asyncio.run(_load_bboxes())
+                    except Exception as e:
+                        print(f"[Cropped Video] Failed to load bboxes for video {video.id}: {e}")
+                        failed += 1
+                        continue
+
+                    # Compute smoothed centroids
+                    try:
+                        fps = float(video.fps) if video.fps else 30.0
+                        smoothed_centroids = compute_smoothed_centroids(bboxes, fps)
+                    except ValueError as e:
+                        print(f"[Cropped Video] Skipping video {video.name}: {e}")
+                        skipped += 1
+                        continue
+
+                    # Extract cropped video
+                    try:
+                        success = process_single_video_bbox(
+                            project_path=project_path,
+                            video=video,
+                            crop_size=crop_size,
+                            smoothed_centroids=smoothed_centroids,
+                        )
+                        if success:
+                            succeeded += 1
+                        else:
+                            print(f"[Cropped Video] Failed to process video {video.id} (bbox mode)")
+                            failed += 1
+                    except Exception as e:
+                        print(f"[Cropped Video] Error processing video {video.id} (bbox mode): {e}")
+                        failed += 1
+
+                print(
+                    f"[Cropped Video] Bbox extraction complete: "
+                    f"{succeeded} succeeded, {failed} failed, {skipped} skipped "
+                    f"(no valid bboxes)"
+                )
+
+            except Exception as e:
+                print(f"[Cropped Video] Bbox extraction failed: {e}")
                 import traceback
                 traceback.print_exc()
             finally:
