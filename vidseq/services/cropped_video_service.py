@@ -81,8 +81,8 @@ def save_crop_size_mask(project_path: Path, crop_size: int) -> None:
         try:
             with open(config_path, "r") as f:
                 config = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Cropped Video] Warning: Failed to read existing crop config, overwriting: {e}")
 
     config["crop_size_mask"] = crop_size
 
@@ -135,8 +135,8 @@ def save_crop_size_bbox(project_path: Path, crop_size: int) -> None:
         try:
             with open(config_path, "r") as f:
                 config = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Cropped Video] Warning: Failed to read existing crop config, overwriting: {e}")
 
     config["crop_size_bbox"] = crop_size
 
