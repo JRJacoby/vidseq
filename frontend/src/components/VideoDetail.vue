@@ -548,45 +548,46 @@ onUnmounted(() => {
         <div v-else-if="error" class="error-state">
           {{ error }}
         </div>
-        <div v-else class="video-with-timeline">
-          <div class="video-container">
-            <div class="video-wrapper">
-              <video
-                ref="videoRef"
-                class="video-player"
-                :src="videoStreamUrl"
-                preload="metadata"
-                @timeupdate="onTimeUpdate"
-                @loadedmetadata="onLoadedMetadata"
-                @play="onPlay"
-                @pause="onPause"
-              >
-                Your browser does not support the video tag.
-              </video>
-              <VideoOverlay
-                v-if="videoWidth > 0 && videoHeight > 0"
-                :video-width="videoWidth"
-                :video-height="videoHeight"
-                :active-tool="activeTool"
-                :mask="currentMask"
-                :prompts="currentPrompts"
-                :show-mask="showMask"
-                :show-prompts="showPrompts"
-                :detector-bbox="detectorBbox"
-                :obb-bbox="obbBbox"
-                :pose-label="poseLabel"
-                :pose-prediction="posePrediction"
-                :pending-front="pendingFront"
-                :show-pose-keypoints="showPoseKeypoints"
-                :is-labeling-keypoints="isLabelingKeypoints"
-                @point-complete="handlePointCompleteWithRefresh"
-                @box-complete="handleBoxCompleteWithRefresh"
-                @keypoint-click="onKeypointClick"
-                @component-click="handleComponentClick"
-              />
-            </div>
+        <div v-else class="video-container">
+          <div class="video-wrapper">
+            <video
+              ref="videoRef"
+              class="video-player"
+              :src="videoStreamUrl"
+              preload="metadata"
+              @timeupdate="onTimeUpdate"
+              @loadedmetadata="onLoadedMetadata"
+              @play="onPlay"
+              @pause="onPause"
+            >
+              Your browser does not support the video tag.
+            </video>
+            <VideoOverlay
+              v-if="videoWidth > 0 && videoHeight > 0"
+              :video-width="videoWidth"
+              :video-height="videoHeight"
+              :active-tool="activeTool"
+              :mask="currentMask"
+              :prompts="currentPrompts"
+              :show-mask="showMask"
+              :show-prompts="showPrompts"
+              :detector-bbox="detectorBbox"
+              :obb-bbox="obbBbox"
+              :pose-label="poseLabel"
+              :pose-prediction="posePrediction"
+              :pending-front="pendingFront"
+              :show-pose-keypoints="showPoseKeypoints"
+              :is-labeling-keypoints="isLabelingKeypoints"
+              @point-complete="handlePointCompleteWithRefresh"
+              @box-complete="handleBoxCompleteWithRefresh"
+              @keypoint-click="onKeypointClick"
+              @component-click="handleComponentClick"
+            />
           </div>
-          <TimelineSystem v-if="video">
+        </div>
+      </div>
+
+      <TimelineSystem v-if="video">
             <VideoTimeline
               :current-time="currentTime"
               :duration="duration"
@@ -630,10 +631,14 @@ onUnmounted(() => {
               @clear-graphcut-region="handleClearGraphcutRegion"
               @view-change="handleViewChange"
             />
-          </TimelineSystem>
-        </div>
-      </div>
+      </TimelineSystem>
 
+      <CondFrameGrid
+        v-if="video && segmentationIsReady"
+        :project-id="projectId"
+        :video-id="videoId"
+        :refresh-key="condFrameRefreshKey"
+      />
     </div>
 
     <aside class="action-bar">
@@ -910,13 +915,6 @@ onUnmounted(() => {
       </div>
     </aside>
   </div>
-
-  <CondFrameGrid
-    v-if="video && segmentationIsReady"
-    :project-id="projectId"
-    :video-id="videoId"
-    :refresh-key="condFrameRefreshKey"
-  />
   </div>
 </template>
 
@@ -924,7 +922,6 @@ onUnmounted(() => {
 .video-detail-page {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
 }
 
 .video-detail-container {
@@ -938,6 +935,7 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   min-width: 0;
+  overflow-y: auto;
 }
 
 .video-header {
@@ -969,48 +967,27 @@ onUnmounted(() => {
 }
 
 .video-area {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   background-color: #c2c2c2;
-  min-height: 0;
   padding: 1rem;
-}
-
-.video-with-timeline {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-  max-height: 100%;
-  min-height: 0;
-  gap: 8px;
 }
 
 .video-container {
   position: relative;
   max-width: 100%;
-  max-height: calc(100% - 240px);
-  flex-shrink: 1;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .video-wrapper {
   position: relative;
   display: inline-block;
   max-width: 100%;
-  max-height: 100%;
 }
 
 .video-player {
   display: block;
   max-width: 100%;
-  max-height: 100%;
   width: auto;
   height: auto;
 }
@@ -1032,6 +1009,8 @@ onUnmounted(() => {
   border-left: 1px solid #e0e0e0;
   animation: slideIn 0.2s ease-out;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 @keyframes slideIn {
@@ -1045,6 +1024,9 @@ onUnmounted(() => {
 
 .action-bar-content {
   padding: 1rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .action-bar-title {
