@@ -931,12 +931,21 @@ async def create_videos_extraction(
             f"Unsegmented: {', '.join(unsegmented)}"
         )
 
-    # Filter out videos that already have cropped files on disk
+    # Filter out videos that already have cropped files on disk.  The path is
+    # shared between mask-mode and bbox-mode, so first-write-wins: to switch
+    # modes, delete the existing cropped video first.
     uncropped = await asyncio.to_thread(
         lambda: [v for v in videos if not cropped_video_exists(project_path, v.name)]
     )
     if not uncropped:
-        return {"status": "skipped", "message": "All selected videos already cropped", "video_count": 0}
+        return {
+            "status": "skipped",
+            "message": (
+                "Cropped videos already exist for the selected videos. "
+                "Delete them first to re-extract (in either mode)."
+            ),
+            "video_count": 0,
+        }
 
     # Start extraction
     service = CroppedVideoService.get_instance()
@@ -997,12 +1006,21 @@ async def create_videos_extraction_bbox(
             f"Run the bbox or seg detector before bbox-centroid cropping."
         )
 
-    # Filter out videos that already have cropped files on disk
+    # Filter out videos that already have cropped files on disk.  The path is
+    # shared between mask-mode and bbox-mode, so first-write-wins: to switch
+    # modes, delete the existing cropped video first.
     uncropped = await asyncio.to_thread(
         lambda: [v for v in videos if not cropped_video_exists(project_path, v.name)]
     )
     if not uncropped:
-        return {"status": "skipped", "message": "All selected videos already cropped", "video_count": 0}
+        return {
+            "status": "skipped",
+            "message": (
+                "Cropped videos already exist for the selected videos. "
+                "Delete them first to re-extract (in either mode)."
+            ),
+            "video_count": 0,
+        }
 
     # Start extraction
     service = CroppedVideoService.get_instance()

@@ -1,5 +1,30 @@
 # VidSeq Devlog
 
+## 2026-05-02 — Bbox-Centroid Cropping (first of a planned set of pipeline rewrites)
+
+### What shipped
+
+A second cropping mode that places the crop window using YOLO bbox detections rather than mask centroids. Lives in `cropped_video_service.py` alongside the existing mask-mode pipeline. UI exposes it as a `Crop (bbox)` button in the `Cropped Videos` sidebar section, paired with a renamed `Crop (mask)` button for the existing pipeline. Spec at `docs/superpowers/specs/2026-05-01-bbox-centroid-cropping-design.md`, plan at `docs/superpowers/plans/2026-05-01-bbox-centroid-cropping.md`.
+
+### Algorithm shape
+
+For each selected video: read `frame_data.detector_bbox_*` (whichever was last written by the bbox or seg detector — last-write-wins, no source filtering); centroid each bbox; linear-interp NULL frames with hold-nearest at boundaries; 5-frame median filter to kill spikes; Gaussian filter with `sigma = ceil(fps / 10)` for ~0.1 s temporal smoothing. Both filters use `mode='nearest'`. Crop window is the same size for every video in the batch: 99th percentile of bbox widths and heights pooled across all selected videos, squared up to the larger dim, +15% safety. Crops are centered on the smoothed centroid with black-padding when the window extends past a frame edge or the source video is smaller than the window. `crop_config.json` now stores `crop_size_mask` and `crop_size_bbox` separately so each mode caches its own value (legacy bare `crop_size` falls back to the mask key).
+
+### Execution model
+
+Spec was built up question-by-question rather than written in a single pass. Implementation ran via the subagent-driven-development skill: dispatched a fresh implementer subagent per task with the full task text inlined, then a spec-compliance reviewer, then a code-quality reviewer (using superpowers:code-reviewer), and only marked the task done after both reviews approved. Eight implementation tasks plus a final whole-implementation review. Several review-driven fixes commited along the way: warning on corrupt `crop_config.json` instead of silent overwrite, hardening `compute_smoothed_centroids` against `fps=0` (which would have crashed `gaussian_filter1d`), tightening the bbox SQL filter to require all four columns non-NULL (defends against partial-NULL drift), logging when the centroids array is shorter than the video instead of truncating silently, hoisting the per-thread `session_factory` lookup so it's not fetched twice.
+
+### Known limitations (deliberate, not bugs)
+
+The final whole-implementation review surfaced two integration-level gaps that the per-task reviews couldn't see, both of which we accepted rather than fixed:
+
+- **Bbox-mode is a pipeline leaf.** `alignment_service.py` reads `cropped_masks.h5` for per-frame mask data and dimensions. Bbox-mode deliberately doesn't write that file (the spec already says only the cropped video is produced), so running alignment on a bbox-cropped video will FileNotFoundError or — worse — silently corrupt output if a stale H5 from a previous mask-mode run happens to be present at the wrong dimensions. **Decision:** that whole alignment stage is going to be replaced anyway (next rewrite in this set), so we documented the incompatibility in the spec's "Known limitations" section and moved on rather than gating the alignment endpoint or writing a stub all-ones H5.
+- **Mode switch requires manual file deletion.** Both modes filter on `cropped_video_exists(...)`, so first-write-wins. Clicking `Crop (bbox)` after a successful `Crop (mask)` returns `status: "skipped"` and does nothing. The spec originally said modes overwrite each other; the implementation skipped instead, which the per-task plan repeated without flagging. **Decision:** accept the skip-and-manual-delete workflow rather than retrofit overwrite semantics. Updated the spec to match reality and reworded the user-facing skip message from "All selected videos already cropped" to "Cropped videos already exist for the selected videos. Delete them first to re-extract (in either mode)." so the user understands why the click did nothing.
+
+### Async/sync split
+
+`compute_global_crop_size_bbox` and `load_bboxes_for_video` need a DB session, so they're async. The per-video processing loop (cv2 reads, scipy smoothing, ffmpeg encode) is sync and runs in the existing `CroppedVideoService` background thread that mask-mode also uses. Inside the thread, async DB calls go through `asyncio.run(...)` over fresh sessions opened from a hoisted `DatabaseManager.get_project_session_factory(...)`. The `_is_extracting` singleton flag is shared across both modes, so they cannot run concurrently in one process.
+
 ## 2026-04-09 — SAM2 Investigation + Keypoint Pose Implementation (untested)
 
 ### SAM2 Evaluation
